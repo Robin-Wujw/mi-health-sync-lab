@@ -91,7 +91,8 @@ fun SyncScreen(viewModel: SyncViewModel, onBack: () -> Unit) {
             StickyCtaBar(modifier = Modifier.navigationBarsPadding()) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     PrimaryButton(
-                        text = if (state.isSyncing && !state.pendingActionRunning) L10n.string(L10n.homeSyncing) else L10n.string(L10n.syncNow),
+                        text = if (state.isSyncing && !state.pendingActionRunning) L10n.string(L10n.homeSyncing)
+                            else L10n.string(L10n.syncNow),
                         onClick = viewModel::startSync,
                         enabled = state.healthAvailable && state.prefsReady && state.hasSelectedSyncTasks &&
                             !state.isSyncing && !state.pendingActionRunning,
@@ -240,7 +241,8 @@ private fun SyncMetricsGroup(
                             detail,
                             style = MaterialTheme.typography.bodySmall,
                             color = when {
-                                metricState is SyncState.Error && metricState.diagnostic?.hasVerifiedRows == true -> MaterialTheme.colorScheme.tertiary
+                                metricState is SyncState.Error && metricState.diagnostic?.hasVerifiedRows == true ->
+                                    MaterialTheme.colorScheme.tertiary
                                 metricState is SyncState.Error -> MaterialTheme.colorScheme.error
                                 else -> MaterialTheme.colorScheme.onSurfaceVariant
                             },

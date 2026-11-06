@@ -5,7 +5,12 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
-import kotlin.test.*
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFails
+import kotlin.test.assertFalse
+import kotlin.test.assertSame
+import kotlin.test.assertTrue
 
 class MiTargetedHistoryReadTest {
     private fun row(time: Long, value: Int = 98) = MiHealthImportRow(
@@ -91,7 +96,8 @@ class MiTargetedHistoryReadTest {
 
     @Test fun conflictingObservationsAreRetainedAndOldTimestampsDoNotProveCompleteness() = runTest {
         val cloud = Cloud { end, pages ->
-            if (end == 301L) MiHealthImportHistoryRead(listOf(row(1).observed(), row(200, 97).observed()), pages, false, MiHistoryStopReason.PAGE_LIMIT)
+            if (end == 301L) MiHealthImportHistoryRead(
+                listOf(row(1).observed(), row(200, 97).observed()), pages, false, MiHistoryStopReason.PAGE_LIMIT)
             else MiHealthImportHistoryRead(listOf(row(100).observed(), row(200).observed()), 1, false, MiHistoryStopReason.PAGE_LIMIT)
         }
         val result = readMiTargetedHistory(cloud, listOf(row(100), row(200), row(300)), 5, 3, 2)

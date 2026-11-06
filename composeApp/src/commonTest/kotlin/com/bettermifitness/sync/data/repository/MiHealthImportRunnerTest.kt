@@ -82,7 +82,8 @@ class MiHealthImportRunnerTest {
     }
 
     @Test fun exclusionsNeverHideAnIndependentCloudConflict() = runBlocking {
-        val issue = MiHealthImportIssue("HEART_RATE_SOURCE_POINT_EXCLUDED", setOf("broken"), "excluded", MiHealthImportIssueSeverity.WARNING)
+        val issue = MiHealthImportIssue("HEART_RATE_SOURCE_POINT_EXCLUDED", setOf("broken"), "excluded",
+            MiHealthImportIssueSeverity.WARNING)
         val cloud = FakeCloud().apply { persist(listOf(raw(bpm = 99))) }
         val failure = assertFailsWith<MiHealthImportRunException> {
             runner(cloud, MemoryJournal()).run(account, plan(listOf(raw()), listOf(issue)))
@@ -106,7 +107,9 @@ class MiHealthImportRunnerTest {
         assertEquals(MiHealthImportFailureReason.SOURCE_REJECTED, failure.reason)
         assertEquals(2, failure.verifiedRawCount)
         assertEquals(1, failure.diagnostic?.verifiedDailyRows)
-        assertEquals(listOf(summaries.last()), cloud.uploads.flatten().filter { it.identity.channel == MiHealthImportChannel.DAILY_AGGREGATE })
+        assertEquals(listOf(summaries.last()), cloud.uploads.flatten().filter {
+            it.identity.channel == MiHealthImportChannel.DAILY_AGGREGATE
+        })
     }
 
     @Test fun unknownRejectionNeverAuthorizesAHeartRateSummaryEvenWithAConstructedPlan() = runBlocking {
@@ -703,7 +706,9 @@ class MiHealthImportRunnerTest {
         val firstDay = (0 until 582).map { raw(it) }
         val secondDay = (0 until 960).map { raw(86_400 + it) }
         val rows = firstDay + secondDay
-        val summaries = (0 until 6).map { day -> daily().let { it.copy(identity = it.identity.copy(time = it.identity.time + day * 86_400L)) } }
+        val summaries = (0 until 6).map { day ->
+            daily().let { it.copy(identity = it.identity.copy(time = it.identity.time + day * 86_400L)) }
+        }
         val journal = MemoryJournal()
         val pauses = mutableListOf<Long>()
         val cloud = FakeCloud().apply {
@@ -1022,7 +1027,8 @@ class MiHealthImportRunnerTest {
             entries.forEach {
                 val key = account to it.targetIdentity
                 val previous = verified[key]
-                val retained = if (!it.ownedUpload && previous?.ownedUpload == true && previous.contentFingerprint == it.contentFingerprint) {
+                val retained = if (!it.ownedUpload && previous?.ownedUpload == true &&
+                    previous.contentFingerprint == it.contentFingerprint) {
                     it.copy(ownedUpload = true)
                 } else it
                 if (retained.ownedUpload || previous?.contentFingerprint != retained.contentFingerprint) legacy.remove(key)

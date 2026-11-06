@@ -311,7 +311,8 @@ class MiHealthImportMapperTest {
         val plan = MiHealthImportMapper.restingHeartRate(listOf(newest, old), source)
         assertTrue(plan.rawRows.isEmpty())
         assertTrue(plan.issues.any { it.code == "RESTING_HEART_RATE_DATE_UNKNOWN" })
-        val tied = MiHealthImportMapper.restingHeartRate(listOf(newest.copy(zoneOffsetSeconds = 0), newest.copy(zoneOffsetSeconds = 0, beatsPerMinute = 54)), source)
+        val tied = MiHealthImportMapper.restingHeartRate(
+            listOf(newest.copy(zoneOffsetSeconds = 0), newest.copy(zoneOffsetSeconds = 0, beatsPerMinute = 54)), source)
         assertTrue(tied.rawRows.isEmpty())
         assertEquals("CONFLICTING_SOURCE_REVISIONS", tied.issues.single().code)
     }

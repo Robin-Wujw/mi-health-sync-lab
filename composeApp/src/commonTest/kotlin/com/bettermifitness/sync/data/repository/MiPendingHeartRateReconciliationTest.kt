@@ -10,7 +10,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
-import kotlin.test.*
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class MiPendingHeartRateReconciliationTest {
     private val time = 20_000L * 86_400 + 17
@@ -51,11 +53,14 @@ class MiPendingHeartRateReconciliationTest {
 
     private suspend fun ledger() = HealthImportLedger(object : DataStore<Preferences> {
         override val data = MutableStateFlow(emptyPreferences())
-        override suspend fun updateData(transform: suspend (t: Preferences) -> Preferences): Preferences = transform(data.value).also { data.value = it }
+        override suspend fun updateData(transform: suspend (t: Preferences) -> Preferences): Preferences = transform(data.value).also {
+            data.value = it
+        }
     }).also { it.markPending("account", listOf(MiHealthImportRunner.journalEntry(row))) }
 
     private class Cloud(val rows: List<MiHealthImportCloudRow>, val complete: Boolean) : MiHealthImportCloud {
-        override suspend fun readRows(channel: MiHealthImportChannel, key: String, fromEpochSeconds: Long, untilEpochSeconds: Long): List<MiHealthImportCloudRow> {
+        override suspend fun readRows(channel: MiHealthImportChannel, key: String, fromEpochSeconds: Long,
+            untilEpochSeconds: Long): List<MiHealthImportCloudRow> {
             assertEquals("heart_rate", key)
             return emptyList()
         }
@@ -63,6 +68,7 @@ class MiPendingHeartRateReconciliationTest {
             assertEquals("heart_rate", key)
             return MiHealthImportHistoryRead(rows, maxPages, complete)
         }
-        override suspend fun uploadRows(rows: List<MiHealthImportRow>, experimentalEnabled: Boolean): MiHealthImportUploadResult = error("Read-only reconciliation cannot upload")
+        override suspend fun uploadRows(rows: List<MiHealthImportRow>, experimentalEnabled: Boolean): MiHealthImportUploadResult =
+            error("Read-only reconciliation cannot upload")
     }
 }

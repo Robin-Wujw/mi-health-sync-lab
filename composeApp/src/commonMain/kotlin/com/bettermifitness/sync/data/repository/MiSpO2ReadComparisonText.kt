@@ -25,7 +25,9 @@ fun MiSpO2ReadComparison.copyableText(): String = buildList {
     add("$prefix.missing_other_source_candidate_targets=$missingOtherSourceCandidateTargets")
     add("$prefix.missing_deleted_candidate_targets=$missingDeletedCandidateTargets")
     add("$prefix.exact_outer_inner_time_different_targets=$exactOuterInnerTimeDifferentTargets")
-    add("$prefix.count_notes=matched_are_observations_not_new_uploads;missing_requires_complete_target_query;other_includes_unqueried_or_conflicting;inner_time_precedes_same_minute;value_hints_may_overlap;candidates_never_verify;zero_hints_do_not_prove_absence")
+    add("$prefix.count_notes=matched_are_observations_not_new_uploads;missing_requires_complete_target_query;" +
+        "other_includes_unqueried_or_conflicting;inner_time_precedes_same_minute;value_hints_may_overlap;candidates_never_verify;" +
+            "zero_hints_do_not_prove_absence")
 }.joinToString("\n")
 
 fun MiSpO2ReadComparison.userFacingDetails(): String = listOf(

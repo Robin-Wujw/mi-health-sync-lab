@@ -205,7 +205,8 @@ class HealthInboundReadPolicyTest {
 
         val firstSleep = HealthInboundSleepRecord(origin("sleep"), request.fromEpochMillis, request.untilEpochMillis,
             0, 0, emptyList())
-        val sleeps = HealthInboundReadPolicy.sleep(listOf(firstSleep, firstSleep.copy(endEpochMillis = request.untilEpochMillis + 1_000L)), request, self)
+        val sleeps = HealthInboundReadPolicy.sleep(
+            listOf(firstSleep, firstSleep.copy(endEpochMillis = request.untilEpochMillis + 1_000L)), request, self)
         assertEquals(2, sleeps.size)
         val sleepPlan = MiHealthImportMapper.sleep(sleeps, zepp)
         assertTrue(sleepPlan.rawRows.isEmpty())

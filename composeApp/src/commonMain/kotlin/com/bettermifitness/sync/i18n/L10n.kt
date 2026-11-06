@@ -69,6 +69,7 @@ object L10n {
         else -> MR.strings.import_pending_reconcile_unknown
     })
 
+    @Suppress("CyclomaticComplexMethod") // A lookup table from warning code to string resource.
     fun importWarning(code: String): String {
         val resource = when (code) {
             "SOURCE_TIMEZONE_UNAVAILABLE" -> MR.strings.import_warning_timezone_unavailable

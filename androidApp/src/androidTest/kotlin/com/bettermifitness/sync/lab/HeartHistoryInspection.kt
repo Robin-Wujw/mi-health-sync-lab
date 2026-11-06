@@ -9,7 +9,21 @@ import com.bettermifitness.sync.health.HealthRecordIds
 import com.bettermifitness.sync.data.repository.MiPendingSpO2Reconciler
 import com.bettermifitness.sync.data.repository.copyableText
 import kotlin.time.Instant
-import kotlinx.serialization.json.*
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
+import kotlinx.serialization.json.put
 
 internal suspend fun previewHeartRecovery(session: MiSessionManager, store: HealthStore,
     ledger: HealthImportLedger, from: Instant, until: Instant, version: String): String {
@@ -20,7 +34,8 @@ internal suspend fun previewHeartRecovery(session: MiSessionManager, store: Heal
     val guarded = object : com.bettermifitness.sync.data.preferences.HealthImportJournal by ledger {
         override suspend fun reserveSingleRecovery(account: String,
             expected: com.bettermifitness.sync.data.preferences.HealthImportPendingSnapshot,
-            entry: com.bettermifitness.sync.data.preferences.HealthImportJournalEntry): com.bettermifitness.sync.data.preferences.HealthImportRecoveryReservation? {
+            entry: com.bettermifitness.sync.data.preferences.HealthImportJournalEntry,
+        ): com.bettermifitness.sync.data.preferences.HealthImportRecoveryReservation? {
             eligible = true
             return null
         }
@@ -34,7 +49,10 @@ internal suspend fun previewHeartRecovery(session: MiSessionManager, store: Heal
     }
     val diagnostic = com.bettermifitness.sync.data.repository.MiPendingImportRecovery(cloud, guarded)
         .recover(checkNotNull(session.currentUserId), plan, true)
-    return "heart_recovery_preview.eligible=$eligible\nheart_recovery_preview.health_uploads=0\nheart_recovery_preview.local_journal_changes=0\n" + diagnostic.copyableText(version)
+    return "heart_recovery_preview.eligible=$eligible\n" +
+        "heart_recovery_preview.health_uploads=0\n" +
+        "heart_recovery_preview.local_journal_changes=0\n" +
+        diagnostic.copyableText(version)
 }
 
 internal suspend fun reconcileHeartHistory(session: MiSessionManager, store: HealthStore,
@@ -64,7 +82,9 @@ internal suspend fun inspectHeartCoverage(session: MiSessionManager, store: Heal
     var readFailures = 0
     val allObserved = linkedSetOf<MiHealthImportCloudRow>()
     for ((day, targets) in plan.rawRows.groupBy { it.identity.time.floorDiv(86_400) }) {
-        val observed = try { cloud.readRows(MiHealthImportChannel.RAW, "heart_rate", (day * 86_400 - 86_400).coerceAtLeast(0), (day + 1) * 86_400 + 2) }
+        val observed = try {
+            cloud.readRows(MiHealthImportChannel.RAW, "heart_rate", (day * 86_400 - 86_400).coerceAtLeast(0), (day + 1) * 86_400 + 2)
+        }
             catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
             catch (_: Exception) { readFailures++; null }
         val byTime = observed?.groupBy { it.time }.orEmpty()
@@ -80,7 +100,8 @@ internal suspend fun inspectHeartCoverage(session: MiSessionManager, store: Heal
             count(bucket, "cloud_${status.name.lowercase()}")
             if (status == MiHealthImportVerificationStatus.MISSING) {
                 val candidates = byMinute[target.identity.time.floorDiv(60)].orEmpty()
-                if (candidates.any { !it.deleted && it.sid == target.identity.sid && it.value["bpm"] == target.value["bpm"] }) count(bucket, "missing_same_minute_value")
+                if (candidates.any { !it.deleted && it.sid == target.identity.sid && it.value["bpm"] == target.value["bpm"] })
+                    count(bucket, "missing_same_minute_value")
             }
         }
     }
@@ -100,9 +121,15 @@ internal suspend fun inspectHeartCoverage(session: MiSessionManager, store: Heal
         if (observed.isNotEmpty()) cloudConflictingTargets++
         val candidates = same.map { (record, sample) -> MiHealthImportRow(
             MiHealthImportIdentity(MiHealthImportChannel.RAW, "default", "heart_rate", time),
-            kotlinx.serialization.json.buildJsonObject { put("time", kotlinx.serialization.json.JsonPrimitive(time)); put("bpm", kotlinx.serialization.json.JsonPrimitive(sample.beatsPerMinute)) },
-            record.startZoneOffsetSeconds ?: 0, setOf(record.origin.stableRecordKey)) }.distinctBy { it.canonicalContent to it.zoneOffsetSeconds }
-        cloudMatchingCandidates += candidates.count { MiHealthImportVerifier.verify(it, observed).status == MiHealthImportVerificationStatus.VERIFIED }
+            kotlinx.serialization.json.buildJsonObject {
+                put("time", kotlinx.serialization.json.JsonPrimitive(time)); put(
+                    "bpm", kotlinx.serialization.json.JsonPrimitive(sample.beatsPerMinute))
+            },
+            record.startZoneOffsetSeconds ?: 0, setOf(record.origin.stableRecordKey)) }
+                .distinctBy { it.canonicalContent to it.zoneOffsetSeconds }
+        cloudMatchingCandidates += candidates.count {
+            MiHealthImportVerifier.verify(it, observed).status == MiHealthImportVerificationStatus.VERIFIED
+        }
     }
     return buildList {
         add("heart_coverage.health_uploads=0")
@@ -112,12 +139,19 @@ internal suspend fun inspectHeartCoverage(session: MiSessionManager, store: Heal
         add("heart_coverage.pending_metadata.zone_unknown=${snapshots.count { it.zoneOffsetSeconds == null }}")
         add("heart_coverage.pending_metadata.recovery_attempts=${snapshots.count { it.recoveryAttempt != null }}")
         add("heart_coverage.pending_metadata.reservation_groups=${snapshots.map { it.pendingToken.substringBefore('|') }.distinct().size}")
-        add("heart_coverage.pending_metadata.source_changed=${snapshots.count { snapshot -> pendingRows.find { it.identity.stableKey == snapshot.targetIdentity }?.let { !snapshot.matches(com.bettermifitness.sync.data.repository.MiHealthImportRunner.journalEntry(it)) } == true }}")
-        add("heart_coverage.pending_metadata.local_days=${pendingRows.map { (it.identity.time + it.zoneOffsetSeconds).floorDiv(86_400) }.distinct().size}")
+        val changedSnapshots = snapshots.count { snapshot ->
+            pendingRows.find { it.identity.stableKey == snapshot.targetIdentity }
+                ?.let { !snapshot.matches(com.bettermifitness.sync.data.repository.MiHealthImportRunner.journalEntry(it)) } == true
+        }
+        add("heart_coverage.pending_metadata.source_changed=$changedSnapshots")
+        val pendingLocalDays = pendingRows.map { (it.identity.time + it.zoneOffsetSeconds).floorDiv(86_400) }.distinct().size
+        add("heart_coverage.pending_metadata.local_days=$pendingLocalDays")
         add("heart_coverage.pending_metadata.adjacent_minute_pairs=${pendingTimes.zipWithNext().count { (a, b) -> b - a == 60L }}")
         add("heart_coverage.source_records=${records.size}")
         add("heart_coverage.planned_daily_rows=${plan.aggregateRows.size}")
-        add("heart_coverage.rejected_local_days=${plan.issues.filter { it.severity == MiHealthImportIssueSeverity.REJECTED }.flatMap { it.affectedLocalDays.orEmpty() }.distinct().size}")
+        val rejectedLocalDays = plan.issues.filter { it.severity == MiHealthImportIssueSeverity.REJECTED }
+            .flatMap { it.affectedLocalDays.orEmpty() }.distinct().size
+        add("heart_coverage.rejected_local_days=$rejectedLocalDays")
         add("heart_coverage.read_failure_groups=$readFailures")
         add("heart_coverage.conflicting_seconds=${conflicts.size}")
         add("heart_coverage.conflicts_within_one_record=$withinRecord")
@@ -127,7 +161,8 @@ internal suspend fun inspectHeartCoverage(session: MiSessionManager, store: Heal
         add("heart_coverage.conflict_targets_with_cloud_rows=$cloudConflictingTargets")
         add("heart_coverage.conflict_candidates_matching_cloud=$cloudMatchingCandidates")
         addAll(counts.map { (key, value) -> "$key=$value" })
-        add("heart_coverage.age_week_notes=0_is_0_to_7_days;1_is_7_to_14;2_is_14_to_21;3_is_21_to_28;4_is_28_to_window_end;missing_is_query_observation_not_proof_of_absence")
+        add("heart_coverage.age_week_notes=0_is_0_to_7_days;1_is_7_to_14;2_is_14_to_21;3_is_21_to_28;4_is_28_to_window_end;" +
+            "missing_is_query_observation_not_proof_of_absence")
     }.joinToString("\n")
 }
 
@@ -168,7 +203,9 @@ internal suspend fun inspectHeartHistory(session: MiSessionManager, store: Healt
         report += "$prefix.rows_with_items=${observed.count { "items" in it.value }}"
         report += "$prefix.rows_default_source=${observed.count { it.sid == MI_HEALTH_CONNECT_IMPORT_SID }}"
         report += "$prefix.rows_before_pending=${observed.count { it.time < targets.minOf { row -> row.identity.time } }}"
-        report += "$prefix.rows_within_pending=${observed.count { it.time in targets.minOf { row -> row.identity.time }..targets.maxOf { row -> row.identity.time } }}"
+        report += "$prefix.rows_within_pending=${observed.count {
+            it.time in targets.minOf { row -> row.identity.time }..targets.maxOf { row -> row.identity.time }
+        }}"
     }
     return report.joinToString("\n")
 }

@@ -69,7 +69,8 @@ object MiHealthImportMapper {
         }
         for ((_, excluded) in rows.filter { it.identity.time in internallyConflictingSeconds }.groupBy { it.identity }) {
             issues += MiHealthImportIssue("HEART_RATE_SOURCE_POINT_EXCLUDED", excluded.flatMap { it.sourceRecordKeys }.toSet(),
-                "A source record contradicts itself at one exact instant. This destination second was excluded; other valid points remain importable. No value was selected and original data was not changed.",
+                "A source record contradicts itself at one exact instant. This destination second was excluded; other valid points " +
+                    "remain importable. No value was selected and original data was not changed.",
                 MiHealthImportIssueSeverity.WARNING,
                 affectedLocalDays = if (excluded.all { it.dayAggregationEligible }) excluded.map {
                     (it.identity.time + it.zoneOffsetSeconds).floorDiv(86_400L)
@@ -77,7 +78,8 @@ object MiHealthImportMapper {
         }
         val unique = removeTargetConflicts(rows.filterNot { it.identity.time in internallyConflictingSeconds }, issues,
             collisionCode = "HEART_RATE_SOURCE_POINT_EXCLUDED",
-            collisionMessage = "Different source values share one destination second. The entire second was skipped; no value was chosen and source data is unchanged.",
+            collisionMessage = "Different source values share one destination second. The entire second was skipped; no value was chosen " +
+                "and source data is unchanged.",
             collisionSeverity = MiHealthImportIssueSeverity.WARNING)
         val aggregates = if (includeDailyAggregates) heartRateDays(unique, coverage, issues) else emptyList()
         return MiHealthImportPlan(HealthInboundMetric.HEART_RATE, unique + aggregates, issues.distinct(), records.size)
@@ -104,7 +106,8 @@ object MiHealthImportMapper {
             val sourceOffset = record.zoneOffsetSeconds?.takeIf { it in -64_800..64_800 }
             if (sourceOffset == null) {
                 issues.reject("RESTING_HEART_RATE_DATE_UNKNOWN", record.origin,
-                    "Mi requires a source calendar date for resting heart rate. The Health Connect record has no valid source timezone offset, so no UTC date was guessed.")
+                    "Mi requires a source calendar date for resting heart rate. The Health Connect record has no valid source timezone " +
+                        "offset, so no UTC date was guessed.")
                 return@mapNotNull null
             }
             val time = cloudDayAnchor(record.epochMillis / 1_000L, sourceOffset)
@@ -125,7 +128,8 @@ object MiHealthImportMapper {
                     sameInstant.map { it.beatsPerMinute }.distinct().size > 1
                 }) {
                 issues += MiHealthImportIssue("RESTING_HEART_RATE_DAY_COLLISION", sources,
-                    "Different resting-heart-rate values share the same source instant within this calendar date. The date was skipped rather than selecting a contradictory measurement.")
+                    "Different resting-heart-rate values share the same source instant within this calendar date. The date was skipped " +
+                        "rather than selecting a contradictory measurement.")
                 return@mapNotNull null
             }
             // HC stores instantaneous RHR observations. Mi's native daily HR
@@ -136,7 +140,9 @@ object MiHealthImportMapper {
             val selected = day.minBy { it.beatsPerMinute }
             if (day.any { it.beatsPerMinute != selected.beatsPerMinute }) {
                 issues += MiHealthImportIssue("RESTING_HEART_RATE_DAILY_MINIMUM_APPLIED", sources,
-                    "Mi stores one resting-heart-rate value per source calendar date. The lowest valid observed resting heart rate in the selected input was used, matching Mi Fitness 3.59.2's daily display rule. Other observations remain in Health Connect; this is not an average or a claim that the full day was observed.",
+                    "Mi stores one resting-heart-rate value per source calendar date. The lowest valid observed resting heart rate in " +
+                        "the selected input was used, matching Mi Fitness 3.59.2's daily display rule. Other observations remain in " +
+                            "Health Connect; this is not an average or a claim that the full day was observed.",
                     MiHealthImportIssueSeverity.WARNING)
             }
             selected.row.copy(sourceRecordKeys = sources)
@@ -174,7 +180,8 @@ object MiHealthImportMapper {
             }
             if (record.percentage != percentage.toDouble()) {
                 issues.warn("OXYGEN_SATURATION_PRECISION", record.origin,
-                    "Mi's Spo2Item stores a whole percentage, so this value is rounded to the nearest integer. The original Health Connect record retains its precision.")
+                    "Mi's Spo2Item stores a whole percentage, so this value is rounded to the nearest integer. The original Health " +
+                        "Connect record retains its precision.")
             }
             val zone = sourceZone(record.zoneOffsetSeconds, record.zoneOffsetSeconds, record.origin, issues)
             val time = seconds(record.epochMillis, record.origin, issues)
@@ -210,7 +217,8 @@ object MiHealthImportMapper {
             if (sorted.any { it.startEpochMillis < record.startEpochMillis || it.endEpochMillis > record.endEpochMillis ||
                     it.endEpochMillis <= it.startEpochMillis } ||
                 sorted.zipWithNext().any { (a, b) -> a.endEpochMillis > b.startEpochMillis }) {
-                issues.reject("INVALID_SLEEP_STAGES", origin, "Sleep stages overlap or extend outside their session; the session was not altered.")
+                issues.reject("INVALID_SLEEP_STAGES", origin,
+                    "Sleep stages overlap or extend outside their session; the session was not altered.")
                 continue
             }
             val zone = sourceZone(record.startZoneOffsetSeconds, record.endZoneOffsetSeconds, origin, issues)
@@ -262,7 +270,8 @@ object MiHealthImportMapper {
             if (cursor < record.endEpochMillis) uncovered = true
             if (unmapped || uncovered) {
                 issues.warn("PARTIAL_SLEEP_STAGES", origin,
-                    "Session bounds and known stages are retained. Unclassified/out-of-bed gaps are not changed into light sleep; duration counts only confirmed sleep.")
+                    "Session bounds and known stages are retained. Unclassified/out-of-bed gaps are not changed into light sleep; " +
+                        "duration counts only confirmed sleep.")
             }
             val knownSleepSeconds = (2..4).sumOf { durationSeconds[it] ?: 0L } + genericSleepSeconds
             val value = buildJsonObject {
@@ -304,7 +313,8 @@ object MiHealthImportMapper {
         val validEnd = end?.takeIf { it in -64_800..64_800 }
         if (validStart == null || validEnd == null) {
             issues.warn("SOURCE_TIMEZONE_UNAVAILABLE", origin,
-                "Raw UTC instants are preserved; UTC is used only as the transport display offset where no source offset exists. Daily aggregation is disabled.")
+                "Raw UTC instants are preserved; UTC is used only as the transport display offset where no source offset exists. Daily " +
+                    "aggregation is disabled.")
             return SourceZone(validStart ?: validEnd ?: 0, false)
         }
         if (validStart != validEnd) {
@@ -347,10 +357,12 @@ object MiHealthImportMapper {
             }.distinct()
             if (tied.size > 1) {
                 issues.reject("CONFLICTING_SOURCE_REVISIONS", selectedOrigin,
-                    "The same latest Health Connect record revision has conflicting content. No arbitrary version was selected and no older revision was substituted.")
+                    "The same latest Health Connect record revision has conflicting content. No arbitrary version was selected and no " +
+                        "older revision was substituted.")
                 return@mapNotNull null
             }
-            if (group.size > 1) issues.warn("SOURCE_REVISION_DEDUPLICATED", origin(selected), "Only the latest revision of this source record is planned.")
+            if (group.size > 1) issues.warn(
+                "SOURCE_REVISION_DEDUPLICATED", origin(selected), "Only the latest revision of this source record is planned.")
             selected
         }
 
@@ -373,7 +385,8 @@ object MiHealthImportMapper {
             } else first.copy(sourceRecordKeys = sources, dayAggregationEligible = sameTarget.all { it.dayAggregationEligible })
         }.sortedBy { it.identity.time }
 
-    private fun aggregateGroups(rows: List<MiHealthImportRow>, coverage: HealthInboundReadRequest?, issues: MutableList<MiHealthImportIssue>, localizeRejections: Boolean = false): List<List<MiHealthImportRow>> {
+    private fun aggregateGroups(rows: List<MiHealthImportRow>, coverage: HealthInboundReadRequest?,
+        issues: MutableList<MiHealthImportIssue>, localizeRejections: Boolean = false): List<List<MiHealthImportRow>> {
         val rejected = issues.filter { it.severity == MiHealthImportIssueSeverity.REJECTED ||
             it.code == "HEART_RATE_SOURCE_POINT_EXCLUDED" }
         if (rejected.isNotEmpty() && (!localizeRejections || rejected.any { it.affectedLocalDays.isNullOrEmpty() })) {
@@ -395,13 +408,15 @@ object MiHealthImportMapper {
                 day.map { it.zoneOffsetSeconds }.distinct().size == 1 &&
                 coverage.fromEpochSeconds <= start && coverage.untilEpochSeconds >= start + 86_400L
             if (!valid) issues += MiHealthImportIssue("INCOMPLETE_LOCAL_DAY", sources,
-                "Raw data is retained; no daily report is generated for a partial query day, incomplete sleep stages, or an uncertain source timezone.",
+                "Raw data is retained; no daily report is generated for a partial query day, incomplete sleep stages, or an uncertain " +
+                    "source timezone.",
                 MiHealthImportIssueSeverity.WARNING)
             valid
         }
     }
 
-    private fun heartRateDays(rows: List<MiHealthImportRow>, coverage: HealthInboundReadRequest?, issues: MutableList<MiHealthImportIssue>): List<MiHealthImportRow> =
+    private fun heartRateDays(rows: List<MiHealthImportRow>, coverage: HealthInboundReadRequest?,
+        issues: MutableList<MiHealthImportIssue>): List<MiHealthImportRow> =
         aggregateGroups(rows, coverage, issues, localizeRejections = true).map { day ->
             val bpm = day.map { it.value.getValue("bpm").jsonPrimitive.int }
             val latest = day.maxBy { it.identity.time }
@@ -414,7 +429,8 @@ object MiHealthImportMapper {
             })
         }
 
-    private fun oxygenSaturationDays(rows: List<MiHealthImportRow>, coverage: HealthInboundReadRequest?, issues: MutableList<MiHealthImportIssue>): List<MiHealthImportRow> =
+    private fun oxygenSaturationDays(rows: List<MiHealthImportRow>, coverage: HealthInboundReadRequest?,
+        issues: MutableList<MiHealthImportIssue>): List<MiHealthImportRow> =
         aggregateGroups(rows, coverage, issues).map { day ->
             val percentages = day.map { it.value.getValue("spo2").jsonPrimitive.int }
             val latest = day.maxBy { it.identity.time }
@@ -428,18 +444,21 @@ object MiHealthImportMapper {
             })
         }
 
-    private fun sleepDays(rows: List<MiHealthImportRow>, coverage: HealthInboundReadRequest?, issues: MutableList<MiHealthImportIssue>): List<MiHealthImportRow> =
+    private fun sleepDays(rows: List<MiHealthImportRow>, coverage: HealthInboundReadRequest?,
+        issues: MutableList<MiHealthImportIssue>): List<MiHealthImportRow> =
         aggregateGroups(rows, coverage, issues).mapNotNull { day ->
             val ordered = day.sortedBy { it.value.getValue("bedtime").jsonPrimitive.long }
             if (ordered.zipWithNext().any { (a, b) ->
                     a.value.getValue("wake_up_time").jsonPrimitive.long > b.value.getValue("bedtime").jsonPrimitive.long }) {
                 issues += MiHealthImportIssue("OVERLAPPING_SLEEP_SESSIONS", day.flatMap { it.sourceRecordKeys }.toSet(),
-                    "Raw sessions remain distinct; overlapping sessions cannot form an additive daily report.", MiHealthImportIssueSeverity.WARNING)
+                    "Raw sessions remain distinct; overlapping sessions cannot form an additive daily report.",
+                        MiHealthImportIssueSeverity.WARNING)
                 return@mapNotNull null
             }
             aggregate(day, "sleep", buildJsonObject {
                 put("total_duration", day.sumOf { it.value.getValue("duration").jsonPrimitive.long })
-                for (field in listOf("sleep_deep_duration", "sleep_light_duration", "sleep_rem_duration", "sleep_awake_duration", "awake_count")) {
+                for (field in listOf("sleep_deep_duration", "sleep_light_duration", "sleep_rem_duration", "sleep_awake_duration",
+                    "awake_count")) {
                     put(field, day.sumOf { it.value.getValue(field).jsonPrimitive.long })
                 }
                 put("segment_details", JsonArray(ordered.map { row ->

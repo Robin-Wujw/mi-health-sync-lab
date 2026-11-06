@@ -21,6 +21,8 @@ class MiPendingSpO2Reconciler(
     private val cloud: MiHealthImportCloud,
     private val journal: HealthImportJournal,
 ) {
+    // One ordered state machine, kept whole so no safety step can be skipped. Its behavior was verified on a device.
+    @Suppress("ComplexCondition", "CyclomaticComplexMethod")
     suspend fun reconcile(account: String, plan: MiHealthImportPlan,
         userRequested: Boolean, automatic: Boolean = false): MiHealthImportDiagnostic {
         require(account.isNotBlank())
@@ -205,7 +207,8 @@ class MiPendingSpO2Reconciler(
                 ObservationKind.OTHER_SOURCE -> classifications[identity] = Classification.OTHER_SOURCE
                 ObservationKind.CONFLICT -> classifications[identity] = Classification.CLOUD_CONFLICT
                 ObservationKind.ABSENT -> classifications[identity] =
-                    if (target.row.identity in historyDetails?.completedTargetIdentities.orEmpty()) Classification.MISSING else Classification.UNQUERIED
+                    if (target.row.identity in historyDetails?.completedTargetIdentities.orEmpty()) Classification.MISSING
+                        else Classification.UNQUERIED
             }
         }
 
@@ -228,7 +231,8 @@ class MiPendingSpO2Reconciler(
             matched.forEach {
                 classifications[it.expected.targetIdentity] = if (it.expected.targetIdentity in committed)
                     Classification.RECONCILED else Classification.JOURNAL_CHANGED
-                if (it.expected.targetIdentity in committed && it.observedTargetIdentity != it.sourceEntry.targetIdentity) minuteMatchedRows++
+                if (it.expected.targetIdentity in committed && it.observedTargetIdentity != it.sourceEntry.targetIdentity)
+                    minuteMatchedRows++
             }
         }
         check(classifications.size == candidateCount)

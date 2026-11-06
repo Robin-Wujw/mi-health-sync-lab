@@ -14,7 +14,12 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
-import kotlin.test.*
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertNotNull
+import kotlin.test.assertSame
+import kotlin.test.assertTrue
 
 /** Exercises real persisted original/observed identities through all three entry points. */
 class MiSpO2MinuteWorkflowTest {
@@ -148,7 +153,8 @@ class MiSpO2MinuteWorkflowTest {
             }
             assertEquals(MiHealthImportFailureReason.CONFLICT, failure.reason)
             pending(ledger, source)
-            assertEquals("CONFLICT", MiPendingSpO2Recovery(cloud, ledger) {}.recoverOne(account, plan(source), true).pendingRecovery?.status)
+            assertEquals("CONFLICT", MiPendingSpO2Recovery(cloud, ledger) {}.recoverOne(account, plan(source), true)
+                .pendingRecovery?.status)
             assertEquals(0, cloud.uploads)
         }
     }
@@ -194,7 +200,8 @@ class MiSpO2MinuteWorkflowTest {
         cloud.stored.clear() // Query omission must not permit overwriting the old minute either.
         assertFailsWith<MiHealthImportRunException> { MiHealthImportRunner(cloud, ledger) {}.run(account, plan(laterSource)) }
         pending(ledger, laterSource)
-        assertEquals("RESERVATION_CHANGED", MiPendingSpO2Recovery(cloud, ledger) {}.recoverOne(account, plan(laterSource), true).pendingRecovery?.status)
+        assertEquals("RESERVATION_CHANGED", MiPendingSpO2Recovery(cloud, ledger) {}.recoverOne(account, plan(laterSource), true)
+            .pendingRecovery?.status)
         assertEquals(0, cloud.uploads)
     }
 

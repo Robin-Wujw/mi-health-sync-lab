@@ -2,7 +2,11 @@ package com.bettermifitness.sync.lab
 
 import android.content.Context
 import androidx.health.connect.client.HealthConnectClient
-import androidx.health.connect.client.records.*
+import androidx.health.connect.client.records.HeartRateRecord
+import androidx.health.connect.client.records.HeartRateVariabilityRmssdRecord
+import androidx.health.connect.client.records.Record
+import androidx.health.connect.client.records.RestingHeartRateRecord
+import androidx.health.connect.client.records.SleepSessionRecord
 import androidx.health.connect.client.records.metadata.DataOrigin
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
@@ -12,6 +16,7 @@ import java.time.ZoneId
 import kotlin.reflect.KClass
 
 /** Counts and relative days only. No cloud APIs, health writes or journal access. */
+@Suppress("NestedBlockDepth") // A one-off device report; keeping it flat matters less than keeping it in one place.
 internal suspend fun inspectHealthConnectChain(context: Context): String {
     val client = HealthConnectClient.getOrCreate(context)
     val zone = ZoneId.systemDefault()
@@ -72,8 +77,10 @@ internal suspend fun inspectHealthConnectChain(context: Context): String {
                         counts[age(time)] = (counts[age(time)] ?: 0) + 1
                         if (offset != null && time.atOffset(offset).toLocalDate() != time.atZone(zone).toLocalDate()) sourceZoneDiffers++
                     }
-                    if (age(record.metadata.lastModifiedTime) == 0 && times.isNotEmpty() && times.all { age(it) > 0 }) earlierMeasurementsModifiedToday++
-                    if (record is SleepSessionRecord && age(record.startTime) == 1 && age(record.endTime) == 0) sleepStartedYesterdayEndedToday++
+                    if (age(record.metadata.lastModifiedTime) == 0 && times.isNotEmpty() && times.all { age(it) > 0 })
+                        earlierMeasurementsModifiedToday++
+                    if (record is SleepSessionRecord && age(record.startTime) == 1 && age(record.endTime) == 0)
+                        sleepStartedYesterdayEndedToday++
                 }
                 output += "$prefix.read_complete=true"
                 output += "$prefix.records=${rows.size}"
@@ -82,8 +89,10 @@ internal suspend fun inspectHealthConnectChain(context: Context): String {
                     for (day in 0..1) {
                         val daily = rows.filterIsInstance<HeartRateVariabilityRmssdRecord>().filter { age(it.time) == day }
                         output += "$prefix.day_$day.nonpositive=${daily.count { it.heartRateVariabilityMillis <= 0 }}"
-                        output += "$prefix.day_$day.recording_methods=" + daily.map { it.metadata.recordingMethod }.distinct().sorted().joinToString(",")
-                        output += "$prefix.day_$day.modified_over_one_hour_ago=${daily.count { it.metadata.lastModifiedTime < end.minusSeconds(3600) }}"
+                        output += "$prefix.day_$day.recording_methods=" + daily.map { it.metadata.recordingMethod }.distinct().sorted()
+                            .joinToString(",")
+                        val modifiedOverOneHourAgo = daily.count { it.metadata.lastModifiedTime < end.minusSeconds(3600) }
+                        output += "$prefix.day_$day.modified_over_one_hour_ago=$modifiedOverOneHourAgo"
                     }
                 }
                 for (day in 0..7) output += "$prefix.day_$day=${counts[day] ?: 0}"

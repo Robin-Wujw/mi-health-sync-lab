@@ -216,7 +216,8 @@ class HealthImportLedger(private val dataStore: DataStore<Preferences>) : Health
             val previous = parseRecovery(prefs[key]) ?: return@edit
             if (previous.token != reservation.attempt.token) return@edit
             // A delayed failure must not undo a later successful reconciliation.
-            if (previous.outcome == HealthImportRecoveryOutcome.VERIFIED.name && outcome != HealthImportRecoveryOutcome.VERIFIED) return@edit
+            if (previous.outcome == HealthImportRecoveryOutcome.VERIFIED.name && outcome != HealthImportRecoveryOutcome.VERIFIED)
+                return@edit
             prefs[key] = Json.encodeToString(previous.copy(outcome = outcome.name,
                 accepted = accepted ?: previous.accepted, businessCode = businessCode ?: previous.businessCode,
                 readbackStatus = readbackStatus ?: previous.readbackStatus))
@@ -378,6 +379,7 @@ class HealthImportLedger(private val dataStore: DataStore<Preferences>) : Health
             "hc-import-target-row-v1", entry.targetIdentity, entry.contentFingerprint, entry.zoneOffsetSeconds).toString()
 
         /** Narrow defense even when a caller constructs an alias without the readback policy. */
+        @Suppress("ComplexCondition") // The identity format has exactly these required parts.
         private fun isSpO2MinuteAlias(sourceIdentity: String, observedIdentity: String): Boolean {
             val source = sourceIdentity.split('|')
             val observed = observedIdentity.split('|')

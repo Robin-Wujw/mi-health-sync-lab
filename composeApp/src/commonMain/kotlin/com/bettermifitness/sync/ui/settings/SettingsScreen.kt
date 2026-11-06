@@ -326,7 +326,8 @@ private fun InboundSyncCard(
             }
             Text(L10n.string(L10n.settingsLegacyHrvDetail), style = MaterialTheme.typography.bodySmall)
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(L10n.string(L10n.settingsOwnedSleepRevision), modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                Text(L10n.string(L10n.settingsOwnedSleepRevision), modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyMedium)
                 Switch(checked = state.allowOwnedSleepRevision,
                     enabled = SyncPreferences.SLEEP_IMPORT_KEY in state.enabledMetrics,
                     onCheckedChange = onOwnedSleepRevision)
@@ -343,7 +344,8 @@ private fun InboundSyncCard(
                 Text(
                     it,
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (state.inboundPermissionNeedsAction) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (state.inboundPermissionNeedsAction) MaterialTheme.colorScheme.error
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             Text(L10n.string(L10n.settingsZeppCapabilityDetail), style = MaterialTheme.typography.bodySmall)

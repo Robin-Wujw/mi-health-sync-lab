@@ -1,3 +1,5 @@
+@file:Suppress("MatchingDeclarationName")
+
 package com.bettermifitness.sync.data.api
 
 import com.bettermifitness.sync.health.HealthInboundMetric

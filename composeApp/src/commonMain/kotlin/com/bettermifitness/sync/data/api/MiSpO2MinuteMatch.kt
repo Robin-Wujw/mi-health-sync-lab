@@ -35,6 +35,7 @@ class MiSpO2MinuteMatchPolicy(sourceRows: List<MiHealthImportRow>) {
             it.key == "spo2" && it.time.floorDiv(60) == row.identity.time.floorDiv(60)
         }
 
+    @Suppress("ComplexCondition", "ReturnCount") // Every guard must hold before a normalized minute counts as a match.
     fun find(row: MiHealthImportRow, observed: List<MiHealthImportCloudRow>): MiHealthImportCloudRow? {
         val id = row.identity
         if (id.channel != MiHealthImportChannel.RAW || id.key != "spo2" || id.sid != MI_HEALTH_CONNECT_IMPORT_SID ||

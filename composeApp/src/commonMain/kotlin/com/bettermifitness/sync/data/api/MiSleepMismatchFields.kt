@@ -16,4 +16,5 @@ private val SAFE_SLEEP_ARRAY_FIELDS = setOf("items.length", "items.start_time", 
     "segment_details.duration", "segment_details.sleep_deep_duration", "segment_details.sleep_light_duration",
     "segment_details.sleep_rem_duration", "segment_details.sleep_awake_duration", "segment_details.awake_count")
 private val SLEEP_ITEM_FIELD = Regex("items\\[[0-9]+]\\.(start_time|end_time|state)")
-private val SLEEP_SEGMENT_FIELD = Regex("segment_details\\[[0-9]+]\\.(bedtime|wake_up_time|timezone|duration|sleep_deep_duration|sleep_light_duration|sleep_rem_duration|sleep_awake_duration|awake_count)")
+private val SLEEP_SEGMENT_FIELD = Regex("segment_details\\[[0-9]+]\\.(bedtime|wake_up_time|timezone|duration|sleep_deep_duration|" +
+    "sleep_light_duration|sleep_rem_duration|sleep_awake_duration|awake_count)")

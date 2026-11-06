@@ -116,7 +116,8 @@ class MiPendingImportProbe(
         }
 
         val missing = rows.filter { broad[it.identity] == MiHealthImportVerificationStatus.MISSING }
-            .sortedWith(compareBy({ it.identity.time }, { it.identity.channel.ordinal }, { it.identity.key }, { it.identity.sid }, { it.identity.tag.orEmpty() }))
+            .sortedWith(compareBy({ it.identity.time }, { it.identity.channel.ordinal }, { it.identity.key }, { it.identity.sid },
+                { it.identity.tag.orEmpty() }))
         val selected = if (missing.size <= MAX_NARROW_PROBES) missing
             else listOf(missing.first(), missing[missing.size / 2], missing.last())
         val narrow = mutableListOf<MiHealthImportVerificationStatus>()

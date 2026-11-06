@@ -48,13 +48,15 @@ class MiResponseParsingTest {
         assertEquals("watch", rows.first().sid)
         assertEquals("{\"bpm\":72}", rows.first().value)
         assertEquals("{\"bpm\":73}", rows.last().value)
-        val latest = parseMiLatestResponse(json("""{"code":0,"result":{"data_list":[{"key":"sleep","time":1700000000,"sid":"watch","value":{}}]}}"""))
+        val latest = parseMiLatestResponse(
+            json("""{"code":0,"result":{"data_list":[{"key":"sleep","time":1700000000,"sid":"watch","value":{}}]}}"""))
         assertEquals("watch", latest.result!!.dataList.single().sid)
     }
 
     @Test
     fun sportInlineObjectIsNotCastToPrimitive() {
-        val page = parseMiSportRecordsPage(json("""{"code":0,"result":{"sport_records":[{"time":1700000000,"category":"running","value":{"duration":100}}]}}"""))
+        val page = parseMiSportRecordsPage(
+            json("""{"code":0,"result":{"sport_records":[{"time":1700000000,"category":"running","value":{"duration":100}}]}}"""))
         assertEquals("{\"duration\":100}", page.dataList.single().value)
     }
 

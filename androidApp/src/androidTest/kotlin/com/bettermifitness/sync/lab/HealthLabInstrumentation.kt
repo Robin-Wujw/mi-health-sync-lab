@@ -71,7 +71,10 @@ class HealthLabInstrumentation : Instrumentation() {
             report += "selected_metric=${options.metric.metricKey}"
             report += "window_days=${options.rangeDays}"
             report += "health_data_writes_requested=${options.mode in WRITE_MODES}"
-            report += "local_journal_changes_requested=${options.mode !in setOf(MODE_INSPECT, MODE_INSPECT_MINUTE, MODE_INSPECT_HEART, MODE_PREVIEW_HEART, MODE_INSPECT_HEART_COVERAGE, MODE_INSPECT_CHAIN)}"
+            val readOnlyModes = setOf(
+                MODE_INSPECT, MODE_INSPECT_MINUTE, MODE_INSPECT_HEART, MODE_PREVIEW_HEART, MODE_INSPECT_HEART_COVERAGE, MODE_INSPECT_CHAIN,
+            )
+            report += "local_journal_changes_requested=${options.mode !in readOnlyModes}"
             report += "normal_sync_suppressed=true"
 
             val keyguard = targetContext.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
@@ -108,7 +111,8 @@ class HealthLabInstrumentation : Instrumentation() {
                     report += "history_read_granted=" + (HealthPermission.PERMISSION_READ_HEALTH_DATA_HISTORY in
                         healthClient.permissionController.getGrantedPermissions())
                     val koin = KoinPlatform.getKoin()
-                    if (options.mode != MODE_INSPECT_CHAIN && !koin.get<MiSessionManager>().ensureActive()) throw LiveTestFailure("NOT_LOGGED_IN")
+                    if (options.mode != MODE_INSPECT_CHAIN && !koin.get<MiSessionManager>().ensureActive())
+                        throw LiveTestFailure("NOT_LOGGED_IN")
                     val repository = koin.get<HealthRepository>()
                     val until = Clock.System.now()
                     val from = until.minus(options.rangeDays.days)
@@ -120,7 +124,8 @@ class HealthLabInstrumentation : Instrumentation() {
                         MODE_PREVIEW_HEART -> previewHeartRecovery(koin.get(), koin.get(), koin.get(), from, until, version)
                         MODE_INSPECT_HEART_COVERAGE -> inspectHeartCoverage(koin.get(), koin.get(), koin.get(), from, until)
                         MODE_RECONCILE_HEART -> reconcileHeartHistory(koin.get(), koin.get(), koin.get(), from, until, version)
-                        MODE_VERIFY_HEART -> verifyExistingSpO2(koin.get(), koin.get(), koin.get(), from, until, version, HealthInboundMetric.HEART_RATE)
+                        MODE_VERIFY_HEART ->
+                            verifyExistingSpO2(koin.get(), koin.get(), koin.get(), from, until, version, HealthInboundMetric.HEART_RATE)
                         MODE_INSPECT -> repository.inspectInboundForLiveTest(
                             options.metric, from.toString(), until.toString(),
                         ).copyableText(version)
@@ -171,13 +176,15 @@ class HealthLabInstrumentation : Instrumentation() {
                     foregroundActivity?.finish()
                 }
             }
-            report += "excluded=credentials,account_ids,device_ids,source_record_ids,timestamps,health_values,request_bodies,response_bodies"
+            report += "excluded=credentials,account_ids,device_ids,source_record_ids,timestamps,health_values," +
+                "request_bodies,response_bodies"
             val text = "\n$REPORT_BEGIN\n${report.joinToString("\n")}\n$REPORT_END\n"
             finish(if (completed) Activity.RESULT_OK else Activity.RESULT_CANCELED,
                 Bundle().apply { putString("stream", text) })
         }
     }
 
+    @Suppress("ThrowsCount") // Each invalid argument gets its own failure code for the PC test driver.
     private fun parseOptions(): Options {
         if (arguments.keySet().any { it !in setOf("mode", "metric", "rangeDays", "allowWrites") }) {
             throw LiveTestFailure("UNSUPPORTED_ARGUMENT")
@@ -199,13 +206,17 @@ class HealthLabInstrumentation : Instrumentation() {
         if (mode == MODE_RECONCILE_PENDING && metric != HealthInboundMetric.OXYGEN_SATURATION) {
             throw LiveTestFailure("RECONCILIATION_REQUIRES_SPO2")
         }
-        if (mode == MODE_INSPECT_MINUTE && metric != HealthInboundMetric.OXYGEN_SATURATION) throw LiveTestFailure("MINUTE_INSPECTION_REQUIRES_SPO2")
-        if (mode == MODE_VERIFY_EXISTING && metric != HealthInboundMetric.OXYGEN_SATURATION) throw LiveTestFailure("EXISTING_VERIFICATION_REQUIRES_SPO2")
-        if (mode in setOf(MODE_INSPECT_HEART, MODE_PREVIEW_HEART, MODE_INSPECT_HEART_COVERAGE, MODE_RECONCILE_HEART, MODE_VERIFY_HEART) && metric != HealthInboundMetric.HEART_RATE) throw LiveTestFailure("HEART_INSPECTION_REQUIRES_HEART_RATE")
+        if (mode == MODE_INSPECT_MINUTE && metric != HealthInboundMetric.OXYGEN_SATURATION)
+            throw LiveTestFailure("MINUTE_INSPECTION_REQUIRES_SPO2")
+        if (mode == MODE_VERIFY_EXISTING && metric != HealthInboundMetric.OXYGEN_SATURATION)
+            throw LiveTestFailure("EXISTING_VERIFICATION_REQUIRES_SPO2")
+        if (mode in setOf(MODE_INSPECT_HEART, MODE_PREVIEW_HEART, MODE_INSPECT_HEART_COVERAGE, MODE_RECONCILE_HEART, MODE_VERIFY_HEART) &&
+            metric != HealthInboundMetric.HEART_RATE) throw LiveTestFailure("HEART_INSPECTION_REQUIRES_HEART_RATE")
         val rangeDays = (arguments.getString("rangeDays") ?: "3").toIntOrNull()
             // Stay inside the normal HC reader's 28-day conservative boundary
             // even if session refresh or multiple metric reads advance the clock.
-            ?.takeIf { it in 1..(if (mode in setOf(MODE_INSPECT_CHAIN, MODE_PREVIEW_HEART, MODE_INSPECT_HEART_COVERAGE)) 30 else 27) } ?: throw LiveTestFailure("INVALID_RANGE")
+            ?.takeIf { it in 1..(if (mode in setOf(MODE_INSPECT_CHAIN, MODE_PREVIEW_HEART, MODE_INSPECT_HEART_COVERAGE)) 30 else 27) }
+                ?: throw LiveTestFailure("INVALID_RANGE")
         val writeFlag = arguments.getString("allowWrites") ?: "false"
         if (mode == MODE_SYNC_ONE_DAY && rangeDays != 1) throw LiveTestFailure("ONE_DAY_RANGE_REQUIRED")
         if (writeFlag !in setOf("true", "false")) throw LiveTestFailure("INVALID_WRITE_FLAG")
@@ -213,7 +224,8 @@ class HealthLabInstrumentation : Instrumentation() {
         if (mode in setOf(MODE_INSPECT, MODE_INSPECT_CHAIN) && writeFlag != "false") throw LiveTestFailure("WRITE_FLAG_WITH_INSPECT")
         if (mode == MODE_INSPECT_MINUTE && writeFlag != "false") throw LiveTestFailure("WRITE_FLAG_WITH_INSPECT")
         if (mode == MODE_VERIFY_EXISTING && writeFlag != "false") throw LiveTestFailure("WRITE_FLAG_WITH_EXISTING_VERIFICATION")
-        if (mode in setOf(MODE_INSPECT_HEART, MODE_PREVIEW_HEART, MODE_INSPECT_HEART_COVERAGE, MODE_RECONCILE_HEART, MODE_VERIFY_HEART) && writeFlag != "false") throw LiveTestFailure("WRITE_FLAG_WITH_INSPECT")
+        if (mode in setOf(MODE_INSPECT_HEART, MODE_PREVIEW_HEART, MODE_INSPECT_HEART_COVERAGE, MODE_RECONCILE_HEART, MODE_VERIFY_HEART) &&
+            writeFlag != "false") throw LiveTestFailure("WRITE_FLAG_WITH_INSPECT")
         if (mode == MODE_RECONCILE_PENDING && writeFlag != "false") throw LiveTestFailure("WRITE_FLAG_WITH_RECONCILE")
         return Options(mode, metric, rangeDays)
     }

@@ -475,7 +475,8 @@ class HealthRepository internal constructor(
             diagnostic = result.diagnostic
             detail = L10n.textFmt(L10n.importRunDetail, result.verifiedRawCount,
                 result.newlyUploadedRawCount, result.alreadyPresentRawCount, result.verifiedAggregateCount) +
-                result.warnings.map { L10n.importWarning(it) }.distinct().joinToString(separator = "\n", prefix = if (result.warnings.isEmpty()) "" else "\n")
+                result.warnings.map { L10n.importWarning(it) }.distinct()
+                    .joinToString(separator = "\n", prefix = if (result.warnings.isEmpty()) "" else "\n")
             result.diagnostic?.excludedSourcePoints?.takeIf { it > 0 }?.let {
                 detail += "\n" + L10n.textFmt(L10n.importExcludedPoints, result.verifiedRawCount, it)
             }

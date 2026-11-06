@@ -17,7 +17,11 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
-import kotlin.test.*
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 /** Real ledger with fake cloud: verifies writes, pending persistence and owned-update preflight. */
 class MiOwnedSleepRevisionRunnerTest {
@@ -204,10 +208,12 @@ class MiOwnedSleepRevisionRunnerTest {
         var readCount = 0
         var beforeRead: suspend (Int) -> Unit = {}
         var onUpload: suspend (List<MiHealthImportRow>) -> MiHealthImportUploadResult = { rows ->
-            stored = stored.filterNot { previous -> rows.any { it.identity.time == previous.time && it.identity.key == previous.key } } + rows.map { it.asCloud() }
+            stored = stored.filterNot { previous ->
+                rows.any { it.identity.time == previous.time && it.identity.key == previous.key } } + rows.map { it.asCloud() }
             MiHealthImportUploadResult(true)
         }
-        override suspend fun readRows(channel: MiHealthImportChannel, key: String, fromEpochSeconds: Long, untilEpochSeconds: Long): List<MiHealthImportCloudRow> {
+        override suspend fun readRows(channel: MiHealthImportChannel, key: String, fromEpochSeconds: Long,
+            untilEpochSeconds: Long): List<MiHealthImportCloudRow> {
             beforeRead(++readCount)
             return stored.filter { it.key == key && it.time >= fromEpochSeconds && it.time < untilEpochSeconds }
         }

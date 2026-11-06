@@ -201,6 +201,7 @@ class MiOwnedSleepRevisionPolicyTest {
         assertEquals(MiSleepConflictOwnership.OWNED_BASELINE_UNCHANGED,
             describeSleepConflictOwnership(revised, listOf(observed()), fingerprint(observed()), fingerprint(observed()), null))
         assertEquals(MiSleepConflictOwnership.CLOUD_TARGET_UNCERTAIN,
-            describeSleepConflictOwnership(revised, listOf(observed().copy(deleted = true)), fingerprint(observed()), fingerprint(observed()), null))
+            describeSleepConflictOwnership(
+                revised, listOf(observed().copy(deleted = true)), fingerprint(observed()), fingerprint(observed()), null))
     }
 }

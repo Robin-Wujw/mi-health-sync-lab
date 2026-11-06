@@ -282,7 +282,8 @@ class MiPendingSpO2RecoveryTest {
         assertEquals(2, second.pendingRecovery?.candidateRows)
         assertEquals(0, second.attemptedRawRows)
         assertEquals(listOf(listOf(rows.first())), cloud.uploads)
-        assertEquals(rows.map { it.identity.stableKey }.toSet(), ledger.pendingIdentities(account, rows.map { it.identity.stableKey }.toSet()))
+        assertEquals(rows.map { it.identity.stableKey }.toSet(),
+            ledger.pendingIdentities(account, rows.map { it.identity.stableKey }.toSet()))
     }
 
     @Test
@@ -694,7 +695,9 @@ class MiPendingSpO2RecoveryTest {
         val localDay = (target.identity.time + target.zoneOffsetSeconds).floorDiv(86_400)
         for (affected in listOf(setOf(localDay + 1), setOf(localDay), null)) {
             val (_, ledger) = fixture(listOf(target))
-            val cloud = Cloud("heart_rate").apply { onUpload = { persisted += it.map { r -> r.cloudRow() }; MiHealthImportUploadResult(true, 0, "ok") } }
+            val cloud = Cloud("heart_rate").apply {
+                onUpload = { persisted += it.map { r -> r.cloudRow() }; MiHealthImportUploadResult(true, 0, "ok") }
+            }
             val plan = plan(listOf(target)).copy(metric = HealthInboundMetric.HEART_RATE,
                 issues = listOf(MiHealthImportIssue("TARGET_TIME_COLLISION", setOf("conflict"), "synthetic", affectedLocalDays = affected)))
             val result = runner(cloud, ledger).recoverOne(account, plan, true)
@@ -720,8 +723,11 @@ class MiPendingSpO2RecoveryTest {
     @Test fun boundedActionPreservesRemainingPendingAndReportsPartial(): Unit = runBlocking {
         val rows = listOf(heartRow(day + 1000), heartRow(day + 1060))
         val (_, ledger) = fixture(rows)
-        val cloud = Cloud("heart_rate").apply { onUpload = { persisted += it.map { r -> r.cloudRow() }; MiHealthImportUploadResult(true, 0, "ok") } }
-        val result = MiPendingImportRecovery(cloud, ledger).recover(account, plan(rows).copy(metric = HealthInboundMetric.HEART_RATE), true, maxRows = 1)
+        val cloud = Cloud("heart_rate").apply {
+            onUpload = { persisted += it.map { r -> r.cloudRow() }; MiHealthImportUploadResult(true, 0, "ok") }
+        }
+        val result = MiPendingImportRecovery(cloud, ledger)
+            .recover(account, plan(rows).copy(metric = HealthInboundMetric.HEART_RATE), true, maxRows = 1)
         assertEquals(1, result.verifiedRawRows)
         assertEquals(1, result.affectedRows)
         assertEquals("PENDING", result.failureReason)
@@ -732,7 +738,9 @@ class MiPendingSpO2RecoveryTest {
         val target = heartRow(day + 1000)
         for (collisionTime in listOf(target.identity.time, target.identity.time + 60)) {
             val (_, ledger) = fixture(listOf(target))
-            val cloud = Cloud("heart_rate").apply { onUpload = { persisted += it.map { r -> r.cloudRow() }; MiHealthImportUploadResult(true, 0, "ok") } }
+            val cloud = Cloud("heart_rate").apply {
+                onUpload = { persisted += it.map { r -> r.cloudRow() }; MiHealthImportUploadResult(true, 0, "ok") }
+            }
             val plan = plan(listOf(target)).copy(metric = HealthInboundMetric.HEART_RATE,
                 issues = listOf(MiHealthImportIssue("TARGET_TIME_COLLISION", setOf("conflict"), "synthetic",
                     affectedLocalDays = setOf((target.identity.time + target.zoneOffsetSeconds).floorDiv(86_400)),
@@ -768,7 +776,10 @@ class MiPendingSpO2RecoveryTest {
         val rows = (0 until 3).map { heartRow(day + 1000 + it * 60) }
         val (_, ledger) = fixture(rows)
         val cloud = Cloud("heart_rate").apply {
-            onUpload = { if (uploads.size == 1) persisted += it.map { r -> r.cloudRow() }; MiHealthImportUploadResult(true, 0, "ok") }
+            onUpload = {
+                if (uploads.size == 1) persisted += it.map { r -> r.cloudRow() }
+                MiHealthImportUploadResult(true, 0, "ok")
+            }
         }
         val plan = plan(rows).copy(metric = HealthInboundMetric.HEART_RATE)
         val first = MiPendingImportRecovery(cloud, ledger).recover(account, plan, true)
@@ -783,13 +794,16 @@ class MiPendingSpO2RecoveryTest {
     @Test fun heartRecoveryBlocksIncompleteHistoryAndChangedSources(): Unit = runBlocking {
         val target = heartRow(day)
         val (_, ledger) = fixture(listOf(target))
-        val cloud = Cloud("heart_rate").apply { onHistory = { MiHealthImportHistoryRead(emptyList(), 128, false, MiHistoryStopReason.PAGE_LIMIT) } }
+        val cloud = Cloud("heart_rate").apply {
+            onHistory = { MiHealthImportHistoryRead(emptyList(), 128, false, MiHistoryStopReason.PAGE_LIMIT) }
+        }
         val plan = plan(listOf(target)).copy(metric = HealthInboundMetric.HEART_RATE)
         assertEquals("HISTORY_INCOMPLETE", runner(cloud, ledger).recoverOne(account, plan, true).pendingRecovery?.status)
         assertTrue(cloud.uploads.isEmpty())
         assertFalse(ledger.pendingSnapshots(account, setOf(target.identity.stableKey)).values.single().recoveryConsumed)
         val changed = target.copy(value = buildJsonObject { put("time", day); put("bpm", 71) })
-        assertEquals("SOURCE_CHANGED", runner(cloud, ledger).recoverOne(account, plan.copy(rows = listOf(changed)), true).pendingRecovery?.status)
+        assertEquals("SOURCE_CHANGED", runner(cloud, ledger).recoverOne(account, plan.copy(rows = listOf(changed)), true)
+            .pendingRecovery?.status)
     }
 
     @Test fun heartRecoveryDoesNotUseSpo2MinuteAlias(): Unit = runBlocking {
@@ -805,7 +819,8 @@ class MiPendingSpO2RecoveryTest {
     private fun row(time: Long, spo2: Int = 98) = MiHealthImportRow(
         MiHealthImportIdentity(MiHealthImportChannel.RAW, MI_HEALTH_CONNECT_IMPORT_SID, "spo2", time),
         buildJsonObject { put("time", time); put("spo2", spo2) }, 28_800, setOf("synthetic-source:$time"))
-    private fun plan(rows: List<MiHealthImportRow>) = MiHealthImportPlan(HealthInboundMetric.OXYGEN_SATURATION, rows, emptyList(), rows.size)
+    private fun plan(rows: List<MiHealthImportRow>) =
+        MiHealthImportPlan(HealthInboundMetric.OXYGEN_SATURATION, rows, emptyList(), rows.size)
     private fun MiHealthImportRow.cloudRow() = MiHealthImportCloudRow(identity.sid, identity.key,
         identity.time, identity.tag, value, zoneOffsetSeconds = zoneOffsetSeconds)
     private fun runner(cloud: Cloud, ledger: HealthImportJournal) = MiPendingSpO2Recovery(cloud, ledger, readbackPause = {})

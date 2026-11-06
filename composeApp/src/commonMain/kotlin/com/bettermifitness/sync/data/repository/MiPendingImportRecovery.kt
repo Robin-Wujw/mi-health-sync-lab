@@ -23,7 +23,9 @@ class MiPendingImportRecovery(private val cloud: MiHealthImportCloud, private va
         val observedCloud = object : MiHealthImportCloud by cloud {
             override suspend fun readRawRowsWithoutStart(key: String, untilEpochSeconds: Long, maxPages: Int): MiHealthImportHistoryRead {
                 if (wrote || end == null) return cloud.readRawRowsWithoutStart(key, untilEpochSeconds, maxPages)
-                val result = history ?: cloud.readRawRowsWithoutStart(key, end, maxPages).also { history = it; historyPages += it.pagesRead }
+                val result = history ?: cloud.readRawRowsWithoutStart(key, end, maxPages).also {
+                    history = it; historyPages += it.pagesRead
+                }
                 return result.copy(rows = result.rows.filter { it.time < untilEpochSeconds })
             }
             override suspend fun uploadRows(rows: List<MiHealthImportRow>, experimentalEnabled: Boolean): MiHealthImportUploadResult {

@@ -218,7 +218,8 @@ private val SAFE_IMPORT_MISMATCH_FIELDS = setOf(
 private val SAFE_IMPORT_ISSUE_CODES = setOf(
     "INVALID_INTERVAL", "EMPTY_SAMPLES", "INVALID_HEART_RATE_SAMPLE", "INVALID_RESTING_HEART_RATE",
     "RESTING_HEART_RATE_DATE_UNKNOWN", "INVALID_RESTING_HEART_RATE_DATE", "RESTING_HEART_RATE_DAY_COLLISION",
-    "RESTING_HEART_RATE_RAW_ONLY", "RESTING_HEART_RATE_DAILY_MINIMUM_APPLIED", "INVALID_OXYGEN_SATURATION", "UNREPRESENTABLE_OXYGEN_SATURATION",
+    "RESTING_HEART_RATE_RAW_ONLY", "RESTING_HEART_RATE_DAILY_MINIMUM_APPLIED", "INVALID_OXYGEN_SATURATION",
+        "UNREPRESENTABLE_OXYGEN_SATURATION",
     "OXYGEN_SATURATION_PRECISION", "INVALID_SLEEP_INTERVAL", "INVALID_SLEEP_STAGES", "SUBSECOND_SLEEP_INTERVAL",
     "SUBSECOND_SLEEP_STAGE", "PARTIAL_SLEEP_STAGES", "SOURCE_TIMEZONE_UNAVAILABLE", "SOURCE_TIMEZONE_CHANGED",
     "SOURCE_TIMEZONE_NOT_QUARTER_HOUR", "SUBSECOND_PRECISION", "INVALID_SOURCE", "SOURCE_REVISION_DEDUPLICATED",
@@ -248,7 +249,8 @@ internal fun miHealthImportFailureSummary(error: Throwable): MiHealthImportRespo
     is MiHealthImportTransportException -> error.responseSummary
     is MiApiException.Network -> MiHealthImportResponseSummary(transportFailure = MiHealthImportTransportFailure.NETWORK)
     is MiApiException.AuthExpired -> MiHealthImportResponseSummary(transportFailure = MiHealthImportTransportFailure.AUTH)
-    is MiApiException.RateLimited -> MiHealthImportResponseSummary(httpStatus = 429, transportFailure = MiHealthImportTransportFailure.RATE_LIMIT)
+    is MiApiException.RateLimited -> MiHealthImportResponseSummary(
+        httpStatus = 429, transportFailure = MiHealthImportTransportFailure.RATE_LIMIT)
     // Callers must know whether a Server code came from HTTP or a business response.
     // Do not guess from its numeric range in this general fallback.
     is MiApiException.Server -> MiHealthImportResponseSummary(transportFailure = MiHealthImportTransportFailure.OTHER)

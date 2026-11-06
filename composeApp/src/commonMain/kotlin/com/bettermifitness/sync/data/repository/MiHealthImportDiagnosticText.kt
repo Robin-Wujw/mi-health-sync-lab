@@ -45,6 +45,7 @@ fun MiHealthImportRunException.userMessage(): String = buildList {
     }
 }.joinToString("\n")
 
+@Suppress("CyclomaticComplexMethod") // A flat list of independent optional report lines.
 fun MiHealthImportDiagnostic.userFacingDetails(): String = buildList {
     if (excludedSourcePoints > 0) add(L10n.textFmt(L10n.importExcludedPoints, verifiedRawRows, excludedSourcePoints))
     if (excludedHrvSamples > 0) add(L10n.textFmt(L10n.importHrvExcludedSamples, verifiedRawRows, excludedHrvSamples))

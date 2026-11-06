@@ -209,14 +209,17 @@ class SettingsViewModel(
         val requested = SyncSelection.inboundMetrics(snapshot.enabledMetrics)
         if (requested.isEmpty()) return
         try {
-            val granted = healthPermissions.requestReadPermissions(requested, includeBackground = snapshot.autoSync, includeHistory = snapshot.syncRangeDays > 27)
+            val granted = healthPermissions.requestReadPermissions(
+                requested, includeBackground = snapshot.autoSync, includeHistory = snapshot.syncRangeDays > 27)
             val missing = requested - granted
             localState.update {
                 it.copy(
                     inboundPermissionMessage = if (missing.isEmpty()) {
                         L10n.text(L10n.settingsInboundPermissionsReady)
                     } else {
-                        L10n.textFmt(L10n.settingsInboundPermissionsMissing, missing.joinToString(", ") { metric -> L10n.metric(metric.metricKey) })
+                        L10n.textFmt(L10n.settingsInboundPermissionsMissing, missing.joinToString(", ") { metric ->
+                            L10n.metric(metric.metricKey)
+                        })
                     },
                     inboundPermissionNeedsAction = missing.isNotEmpty(),
                 )

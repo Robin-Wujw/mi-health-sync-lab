@@ -1,3 +1,5 @@
+@file:Suppress("MatchingDeclarationName")
+
 package com.bettermifitness.sync.data.repository
 
 import com.bettermifitness.sync.data.api.MI_HEALTH_CONNECT_IMPORT_SID
@@ -48,6 +50,7 @@ internal fun prepareOwnedSleepRevision(
 }
 
 /** A source-zone warning cannot be inferred from dayAggregationEligible, which also covers gaps. */
+@Suppress("ComplexCondition", "ReturnCount") // One early return per refusal reason, in the order they are reported.
 internal fun assessOwnedSleepRevision(
     row: MiHealthImportRow,
     observedRows: List<MiHealthImportCloudRow>,

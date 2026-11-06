@@ -40,7 +40,8 @@ class MiDirectHealthImportCloud(
             val response = requestWithKnownHttpStatus {
                 when (channel) {
                     MiHealthImportChannel.RAW -> client.post("/app/v1/data/get_fitness_data_by_time", payload = payload)
-                    MiHealthImportChannel.DAILY_AGGREGATE -> client.get("/app/v1/data/get_aggregated_fitness_data_by_time", payload = payload)
+                    MiHealthImportChannel.DAILY_AGGREGATE ->
+                        client.get("/app/v1/data/get_aggregated_fitness_data_by_time", payload = payload)
                 }
             }
             val page = parseMiHealthImportReadPage(response, channel, key)
@@ -68,9 +69,12 @@ class MiDirectHealthImportCloud(
         require(rows.isNotEmpty()) { "An empty batch is not a health-data import." }
         require(rows.map { it.identity.channel }.distinct().size == 1) { "Raw and aggregate writes require separate batches." }
         val channel = rows.first().identity.channel
-        require(rows.size <= if (channel == MiHealthImportChannel.RAW) MI_HEALTH_IMPORT_RAW_BATCH_SIZE else MI_HEALTH_IMPORT_AGGREGATE_BATCH_SIZE) { "Import batch exceeds the bounded upload size." }
+        require(rows.size <= if (channel == MiHealthImportChannel.RAW) MI_HEALTH_IMPORT_RAW_BATCH_SIZE
+            else MI_HEALTH_IMPORT_AGGREGATE_BATCH_SIZE) { "Import batch exceeds the bounded upload size." }
         require(rows.all { it.identity.key in SUPPORTED_IMPORT_KEYS && it.identity.sid == MI_HEALTH_CONNECT_IMPORT_SID })
-        require(rows.map { it.identity }.distinct().size == rows.size) { "Duplicate target identities require conflict resolution before upload." }
+        require(rows.map { it.identity }.distinct().size == rows.size) {
+            "Duplicate target identities require conflict resolution before upload."
+        }
         val client = apiProvider().dataClient()
         val payload = buildMiHealthImportUploadPayload(rows, client.phoneId)
         val path = if (channel == MiHealthImportChannel.RAW) "/app/v1/data/up_fitness_data"
@@ -130,10 +134,12 @@ internal suspend fun readMiRawHistoryPages(
         all += page.rows.filter { it.time >= 0 && it.time < untilEpochSeconds }
         // An omitted, malformed, or nullable pagination field does not establish
         // EOF. Retain valid rows but stop without claiming complete traversal.
-        if (!page.paginationReported) return MiHealthImportHistoryRead(all.distinct(), pagesRead, false, MiHistoryStopReason.INVALID_PAGINATION)
+        if (!page.paginationReported) return MiHealthImportHistoryRead(
+            all.distinct(), pagesRead, false, MiHistoryStopReason.INVALID_PAGINATION)
         if (!page.hasMore) return MiHealthImportHistoryRead(all.distinct(), pagesRead, true)
         val candidate = page.nextKey
-        if (candidate.isNullOrBlank()) return MiHealthImportHistoryRead(all.distinct(), pagesRead, false, MiHistoryStopReason.MISSING_CURSOR)
+        if (candidate.isNullOrBlank()) return MiHealthImportHistoryRead(
+            all.distinct(), pagesRead, false, MiHistoryStopReason.MISSING_CURSOR)
         if (!seen.add(candidate)) return MiHealthImportHistoryRead(all.distinct(), pagesRead, false, MiHistoryStopReason.REPEATED_CURSOR)
         next = candidate
     }
@@ -217,6 +223,7 @@ internal data class MiHealthImportReadPage(
     val paginationReported: Boolean,
 )
 
+@Suppress("ThrowsCount") // Each malformed response shape gets its own failure.
 internal fun parseMiHealthImportReadPage(
     response: JsonElement,
     channel: MiHealthImportChannel,

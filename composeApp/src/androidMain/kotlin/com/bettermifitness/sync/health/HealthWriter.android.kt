@@ -62,6 +62,7 @@ import java.time.Instant
 import java.time.temporal.ChronoUnit
 import kotlin.reflect.KClass
 
+@Suppress("LargeClass") // The platform adapter, with one read and one write function per Health Connect record type.
 actual class HealthWriter internal constructor(
     private val context: Context,
     clientProvider: () -> HealthConnectClient,

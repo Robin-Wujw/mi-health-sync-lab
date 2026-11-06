@@ -26,6 +26,8 @@ class MiPendingSpO2Recovery(
     private val journal: HealthImportJournal,
     private val readbackPause: suspend (Long) -> Unit = { delay(it) },
 ) {
+    // One ordered state machine, kept whole so no safety step can be skipped. Its behavior was verified on a device.
+    @Suppress("CyclomaticComplexMethod", "ReturnCount")
     suspend fun recoverOne(account: String, plan: MiHealthImportPlan,
         userRequested: Boolean, automatic: Boolean = false, targetIdentity: String? = null): MiHealthImportDiagnostic {
         require(account.isNotBlank())
@@ -79,7 +81,8 @@ class MiPendingSpO2Recovery(
                     consumedThisRun = consumed, legacyWireMetadataUnknown = snapshot?.zoneOffsetSeconds == null && snapshot != null,
                     historyPagesRead = historyPages, historyComplete = historyComplete,
                     previousOutcome = snapshot?.recoveryAttempt?.outcome, historyStopReason = historyStopReason,
-                    previousAttempt = snapshot?.takeIf { it.recoveryConsumed }?.previousRecoveryDiagnostic(), precheckStatus = precheckStatus,
+                    previousAttempt = snapshot?.takeIf { it.recoveryConsumed }?.previousRecoveryDiagnostic(),
+                    precheckStatus = precheckStatus,
                     nativeReadbackPages = nativeReadbackPages, nativeReadbackComplete = nativeReadbackComplete,
                     nativeReadbackStopReason = nativeReadbackStopReason, nativeReadbackStatus = nativeReadbackStatus,
                     nativeReadbackFailed = nativeReadbackFailed),
@@ -158,13 +161,16 @@ class MiPendingSpO2Recovery(
             null
         }
 
-        suspend fun existingResult(observed: List<MiHealthImportCloudRow>, minuteMatch: MiHealthImportCloudRow? = null): MiHealthImportDiagnostic {
+        suspend fun existingResult(observed: List<MiHealthImportCloudRow>,
+            minuteMatch: MiHealthImportCloudRow? = null): MiHealthImportDiagnostic {
             try {
                 // One transaction checks the exact pending/recovery snapshot, records the
                 // observation and clears only this lock. Never promote a read to ownership.
                 val committed = journal.reconcileObservedPending(account, listOf(HealthImportPendingReconciliation(
                     expected = original, sourceEntry = entry,
-                    observedContentFingerprint = minuteMatch?.let { HealthRecordIds.version(canonicalMiHealthImportJson(it.value)).toString() }
+                    observedContentFingerprint = minuteMatch?.let {
+                        HealthRecordIds.version(canonicalMiHealthImportJson(it.value)).toString()
+                    }
                         ?: observedEntry(row, observed, owned = false).contentFingerprint,
                     observedTargetIdentity = minuteMatch?.importIdentity()?.stableKey ?: entry.targetIdentity,
                 )))
@@ -306,7 +312,8 @@ class MiPendingSpO2Recovery(
                 return diagnostic("VERIFIED")
             }
             if (!note(if (rejectedUpload) HealthImportRecoveryOutcome.REJECTED else HealthImportRecoveryOutcome.READBACK_UNVERIFIED,
-                    readback = lastReadback?.status?.name ?: "UNQUERIED")) return diagnostic("UPLOAD_UNVERIFIED", MiHealthImportFailureReason.UNVERIFIED)
+                    readback = lastReadback?.status?.name ?: "UNQUERIED")) return diagnostic(
+                        "UPLOAD_UNVERIFIED", MiHealthImportFailureReason.UNVERIFIED)
             return null
         }
         repeat(3) { attempt ->
@@ -325,7 +332,8 @@ class MiPendingSpO2Recovery(
                 }
                 readResponse = miHealthImportFailureSummary(e)
                 if (!note(if (rejectedUpload) HealthImportRecoveryOutcome.REJECTED else HealthImportRecoveryOutcome.READBACK_UNVERIFIED,
-                        readback = lastReadback?.status?.name ?: "UNQUERIED")) return diagnostic("UPLOAD_UNVERIFIED", MiHealthImportFailureReason.UNVERIFIED)
+                        readback = lastReadback?.status?.name ?: "UNQUERIED")) return diagnostic(
+                            "UPLOAD_UNVERIFIED", MiHealthImportFailureReason.UNVERIFIED)
                 return@repeat
             }
             readResponse = null
@@ -347,7 +355,8 @@ class MiPendingSpO2Recovery(
                 it.status != MiHealthImportVerificationStatus.MISSING
             }
             if (!note(if (rejectedUpload) HealthImportRecoveryOutcome.REJECTED else HealthImportRecoveryOutcome.READBACK_UNVERIFIED,
-                    readback = lastReadback?.status?.name ?: "UNQUERIED")) return diagnostic("UPLOAD_UNVERIFIED", MiHealthImportFailureReason.UNVERIFIED)
+                    readback = lastReadback?.status?.name ?: "UNQUERIED")) return diagnostic(
+                        "UPLOAD_UNVERIFIED", MiHealthImportFailureReason.UNVERIFIED)
             null
         }
         if (nativeReadback != null) {
@@ -384,7 +393,9 @@ class MiPendingSpO2Recovery(
     }
 
     private fun observedEntry(row: MiHealthImportRow, observed: List<MiHealthImportCloudRow>, owned: Boolean): HealthImportJournalEntry {
-        val actual = observed.first { !it.deleted && it.sid == row.identity.sid && it.key == row.identity.key && it.time == row.identity.time }
+        val actual = observed.first {
+            !it.deleted && it.sid == row.identity.sid && it.key == row.identity.key && it.time == row.identity.time
+        }
         return MiHealthImportRunner.journalEntry(row).copy(
             contentFingerprint = HealthRecordIds.version(canonicalMiHealthImportJson(actual.value)).toString(),
             ownedUpload = owned, zoneOffsetSeconds = row.zoneOffsetSeconds)

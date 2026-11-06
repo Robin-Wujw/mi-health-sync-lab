@@ -29,7 +29,8 @@ class HealthImportLedgerRecoveryTest {
 
     @Test
     fun legacyPendingRetainsUnknownZoneAndOneConsumedAllowanceAcrossRestartAndReset(): Unit = runBlocking {
-        val store = MemoryStore(mutablePreferencesOf(pendingKey() to "123|${entry.contentFingerprint}|${HealthImportLedger.sourceDigest(entry.sourceRecordKeys)}"))
+        val store = MemoryStore(mutablePreferencesOf(
+            pendingKey() to "123|${entry.contentFingerprint}|${HealthImportLedger.sourceDigest(entry.sourceRecordKeys)}"))
         val ledger = HealthImportLedger(store)
         val before = ledger.pendingSnapshots(account, ids).getValue(entry.targetIdentity)
         assertTrue(before.valid)

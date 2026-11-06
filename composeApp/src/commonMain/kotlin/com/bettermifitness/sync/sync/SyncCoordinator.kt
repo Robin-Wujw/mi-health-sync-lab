@@ -197,7 +197,8 @@ class SyncCoordinator(
                         if (SyncPreferences.SPO2_IMPORT_KEY in enabled) add(HealthInboundMetric.OXYGEN_SATURATION)
                     }
                     if (inbound.isNotEmpty()) {
-                        healthPermissions.requestReadPermissions(inbound, includeBackground = syncPreferences.autoSync.first(), includeHistory = days > 27)
+                        healthPermissions.requestReadPermissions(
+                            inbound, includeBackground = syncPreferences.autoSync.first(), includeHistory = days > 27)
                     }
                 } catch (e: CancellationException) {
                     throw e

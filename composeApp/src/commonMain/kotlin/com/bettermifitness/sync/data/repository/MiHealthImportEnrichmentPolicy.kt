@@ -1,3 +1,5 @@
+@file:Suppress("MatchingDeclarationName")
+
 package com.bettermifitness.sync.data.repository
 
 import com.bettermifitness.sync.data.api.MI_HEALTH_CONNECT_IMPORT_SID
@@ -63,6 +65,7 @@ private fun uncontestedHrvSleepTarget(row: MiHealthImportRow, observed: List<MiH
     return targets.distinctBy { canonicalMiHealthImportJson(it.value) to it.zoneOffsetSeconds }.singleOrNull()
 }
 
+@Suppress("ReturnCount") // One early return per condition that blocks an enrichment.
 internal fun prepareSleepHrvEnrichment(
     row: MiHealthImportRow,
     observedRows: List<MiHealthImportCloudRow>,
@@ -83,7 +86,8 @@ internal fun prepareSleepHrvEnrichment(
     val hrv = HRV_FIELDS.associateWith { name ->
         val value = row.value[name] as? JsonPrimitive ?: return null
         val number = value.doubleOrNull ?: return null
-        if (value.isString || !number.isFinite() || number <= 0 || number > Int.MAX_VALUE || number != number.toInt().toDouble()) return null
+        if (value.isString || !number.isFinite() || number <= 0 || number > Int.MAX_VALUE || number != number.toInt().toDouble())
+            return null
         value
     }
     val minimum = hrv.getValue("min_hrv").doubleOrNull!!

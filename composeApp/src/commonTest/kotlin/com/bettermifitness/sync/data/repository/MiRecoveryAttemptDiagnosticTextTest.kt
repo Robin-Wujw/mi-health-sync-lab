@@ -73,7 +73,8 @@ class MiRecoveryAttemptDiagnosticTextTest {
         val summary = snapshot().previousRecoveryDiagnostic()
         val output = summary.copyableText() + summary.toString()
         for (secret in listOf("private-token", "private-pending-token", "private-source-digest", "private-wire-fingerprint",
-            "private-content-fingerprint", "private-pending-source", "private-pending-content", privateTime.toString(), "RAW|default|spo2|")) {
+            "private-content-fingerprint", "private-pending-source", "private-pending-content", privateTime.toString(),
+                "RAW|default|spo2|")) {
             assertFalse(secret in output)
         }
         assertEquals(5, summary.copyableText().lines().size)

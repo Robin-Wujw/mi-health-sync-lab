@@ -170,7 +170,8 @@ class SyncViewModel(
         val requested = SyncSelection.inboundMetrics(snapshot.enabledMetrics)
         if (requested.isEmpty()) return
         try {
-            val granted = healthPermissions.requestReadPermissions(requested, includeBackground = snapshot.autoSync, includeHistory = snapshot.syncRangeDays > 27)
+            val granted = healthPermissions.requestReadPermissions(
+                requested, includeBackground = snapshot.autoSync, includeHistory = snapshot.syncRangeDays > 27)
             val missing = requested - granted
             local.update {
                 it.copy(

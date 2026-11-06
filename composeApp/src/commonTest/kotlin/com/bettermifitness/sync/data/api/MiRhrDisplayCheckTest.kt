@@ -134,7 +134,8 @@ class MiRhrDisplayCheckTest {
         var writes = 0
         var readFailure: Exception? = null
 
-        override suspend fun readRows(channel: MiHealthImportChannel, key: String, fromEpochSeconds: Long, untilEpochSeconds: Long): List<MiHealthImportCloudRow> {
+        override suspend fun readRows(channel: MiHealthImportChannel, key: String, fromEpochSeconds: Long,
+            untilEpochSeconds: Long): List<MiHealthImportCloudRow> {
             reads += ReadCall(channel, key, fromEpochSeconds, untilEpochSeconds)
             readFailure?.let { throw it }
             return rows

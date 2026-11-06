@@ -617,7 +617,8 @@ class SyncCoordinatorTest : com.bettermifitness.sync.LocalizedTest() {
             writePermissionRequests++
             permissionError?.let { throw Exception(it) }
         }
-        override suspend fun requestReadPermissions(metrics: Set<HealthInboundMetric>, includeBackground: Boolean, includeHistory: Boolean): Set<HealthInboundMetric> {
+        override suspend fun requestReadPermissions(
+            metrics: Set<HealthInboundMetric>, includeBackground: Boolean, includeHistory: Boolean): Set<HealthInboundMetric> {
             requestedReadMetrics = metrics
             requestedHistory = includeHistory
             return metrics

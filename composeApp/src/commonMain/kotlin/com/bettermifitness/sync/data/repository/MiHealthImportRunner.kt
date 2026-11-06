@@ -65,6 +65,8 @@ class MiHealthImportRunner(
     private val journal: HealthImportJournal,
     private val readbackPause: suspend (Long) -> Unit = { delay(it) },
 ) {
+    // One ordered state machine, kept whole so no safety step can be skipped. Its behavior was verified on a device.
+    @Suppress("CyclomaticComplexMethod", "LongMethod", "NestedBlockDepth", "ThrowsCount")
     suspend fun run(account: String, plan: MiHealthImportPlan, testMode: Boolean = false,
         allowLegacySleepHrvEnrichment: Boolean = false,
         allowOwnedSleepRevision: Boolean = false): MiHealthImportRunResult {
@@ -199,7 +201,8 @@ class MiHealthImportRunner(
             // batches together. Avoid re-reading a full day for every HR point.
             val groups = rows.filter { it.identity.channel == channel && it.identity !in duplicateTargets }
                 .filter { daily -> channel != MiHealthImportChannel.DAILY_AGGREGATE || !isolateHeartRateDays ||
-                    (incompleteDayIssues.none { it.affectedLocalDays.isNullOrEmpty() || daily.identity.time.floorDiv(DAY_SECONDS) in it.affectedLocalDays } &&
+                    (incompleteDayIssues.none { it.affectedLocalDays.isNullOrEmpty() ||
+                        daily.identity.time.floorDiv(DAY_SECONDS) in it.affectedLocalDays } &&
                     rows.filter { raw -> raw.identity.channel == MiHealthImportChannel.RAW &&
                         (raw.identity.time + raw.zoneOffsetSeconds).floorDiv(DAY_SECONDS) * DAY_SECONDS == daily.identity.time
                     }.let { raw -> raw.isNotEmpty() && raw.all { it.identity in verifiedRawIdentities } }) }
@@ -237,7 +240,8 @@ class MiHealthImportRunner(
                     dayRows.map { it.identity.stableKey }.toSet() + minuteIdentities.values)
                 val verifiedFingerprints = journal.verifiedFingerprints(account)
                 val ownedFingerprints = journal.ownedVerifiedFingerprints(account)
-                val legacyFingerprints = if (allowLegacySleepHrvEnrichment || sleepConflicts != null) journal.legacyVerifiedFingerprints(account) else emptyMap()
+                val legacyFingerprints = if (allowLegacySleepHrvEnrichment || sleepConflicts != null)
+                    journal.legacyVerifiedFingerprints(account) else emptyMap()
                 val existing = mutableListOf<MiHealthImportRow>()
                 val aliasExisting = mutableListOf<MiHealthImportRow>()
                 val toUpload = mutableListOf<MiHealthImportRow>()
@@ -263,7 +267,8 @@ class MiHealthImportRunner(
                             if (row.identity.stableKey in pending) {
                                 val snapshot = journal.pendingSnapshots(account, setOf(row.identity.stableKey))[row.identity.stableKey]
                                 if (snapshot == null) emptySet() else journal.reconcileObservedPending(account,
-                                    listOf(HealthImportPendingReconciliation(snapshot, journalEntry(row), fingerprint, minuteMatch.importIdentity().stableKey)))
+                                    listOf(HealthImportPendingReconciliation(
+                                        snapshot, journalEntry(row), fingerprint, minuteMatch.importIdentity().stableKey)))
                             } else journal.recordObservedAliases(account, listOf(HealthImportObservedAlias(
                                 journalEntry(row), minuteMatch.importIdentity().stableKey, fingerprint)))
                         } catch (e: CancellationException) { throw e }
@@ -396,7 +401,8 @@ class MiHealthImportRunner(
                         }
                         if (batchEnrichments.any { !it.stillMatches(justBeforeWrite) }) {
                             blockedConflict += batchEnrichments.size
-                            if (attempted.isEmpty()) throw failure(MiHealthImportFailureReason.CONFLICT, batchEnrichments.size, "HRV_ENRICHMENT_CHANGED")
+                            if (attempted.isEmpty())
+                                throw failure(MiHealthImportFailureReason.CONFLICT, batchEnrichments.size, "HRV_ENRICHMENT_CHANGED")
                             stoppedPreflightReason = MiHealthImportFailureReason.CONFLICT
                             break
                         }
@@ -428,7 +434,8 @@ class MiHealthImportRunner(
                             if (changed) {
                                 blockedConflict += batchRevisions.size
                                 stoppedPreflightDetail = "SLEEP_REVISION_CHANGED"
-                                if (attempted.isEmpty()) throw failure(MiHealthImportFailureReason.CONFLICT, batchRevisions.size, stoppedPreflightDetail)
+                                if (attempted.isEmpty())
+                                    throw failure(MiHealthImportFailureReason.CONFLICT, batchRevisions.size, stoppedPreflightDetail)
                                 stoppedPreflightReason = MiHealthImportFailureReason.CONFLICT
                                 break
                             }
@@ -516,8 +523,10 @@ class MiHealthImportRunner(
                                     minutePolicy.find(row, postObservations.toList()) else null
                                 val snapshot = if (minuteMatch != null) submittedPending[row.identity.stableKey] else null
                                 val reconciled = if (minuteMatch != null && snapshot != null) try {
-                                    row.identity.stableKey in journal.reconcileObservedPending(account, listOf(HealthImportPendingReconciliation(snapshot,
-                                        journalEntry(row), HealthRecordIds.version(canonicalMiHealthImportJson(minuteMatch.value)).toString(),
+                                    row.identity.stableKey in journal.reconcileObservedPending(
+                                        account, listOf(HealthImportPendingReconciliation(snapshot,
+                                        journalEntry(row), HealthRecordIds.version(canonicalMiHealthImportJson(minuteMatch.value))
+                                            .toString(),
                                         minuteMatch.importIdentity().stableKey)))
                                 } catch (e: CancellationException) { throw e }
                                 catch (e: Exception) { throw failure(MiHealthImportFailureReason.UNVERIFIED, remaining.size, cause = e) }
@@ -531,7 +540,9 @@ class MiHealthImportRunner(
                             journal.markVerified(account, confirmed.map {
                                 verifiedEntry(it, observedIndex.atTarget(it), ownedUpload = it.identity.stableKey in ownershipEligible)
                             })
-                            sleepConflicts?.let { report -> report.verifiedRevisionRows += confirmed.count { it.identity.stableKey in sleepRevisions } }
+                            sleepConflicts?.let { report ->
+                                report.verifiedRevisionRows += confirmed.count { it.identity.stableKey in sleepRevisions }
+                            }
                             verifiedOwnedRevisions += confirmed.count { it.identity.stableKey in heartRevisions }
                             verifiedOwnedRevisions += confirmed.count { enrichments[it.identity.stableKey]?.replacesOwnedSummary == true }
                             if (channel == MiHealthImportChannel.RAW) {
@@ -572,7 +583,8 @@ class MiHealthImportRunner(
                             uploadResponse = null
                             readResponse = stoppedPreflightResponse
                             throw failure(reason, notAttempted,
-                                if (reason == MiHealthImportFailureReason.CONFLICT) stoppedPreflightDetail else "remaining_batches_not_submitted",
+                                if (reason == MiHealthImportFailureReason.CONFLICT) stoppedPreflightDetail
+                                    else "remaining_batches_not_submitted",
                                 stoppedPreflightCause)
                         }
                         stage = MiHealthImportStage.UPLOAD
@@ -610,7 +622,8 @@ class MiHealthImportRunner(
         }
         // Daily summaries only follow fully verified source rows. A partial raw
         // import cannot overwrite the app's day-level representation.
-        isolateHeartRateDays = plan.metric == HealthInboundMetric.HEART_RATE && (deferredRawFailure != null || incompleteDayIssues.isNotEmpty())
+        isolateHeartRateDays = plan.metric == HealthInboundMetric.HEART_RATE &&
+            (deferredRawFailure != null || incompleteDayIssues.isNotEmpty())
         processChannel(MiHealthImportChannel.DAILY_AGGREGATE)
         deferredRawFailure?.let {
             restore(deferredRawContext!!)
@@ -625,7 +638,8 @@ class MiHealthImportRunner(
         stage = MiHealthImportStage.COMPLETE
         currentChannel = null
         clearRequestContext()
-        return MiHealthImportRunResult(verifiedRaw, newlyUploadedRaw, alreadyPresentRaw, verifiedAggregates, warnings.distinct(), diagnostic())
+        return MiHealthImportRunResult(verifiedRaw, newlyUploadedRaw, alreadyPresentRaw, verifiedAggregates, warnings.distinct(),
+            diagnostic())
     }
 
     companion object {
@@ -638,13 +652,15 @@ class MiHealthImportRunner(
             zoneOffsetSeconds = row.zoneOffsetSeconds,
         )
 
-        private fun verifiedEntry(row: MiHealthImportRow, observed: List<MiHealthImportCloudRow>, ownedUpload: Boolean = false): HealthImportJournalEntry {
+        private fun verifiedEntry(row: MiHealthImportRow, observed: List<MiHealthImportCloudRow>,
+            ownedUpload: Boolean = false): HealthImportJournalEntry {
             val actual = observed.first { !it.deleted && it.sid == row.identity.sid &&
                 it.key == row.identity.key && it.time == row.identity.time &&
                 (row.identity.channel == MiHealthImportChannel.RAW || it.tag == row.identity.tag) }
             // Save the exact observed content, including server-added fields.
             // Future export filtering can then match cloud rows without guessing.
-            return journalEntry(row).copy(contentFingerprint = HealthRecordIds.version(canonicalMiHealthImportJson(actual.value)).toString(),
+            return journalEntry(row).copy(
+                contentFingerprint = HealthRecordIds.version(canonicalMiHealthImportJson(actual.value)).toString(),
                 ownedUpload = ownedUpload)
         }
 

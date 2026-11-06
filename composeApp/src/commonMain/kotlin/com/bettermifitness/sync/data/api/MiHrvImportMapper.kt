@@ -65,7 +65,9 @@ object MiHrvImportMapper {
                 issues += issue(
                     if (matches.isEmpty()) "HRV_NO_MATCHING_SLEEP" else "HRV_AMBIGUOUS_SLEEP",
                     sample.sourceKeys,
-                    if (matches.isEmpty()) "No selected-source sleep interval contains this RMSSD sample. It is outside this sleep-only mapping and was excluded without changing its timestamp or inventing a sleep session. Other valid sleep summaries remain importable."
+                    if (matches.isEmpty()) "No selected-source sleep interval contains this RMSSD sample. It is outside this sleep-only " +
+                        "mapping and was excluded without changing its timestamp or inventing a sleep session. Other valid sleep " +
+                            "summaries remain importable."
                     else "More than one sleep interval contains this RMSSD sample. It was not assigned to an arbitrary session.",
                     // HC can legitimately contain daytime RMSSD points, and a
                     // query boundary may not include a corresponding sleep.
@@ -87,7 +89,8 @@ object MiHrvImportMapper {
             }
             if (phases.isEmpty() || phases.any { it.kind == HealthInboundSleepStageKind.UNKNOWN }) {
                 issues += issue("HRV_SLEEP_RANGE_ASSUMPTION", sample.sourceKeys,
-                    "This sample falls in the sleep interval, but no confirmed sleep phase covers its timestamp. The summary uses the interval association only; it does not assert that the measurement window was fully asleep.",
+                    "This sample falls in the sleep interval, but no confirmed sleep phase covers its timestamp. The summary uses the " +
+                        "interval association only; it does not assert that the measurement window was fully asleep.",
                     MiHealthImportIssueSeverity.WARNING)
             }
             for (equivalent in matchingSleeps) {
@@ -115,15 +118,19 @@ object MiHrvImportMapper {
             val sourceKeys = row.sourceRecordKeys + matched.flatMap { it.sourceKeys }
             if (minInt <= 0) {
                 issues += issue("UNREPRESENTABLE_HRV_SUMMARY", sourceKeys,
-                    "Mi stores positive whole-millisecond HRV summaries. A source value would round to zero, so the summary was not written.")
+                    "Mi stores positive whole-millisecond HRV summaries. A source value would round to zero, so the summary was " +
+                        "not written.")
                 return@mapNotNull null
             }
             issues += issue("RMSSD_EXPERIMENTAL_MAPPING", sourceKeys,
-                "Experimental sleep-interval RMSSD sample summary: avg_hrv is the arithmetic mean of the selected HC RMSSD samples; min_hrv and max_hrv are sample extrema. Mi's native algorithm is unconfirmed, and HC point records do not establish complete overnight sampling. No equivalent native HRV, baseline, score or curve is claimed.",
+                "Experimental sleep-interval RMSSD sample summary: avg_hrv is the arithmetic mean of the selected HC RMSSD samples; " +
+                    "min_hrv and max_hrv are sample extrema. Mi's native algorithm is unconfirmed, and HC point records do not establish " +
+                        "complete overnight sampling. No equivalent native HRV, baseline, score or curve is claimed.",
                 MiHealthImportIssueSeverity.WARNING)
             if (average != avgInt.toDouble() || minimum != minInt.toDouble() || maximum != maxInt.toDouble()) {
                 issues += issue("HRV_INTEGER_ROUNDING", sourceKeys,
-                    "Mi's SleepSegmentReport stores HRV summaries as whole milliseconds. These summary values are rounded to the nearest integer; original RMSSD precision remains in Health Connect.",
+                    "Mi's SleepSegmentReport stores HRV summaries as whole milliseconds. These summary values are rounded to the nearest " +
+                        "integer; original RMSSD precision remains in Health Connect.",
                     MiHealthImportIssueSeverity.WARNING)
             }
             row.copy(
@@ -163,7 +170,8 @@ object MiHrvImportMapper {
             } else if (newest.epochMillis < 0L || !newest.rmssdMillis.isFinite() ||
                 newest.rmssdMillis !in 1.0..200.0) {
                 issues += issue("INVALID_HRV_SAMPLE", setOf(newest.origin.stableRecordKey),
-                    "The latest RMSSD record has an invalid time or falls outside Health Connect's documented 1–200 ms range. It was not clamped or replaced with an older revision.")
+                    "The latest RMSSD record has an invalid time or falls outside Health Connect's documented 1–200 ms range. It was not " +
+                        "clamped or replaced with an older revision.")
                 null
             } else newest
         }

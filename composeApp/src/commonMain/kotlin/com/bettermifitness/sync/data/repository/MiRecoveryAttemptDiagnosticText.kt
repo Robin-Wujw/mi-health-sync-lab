@@ -27,7 +27,8 @@ fun MiRecoveryAttemptDiagnostic.copyableText(): String = buildList {
     add("pending_recovery.previous_accepted=${if (metadataAvailable) accepted?.toString() ?: "unknown" else "unknown"}")
     add("pending_recovery.previous_business_code=${if (metadataAvailable) businessCode?.toString() ?: "unknown" else "unknown"}")
     add("pending_recovery.previous_readback_status=${if (metadataAvailable) readbackStatus?.name ?: "UNKNOWN" else "UNKNOWN"}")
-    add("pending_recovery.previous_attempt_legacy_metadata_unknown=${if (metadataAvailable) legacyWireMetadataUnknown?.toString() ?: "unknown" else "unknown"}")
+    val legacyMetadataUnknown = if (metadataAvailable) legacyWireMetadataUnknown?.toString() ?: "unknown" else "unknown"
+    add("pending_recovery.previous_attempt_legacy_metadata_unknown=$legacyMetadataUnknown")
 }.joinToString("\n")
 
 /** Explicitly labelled history so it cannot be read as a new upload result. */

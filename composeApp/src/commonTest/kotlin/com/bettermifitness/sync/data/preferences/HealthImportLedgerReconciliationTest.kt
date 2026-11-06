@@ -252,7 +252,8 @@ class HealthImportLedgerReconciliationTest {
             accepted = null, businessCode = 0, readbackStatus = "MISSING"))
         assertEquals(setOf(source.targetIdentity), ledger.reconcileObservedPending(account, listOf(candidate)))
         val reopened = HealthImportLedger(store)
-        assertEquals(setOf(unrelated.targetIdentity), reopened.pendingIdentities(account, setOf(source.targetIdentity, alias, unrelated.targetIdentity)))
+        assertEquals(setOf(unrelated.targetIdentity),
+            reopened.pendingIdentities(account, setOf(source.targetIdentity, alias, unrelated.targetIdentity)))
         assertEquals(mapOf(HealthImportLedger.identityDigest(source.targetIdentity) to "observed-minute",
             HealthImportLedger.identityDigest(alias) to "observed-minute"), reopened.verifiedFingerprints(account))
         assertTrue(reopened.ownedVerifiedFingerprints(account).isEmpty())
@@ -386,7 +387,8 @@ class HealthImportLedgerReconciliationTest {
             assertTrue(ledger.verifiedFingerprints(account).isEmpty())
             assertEquals(setOf(source.targetIdentity), ledger.pendingIdentities(account, setOf(source.targetIdentity)))
         }
-        for (original in listOf(source.copy(targetIdentity = alias), source.copy(targetIdentity = source.targetIdentity.replace("default", "other")),
+        for (original in listOf(source.copy(targetIdentity = alias),
+            source.copy(targetIdentity = source.targetIdentity.replace("default", "other")),
             source.copy(targetIdentity = source.targetIdentity.replace("spo2", "sleep")), source.copy(zoneOffsetSeconds = null))) {
             val ledger = HealthImportLedger(MemoryStore())
             ledger.markPending(account, listOf(original))
@@ -456,7 +458,8 @@ class HealthImportLedgerReconciliationTest {
         assertTrue(ledger.recordObservedAliases(account, listOf(observation)).isEmpty())
         assertEquals(before, ledger.pendingSnapshots(account, before.keys))
         assertEquals(setOf(source.targetIdentity), ledger.reconcileObservedPending(account, listOf(aliasCandidate(ledger, source))))
-        assertEquals(mapOf(HealthImportLedger.identityDigest(alias.targetIdentity) to "observed-minute"), ledger.ownedVerifiedFingerprints(account))
+        assertEquals(mapOf(HealthImportLedger.identityDigest(alias.targetIdentity) to "observed-minute"),
+            ledger.ownedVerifiedFingerprints(account))
         assertEquals(setOf(source.targetIdentity), ledger.recordObservedAliases(account, listOf(observation)))
         assertEquals(2, ledger.verifiedFingerprints(account).size)
         assertTrue(ledger.recoveryAttempts(account, setOf(source.targetIdentity, alias.targetIdentity)).isEmpty())

@@ -52,7 +52,8 @@ class MiHealthLiveInspectionTest {
     @Test
     fun contradictorySameInstantRhrIsReportedWithoutAnyMappedOrVerifiedRow() = runTest {
         val reader = object : HealthMetricReader {
-            override suspend fun readRestingHeartRate(request: HealthInboundReadRequest) = listOf(71L, 69L, 70L).mapIndexed { index, value ->
+            override suspend fun readRestingHeartRate(request: HealthInboundReadRequest) = listOf(71L, 69L, 70L)
+                .mapIndexed { index, value ->
                 HealthInboundRestingHeartRateRecord(origin("conflicting-$index"), (day + 3_600L) * 1_000L, 0, value)
             }
         }

@@ -39,7 +39,9 @@ internal class MiHistoryObservingCloud(private val delegate: MiHealthImportCloud
 
     override suspend fun readRawRowsWithoutStart(key: String, untilEpochSeconds: Long,
         maxPages: Int): MiHealthImportHistoryRead = delegate.readRawRowsWithoutStart(key, untilEpochSeconds, maxPages).also {
-        if (key in setOf("spo2", "heart_rate")) observedRows += it.rows.filter { row -> row.key == key && row.time >= 0 && row.time < untilEpochSeconds }
+        if (key in setOf("spo2", "heart_rate")) observedRows += it.rows.filter { row ->
+            row.key == key && row.time >= 0 && row.time < untilEpochSeconds
+        }
     }
 
     override suspend fun uploadRows(rows: List<MiHealthImportRow>, experimentalEnabled: Boolean): MiHealthImportUploadResult {
