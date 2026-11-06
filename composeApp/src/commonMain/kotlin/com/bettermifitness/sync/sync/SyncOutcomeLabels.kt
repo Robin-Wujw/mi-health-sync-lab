@@ -5,7 +5,9 @@ import com.bettermifitness.sync.i18n.L10n
 /** Friendly localized labels for persisted SyncOutcome status codes. */
 object SyncOutcomeLabels {
     fun title(status: String?): String = when (status) {
+        SyncOutcome.STATUS_NO_DATA -> L10n.text(L10n.syncStatusNoData)
         SyncOutcome.STATUS_SUCCESS -> L10n.text(L10n.outcomeUpToDate)
+        SyncOutcome.STATUS_COMPLETED_WITH_SKIPS -> L10n.text(L10n.outcomeUpToDate)
         SyncOutcome.STATUS_PARTIAL_SUCCESS -> L10n.text(L10n.outcomeAlmostDone)
         SyncOutcome.STATUS_FAILED -> L10n.text(L10n.outcomeCouldNotFinish)
         SyncOutcome.STATUS_NOT_LOGGED_IN -> L10n.text(L10n.outcomePleaseSignIn)
@@ -20,7 +22,9 @@ object SyncOutcomeLabels {
     fun detail(status: String?, message: String?): String {
         val msg = message?.takeIf { it.isNotBlank() }
         return when (status) {
+            SyncOutcome.STATUS_NO_DATA -> L10n.text(L10n.syncStatusNoData)
             SyncOutcome.STATUS_SUCCESS -> msg ?: L10n.text(L10n.outcomeSuccessDetail)
+            SyncOutcome.STATUS_COMPLETED_WITH_SKIPS -> L10n.text(L10n.outcomeSuccessDetail)
             SyncOutcome.STATUS_PARTIAL_SUCCESS -> msg ?: L10n.text(L10n.outcomePartialDetail)
             SyncOutcome.STATUS_FAILED -> msg ?: L10n.text(L10n.outcomeFailedDetail)
             SyncOutcome.STATUS_NOT_LOGGED_IN -> msg ?: L10n.text(L10n.outcomeLoginDetail)
@@ -44,7 +48,9 @@ object SyncOutcomeLabels {
 }
 
 fun SyncOutcome.userMessage(): String? = when (this) {
+    is SyncOutcome.NoData -> message
     SyncOutcome.Success -> L10n.text(L10n.outcomeSuccessDetail)
+    is SyncOutcome.CompletedWithSkips -> L10n.text(L10n.outcomeSuccessDetail)
     is SyncOutcome.PartialSuccess -> summary
     SyncOutcome.Skipped -> L10n.text(L10n.outcomeNothingNeeded)
     SyncOutcome.NotLoggedIn -> L10n.text(L10n.outcomeSignInAgain)

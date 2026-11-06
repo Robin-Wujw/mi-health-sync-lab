@@ -25,23 +25,23 @@ import java.time.ZoneOffset
  */
 class AndroidWorkoutRecordFactory {
 
-    fun buildRecords(session: WorkoutSession): List<androidx.health.connect.client.records.Record> {
+    fun buildRecords(
+        session: WorkoutSession,
+        version: Long,
+        includeRoute: Boolean = true,
+    ): List<androidx.health.connect.client.records.Record> {
+        require(version > 0L) { "Workout records require a persisted positive revision." }
         val zo = zoneOffsetOf(session)
         val start = Instant.ofEpochSecond(session.startTime)
         val end = Instant.ofEpochSecond(session.endTime)
         val mapping = SportTypeMapper.map(session.activityType)
         val notes = WorkoutNotes.build(session)
-        val version = WorkoutFormSeries.contentVersion(
-            session,
-            mapping.title,
-            mapping.healthConnectType,
-        )
-        val meta = Metadata.manualEntry(
+        val meta = Metadata.unknownRecordingMethod(
             clientRecordId = HealthRecordIds.workout(session.startTime),
             clientRecordVersion = version,
         )
         val out = ArrayList<androidx.health.connect.client.records.Record>()
-        val route = exerciseRouteOrNull(session)
+        val route = if (includeRoute) exerciseRouteOrNull(session) else null
         out += if (route != null) {
             ExerciseSessionRecord(
                 startTime = start,
@@ -74,7 +74,7 @@ class AndroidWorkoutRecordFactory {
                 startZoneOffset = zo,
                 endZoneOffset = zo,
                 distance = Length.meters(d),
-                metadata = Metadata.manualEntry(
+                metadata = Metadata.unknownRecordingMethod(
                     clientRecordId = HealthRecordIds.workout(session.startTime) + ":dist",
                     clientRecordVersion = version,
                 ),
@@ -87,7 +87,7 @@ class AndroidWorkoutRecordFactory {
                 startZoneOffset = zo,
                 endZoneOffset = zo,
                 energy = Energy.kilocalories(c),
-                metadata = Metadata.manualEntry(
+                metadata = Metadata.unknownRecordingMethod(
                     clientRecordId = HealthRecordIds.workout(session.startTime) + ":kcal",
                     clientRecordVersion = version,
                 ),
@@ -100,7 +100,7 @@ class AndroidWorkoutRecordFactory {
                 startZoneOffset = zo,
                 endZoneOffset = zo,
                 count = steps.toLong(),
-                metadata = Metadata.manualEntry(
+                metadata = Metadata.unknownRecordingMethod(
                     clientRecordId = HealthRecordIds.workout(session.startTime) + ":steps",
                     clientRecordVersion = version,
                 ),
@@ -114,7 +114,7 @@ class AndroidWorkoutRecordFactory {
                     startZoneOffset = zo,
                     endZoneOffset = zo,
                     elevation = Length.meters(gain),
-                    metadata = Metadata.manualEntry(
+                    metadata = Metadata.unknownRecordingMethod(
                         clientRecordId = HealthRecordIds.workout(session.startTime) + ":elev",
                         clientRecordVersion = version,
                     ),
@@ -150,7 +150,7 @@ class AndroidWorkoutRecordFactory {
             startZoneOffset = zo,
             endZoneOffset = zo,
             samples = samples,
-            metadata = Metadata.manualEntry(
+            metadata = Metadata.unknownRecordingMethod(
                 clientRecordId = HealthRecordIds.workout(session.startTime) + ":hr",
                 clientRecordVersion = version,
             ),
@@ -181,7 +181,7 @@ class AndroidWorkoutRecordFactory {
                 startZoneOffset = zo,
                 endZoneOffset = zo,
                 samples = samples,
-                metadata = Metadata.manualEntry(
+                metadata = Metadata.unknownRecordingMethod(
                     clientRecordId = HealthRecordIds.workout(session.startTime) + ":spd",
                     clientRecordVersion = version,
                 ),
@@ -221,7 +221,7 @@ class AndroidWorkoutRecordFactory {
                     startZoneOffset = zo,
                     endZoneOffset = zo,
                     samples = samples,
-                    metadata = Metadata.manualEntry(
+                    metadata = Metadata.unknownRecordingMethod(
                         clientRecordId = HealthRecordIds.workout(session.startTime) + ":pcad",
                         clientRecordVersion = version,
                     ),
@@ -239,7 +239,7 @@ class AndroidWorkoutRecordFactory {
                     startZoneOffset = zo,
                     endZoneOffset = zo,
                     samples = samples,
-                    metadata = Metadata.manualEntry(
+                    metadata = Metadata.unknownRecordingMethod(
                         clientRecordId = HealthRecordIds.workout(session.startTime) + ":cad",
                         clientRecordVersion = version,
                     ),
@@ -272,7 +272,7 @@ class AndroidWorkoutRecordFactory {
                 startZoneOffset = zo,
                 endZoneOffset = zo,
                 samples = samples,
-                metadata = Metadata.manualEntry(
+                metadata = Metadata.unknownRecordingMethod(
                     clientRecordId = HealthRecordIds.workout(session.startTime) + ":pow",
                     clientRecordVersion = version,
                 ),

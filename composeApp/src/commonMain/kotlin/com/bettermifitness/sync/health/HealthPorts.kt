@@ -94,6 +94,13 @@ interface HealthAvailability {
  */
 interface HealthPermissionRequester {
     suspend fun requestPermissions()
+
+    /** Ask only after the user enables these inbound metrics; never grants writes. */
+    suspend fun requestReadPermissions(
+        metrics: Set<HealthInboundMetric>,
+        includeBackground: Boolean = false,
+        includeHistory: Boolean = false,
+    ): Set<HealthInboundMetric> = emptySet()
 }
 
 /**
@@ -105,5 +112,31 @@ interface HealthWeightReader {
     suspend fun readLatestWeight(): WeightMeasurement?
 }
 
-/** Full platform health façade (writes + availability + permissions + weight reads). */
-interface HealthStore : HealthSampleWriter, HealthWeightReader, HealthAvailability, HealthPermissionRequester
+/**
+ * Raw, source-attributed inbound records. Empty means the authorized read completed
+ * and found no eligible data. Unsupported platforms and denied reads throw instead.
+ */
+interface HealthMetricReader {
+    suspend fun readHeartRate(request: HealthInboundReadRequest): List<HealthInboundHeartRateRecord> =
+        throw UnsupportedOperationException("Heart-rate imports are not supported by this health store.")
+
+    suspend fun readRestingHeartRate(
+        request: HealthInboundReadRequest,
+    ): List<HealthInboundRestingHeartRateRecord> =
+        throw UnsupportedOperationException("Resting-heart-rate imports are not supported by this health store.")
+
+    suspend fun readSleep(request: HealthInboundReadRequest): List<HealthInboundSleepRecord> =
+        throw UnsupportedOperationException("Sleep imports are not supported by this health store.")
+
+    suspend fun readHrv(request: HealthInboundReadRequest): List<HealthInboundHrvRecord> =
+        throw UnsupportedOperationException("HRV imports are not supported by this health store.")
+
+    suspend fun readOxygenSaturation(
+        request: HealthInboundReadRequest,
+    ): List<HealthInboundOxygenSaturationRecord> =
+        throw UnsupportedOperationException("Oxygen-saturation imports are not supported by this health store.")
+}
+
+/** Full platform health façade, including explicit experimental metric reads. */
+interface HealthStore : HealthSampleWriter, HealthWeightReader, HealthMetricReader,
+    HealthAvailability, HealthPermissionRequester

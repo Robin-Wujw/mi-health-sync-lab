@@ -2,6 +2,7 @@ package com.bettermifitness.sync.ui.sync
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.bettermifitness.sync.data.api.MiHealthImportDiagnostic
 import com.bettermifitness.sync.data.preferences.SyncPreferences
 import com.bettermifitness.sync.data.repository.HealthRepository
 import com.bettermifitness.sync.data.repository.SyncProgress
@@ -12,6 +13,8 @@ import com.bettermifitness.sync.i18n.L10n
 import com.bettermifitness.sync.sync.SyncCoordinator
 import com.bettermifitness.sync.sync.SyncOutcome
 import com.bettermifitness.sync.ui.SyncMetric
+import com.bettermifitness.sync.ui.SyncSelection
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -36,14 +39,29 @@ data class SyncUiState(
     val prefsReady: Boolean = false,
     val progress: SyncProgress = SyncProgress(),
     val readinessChecked: Boolean = false,
+    val inboundTestMode: Boolean = false,
+    /** Separate from normal sync progress so recovery does not replace its totals. */
+    val recoveryDiagnostic: MiHealthImportDiagnostic? = null,
+    val recoveryDiagnostics: List<MiHealthImportDiagnostic> = emptyList(),
+    val recoveryRunning: Boolean = false,
+    val reconcileRunning: Boolean = false,
+    val recoveryMessage: String? = null,
 ) {
+    val pendingActionRunning: Boolean get() = recoveryRunning || reconcileRunning
+
     val visibleMetrics: List<SyncMetric>
         get() = SyncMetric.entries.filter { it.key in enabledMetrics }
+
+    val visibleInboundMetrics: List<String>
+        get() = SyncPreferences.INBOUND_METRIC_KEYS.filter { it in enabledMetrics }
+
+    val hasSelectedSyncTasks: Boolean
+        get() = SyncSelection.selectedTaskKeys(enabledMetrics).isNotEmpty()
 }
 
 /**
  * Foreground sync UI: observes shared [SyncCoordinator] + repository progress.
- * Does **not** own single-flight — [SyncCoordinator.run] is the only gate.
+ * Does **not** own single-flight — normal sync and explicit recovery share the coordinator gate.
  */
 class SyncViewModel(
     private val repository: HealthRepository,
@@ -77,6 +95,12 @@ class SyncViewModel(
             prefsReady = snap.ready,
             progress = progress,
             readinessChecked = local.readinessChecked,
+            inboundTestMode = snap.inboundTestMode,
+            recoveryDiagnostic = local.recoveryDiagnostic,
+            recoveryDiagnostics = local.recoveryDiagnostics,
+            recoveryRunning = local.recoveryRunning,
+            reconcileRunning = local.reconcileRunning,
+            recoveryMessage = local.recoveryMessage,
         )
     }.stateIn(
         scope = viewModelScope,
@@ -96,10 +120,13 @@ class SyncViewModel(
     fun startSync() {
         viewModelScope.launch {
             // Fast path — coordinator still enforces single-flight.
-            if (syncCoordinator.isRunning.value) return@launch
+            if (syncCoordinator.isRunning.value || local.value.pendingActionRunning) return@launch
             runSync()
         }
     }
+
+    /** Compatibility entry point: normal sync now handles every selected import. */
+    fun processUnfinishedData() = startSync()
 
     fun openHealthService() {
         viewModelScope.launch {
@@ -108,6 +135,7 @@ class SyncViewModel(
             } catch (_: Exception) {
                 // Denied / failed — open Settings or Health Connect below.
             }
+            requestSelectedInboundPermissions()
             if (!healthAvailability.hasWritePermissions()) {
                 healthAvailability.openHealthService()
             }
@@ -129,7 +157,34 @@ class SyncViewModel(
         "blood_pressure" -> progress.bloodPressure
         "temperature" -> progress.temperature
         "vo2_max" -> progress.vo2Max
+        SyncPreferences.HEART_RATE_IMPORT_KEY -> progress.heartRateImport
+        SyncPreferences.RESTING_HEART_RATE_IMPORT_KEY -> progress.restingHeartRateImport
+        SyncPreferences.SLEEP_IMPORT_KEY -> progress.sleepImport
+        SyncPreferences.HRV_IMPORT_KEY -> progress.hrvImport
+        SyncPreferences.SPO2_IMPORT_KEY -> progress.spo2Import
         else -> SyncState.Idle
+    }
+
+    private suspend fun requestSelectedInboundPermissions() {
+        val snapshot = syncPreferences.snapshot.value
+        val requested = SyncSelection.inboundMetrics(snapshot.enabledMetrics)
+        if (requested.isEmpty()) return
+        try {
+            val granted = healthPermissions.requestReadPermissions(requested, includeBackground = snapshot.autoSync, includeHistory = snapshot.syncRangeDays > 27)
+            val missing = requested - granted
+            local.update {
+                it.copy(
+                    permissionError = if (missing.isEmpty()) null else L10n.textFmt(
+                        L10n.settingsInboundPermissionsMissing,
+                        missing.joinToString(", ") { metric -> L10n.metric(metric.metricKey) },
+                    ),
+                )
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            local.update { it.copy(permissionError = L10n.text(L10n.settingsInboundPermissionsFailed)) }
+        }
     }
 
     /** Health check only — never auto-starts sync on screen enter (spam-safe). */
@@ -208,6 +263,12 @@ class SyncViewModel(
                     local.update {
                         it.copy(outcomeMessage = L10n.text(L10n.syncNothingToSync))
                     }
+                is SyncOutcome.NoData -> local.update {
+                    it.copy(outcomeMessage = null, outcomeIsWarning = false)
+                }
+                is SyncOutcome.CompletedWithSkips -> local.update {
+                    it.copy(outcomeMessage = null, outcomeIsWarning = false)
+                }
                 SyncOutcome.Success ->
                     local.update {
                         it.copy(
@@ -254,5 +315,12 @@ class SyncViewModel(
         val outcomeIsWarning: Boolean = false,
         val healthServiceName: String = "",
         val readinessChecked: Boolean = false,
-    )
+        val recoveryDiagnostic: MiHealthImportDiagnostic? = null,
+    val recoveryDiagnostics: List<MiHealthImportDiagnostic> = emptyList(),
+        val recoveryRunning: Boolean = false,
+        val reconcileRunning: Boolean = false,
+        val recoveryMessage: String? = null,
+    ) {
+        val pendingActionRunning: Boolean get() = recoveryRunning || reconcileRunning
+    }
 }

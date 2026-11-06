@@ -1,4 +1,5 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import org.gradle.api.tasks.testing.Test
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -29,7 +30,9 @@ kotlin {
             enable = true
         }
         // Run commonTest on the JVM (e.g. session-refresh policy tests) without a device.
-        withHostTest {}
+        withHostTest {
+            isIncludeAndroidResources = true
+        }
     }
 
     // iosX64 dropped: Compose Multiplatform 1.11+ no longer ships iosX64 artifacts.
@@ -112,7 +115,27 @@ kotlin {
             implementation(kotlin("test"))
             implementation(libs.kotlinx.coroutines.test)
         }
+
+        getByName("androidHostTest").dependencies {
+            // Resource-backed common tests use a real Android test context.
+            implementation("org.robolectric:robolectric:4.17")
+        }
     }
+}
+
+// Robolectric's documented JDK 17+ access to the Java runtime used by Android.
+tasks.withType<Test>().configureEach {
+    jvmArgs(
+        "--add-opens=java.base/java.lang=ALL-UNNAMED",
+        "--add-opens=java.base/java.util=ALL-UNNAMED",
+        "--add-opens=java.base/java.io=ALL-UNNAMED",
+        "--add-opens=java.base/java.net=ALL-UNNAMED",
+        "--add-opens=java.base/java.security=ALL-UNNAMED",
+        "--add-opens=java.base/java.text=ALL-UNNAMED",
+        "--add-opens=java.base/jdk.internal.access=ALL-UNNAMED",
+        "--add-opens=java.desktop/java.awt.font=ALL-UNNAMED",
+        "--add-opens=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED",
+    )
 }
 
 // moko-resources: one strings catalog for Compose + SwiftUI (system language).

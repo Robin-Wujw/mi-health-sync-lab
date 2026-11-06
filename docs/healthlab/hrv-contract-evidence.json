@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "checked_at_utc": "2026-11-03",
+  "scope": "Health Connect RMSSD -> Mi Fitness experimental sleep-interval sample summary",
+  "evidence_level": "Official APK static analysis and official documentation; no account upload or device UI verification for this HRV implementation",
+  "official_apk": {
+    "package": "com.mi.health",
+    "version_name": "3.59.2",
+    "distribution": "Tencent MyApp, domestic Mi Fitness",
+    "listing_url": "https://sj.qq.com/appdetail/com.mi.health",
+    "download_url": "https://imtt.dd.qq.com/sjy.00022/sjy.00004/16891/apk/D028588D150027F3A66C34BD84D37E28.apk?fsname=com.mi.health_3.59.2.apk",
+    "sha256": "112e603b8342cb134402a6dcabdf3ec16fd5171ec65a1d5f7cb7efd83cb0995d",
+    "evidence_scope": "Claims below apply to this artifact. They do not establish behavior in other app versions or every account/device configuration."
+  },
+  "health_connect_source": {
+    "reference_url": "https://developer.android.com/reference/kotlin/androidx/health/connect/client/records/HeartRateVariabilityRmssdRecord",
+    "record_class": "androidx.health.connect.client.records.HeartRateVariabilityRmssdRecord",
+    "algorithm": "RMSSD between normal heartbeats",
+    "value_type": "Double milliseconds",
+    "documented_valid_range_ms": [
+      1,
+      200
+    ],
+    "time_semantics": "An instantaneous timestamp and nullable source zone offset; no per-record measurement interval or guaranteed whole-night coverage.",
+    "preservation": "The bridge retains source package, stable record ID/revision, timestamp, offset and original Double value in its inbound model. It does not modify the source HC record."
+  },
+  "xiaomi_schema": {
+    "class": "com.xiaomi.fit.fitness.export.data.item.SleepSegmentReport",
+    "serialized_summary_fields": {
+      "avg_hrv": "nullable java.lang.Integer",
+      "min_hrv": "nullable java.lang.Integer",
+      "max_hrv": "nullable java.lang.Integer"
+    },
+    "other_observed_fields_not_synthesized": {
+      "hrv_analysis_timestamp": "nullable java.lang.Long",
+      "hrv_base_min": "nullable java.lang.Integer",
+      "hrv_base_max": "nullable java.lang.Integer",
+      "hrv_std": "nullable java.lang.Integer",
+      "hrv_median": "nullable java.lang.Integer",
+      "hrv_lower_quantile": "nullable java.lang.Integer",
+      "hrv_middle_quantile": "nullable java.lang.Integer",
+      "hrv_upper_quantile": "nullable java.lang.Integer"
+    },
+    "hrvDetailRecords": "transient List<TimedValue<Integer>>; not a serialized JSON timeline field on this report",
+    "cloud_daily_report": "No HRV fields were found in the inspected CloudSleepSegment and sleep-day report models. This is not evidence for inventing a standalone hrv upload key or a daily HRV aggregate.",
+    "upload_contract_limit": "A readable/serialized model field is not proof that a cloud POST accepts it or that the official app displays an imported value."
+  },
+  "native_data_path": {
+    "methods": [
+      "SleepSegmentUtils.convertToSleepSegmentReport",
+      "SleepSegmentReport.Builder.hrv",
+      "SleepBiz.getSleepSegAssistInfo"
+    ],
+    "observed": "AllDaySleepParseData supplies timestamp, mean, extrema and additional HRV fields to the sleep-report builder. The sleep assist path parses sleep proto data, obtains HrvInfo, aggregates detail points and assigns hrvDetailRecords.",
+    "limitation": "Three JSON summary fields do not reproduce the separate sleep proto data required for the native detailed curve."
+  },
+  "native_algorithm": {
+    "status": "UNCONFIRMED",
+    "not_established": [
+      "RMSSD",
+      "SDNN",
+      "native averaging window",
+      "native rejection/filtering rules"
+    ],
+    "static_scan": "RMSSD-named methods exist in bundled Health Connect classes and an older com.huami.algo.healthcare library. No connection from those old Huami methods to the current Xiaomi sleep-HRV report path was established. Bundled method names do not prove the current report's algorithm.",
+    "official_documents": [
+      {
+        "url": "https://www.mi.com/tw/support/faq/details/KA-729201/",
+        "title": "Xiaomi Watch S5 46mm FAQ",
+        "finding": "Describes HRV during sleep and a multi-night baseline. It does not name RMSSD. The page is an automatic translation of an English article."
+      },
+      {
+        "url": "https://www.mi.com/tw/support/faq/details/KA-732433/",
+        "title": "Xiaomi Smart Band 11 FAQ",
+        "finding": "Describes sleep HRV; no explicit RMSSD equivalence was established. Device-specific baseline guidance is not generalized to all app versions."
+      }
+    ]
+  },
+  "ui_and_baseline": {
+    "summary_method": "com.xiaomi.fitness.health.sleep.ui.holder.SleepHrvPanelHolder.updateReport",
+    "summary_gate": "If report.sid resolves to DeviceInfo with isPhone=true, hide the panel. Otherwise avgHrv must be non-null and positive; the value is formatted in milliseconds. This method does not check hrvAnalysisTimestamp.",
+    "summary_limit": "An unresolved sid is not rejected by this method alone. How the actual manual-import sid resolves, upstream report selection and final device UI behavior remain untested; display is not guaranteed.",
+    "baseline_method": "com.xiaomi.fitness.health.sleep.hrv.util.SleepHrvBaselineProgressUtils.hasValidHrv",
+    "baseline_gate": "Requires hrvAnalysisTimestamp > 0 AND at least one positive value among avgHrv, hrvStd, hrvMedian, hrvLowerQuantile, hrvMiddleQuantile and hrvUpperQuantile.",
+    "baseline_limit": "A new three-field summary without analysis timestamp does not by itself pass this predicate. Other baseline/date/duration conditions exist. Retained pre-existing cloud fields can affect native behavior; the bridge does not claim to calculate or disable Xiaomi's baseline."
+  },
+  "implemented_experiment": {
+    "entrypoint": "com.bettermifitness.sync.data.api.MiHrvImportMapper.sleepSummary",
+    "user_label_zh_cn": "睡眠区间 RMSSD 样本摘要",
+    "requires_explicit_opt_in": true,
+    "association": "Use only samples from the chosen source with one uniquely matching same-source sleep interval. Exclude samples timestamped in known awake, awake-in-bed or out-of-bed stages. Missing/unknown phases produce an interval-assumption warning. A sample exactly at waking may be used only for a unique interval, with that warning.",
+    "calculation": "Arithmetic mean, minimum and maximum of eligible HC RMSSD samples, rounded to nearest whole millisecond for avg_hrv/min_hrv/max_hrv. This is not pooled overnight RMSSD or an established Xiaomi-native algorithm.",
+    "source_quality": "Enforce HC's documented 1–200 ms source range without clamping. Latest source revision wins; invalid latest values do not revive older values. Duplicate identical source/time/value points count once. Conflicting revisions, conflicting same-time values, missing sleeps or overlapping ambiguous sleeps are rejected.",
+    "payload": "Preserve the complete base sleep timeline; add only avg_hrv, min_hrv and max_hrv. Do not synthesize a baseline, score, quantiles, standard deviation, analysis timestamp, daily HRV aggregate or detailed curve.",
+    "algorithm_provenance_limit": "Experimental RMSSD meaning is exposed through bridge warnings and the HC/model source. No undocumented algorithm metadata field is invented in Xiaomi's cloud payload.",
+    "existing_row_policy": "Enrichment of an existing row needs owned-upload provenance and the exact recorded cloud fingerprint, or an explicit legacy-record permission. The base sleep must agree and all three HRV fields must be absent. Retain all cloud value fields; re-read the original fingerprint/offset before POST. Never replace another source or a differing existing HRV summary.",
+    "verification": "A durable pending journal precedes upload. Readback must verify persistence. HTTP acceptance alone and cloud readback alone do not prove official-app visibility or native algorithm equivalence."
+  },
+  "implementation_files": [
+    "composeApp/src/commonMain/kotlin/com/bettermifitness/sync/data/api/MiHrvImportMapper.kt",
+    "composeApp/src/commonTest/kotlin/com/bettermifitness/sync/data/api/MiHrvImportMapperTest.kt",
+    "composeApp/src/commonMain/kotlin/com/bettermifitness/sync/data/repository/MiHealthImportEnrichmentPolicy.kt"
+  ],
+  "local_analysis_artifacts_not_for_distribution": [
+    "research-work/mifitness-access-static/import-sleep-segment.smali",
+    "research-work/mifitness-access-static/feedback-hrv-panel.smali",
+    "research-work/mifitness-access-static/feedback-hrv-baseline.smali"
+  ],
+  "default_source_phone_resolution": {
+    "checked_apk": "com.mi.health 3.59.2",
+    "chain": [
+      "WearableDeviceManagerImpl.getDeviceInfoInAll forwards sid unchanged",
+      "RemoteImpl searches bind/local/unbind device lists by exact did; absent matches return null",
+      "DeviceInfo.isPhone compares model, ignoring case, with mihlth.xiaomi.fitness.phone",
+      "DeviceRequest.recordDevices sends the phone model plus getUniqueIdentify and obtains DeviceRecordInfo.sid from the service"
+    ],
+    "finding": "No local hardcoded default -> phone mapping was found in this path. The account device lists and server-assigned SID remain runtime inputs.",
+    "policy": "Retain sid=default from the tested importer contract. Do not fabricate a wearable device identity or claim that the HRV panel must be visible or hidden."
+  }
+}

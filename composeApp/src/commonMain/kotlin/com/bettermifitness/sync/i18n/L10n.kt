@@ -2,6 +2,7 @@ package com.bettermifitness.sync.i18n
 
 import androidx.compose.runtime.Composable
 import com.bettermifitness.sync.MR
+import com.bettermifitness.sync.data.preferences.SyncPreferences
 // moko-resources 0.27 generates string accessors as extension vals in one
 // package (see detekt.yml WildcardImport exclusion); explicit imports churn.
 import com.bettermifitness.sync.*
@@ -13,6 +14,15 @@ import dev.icerock.moko.resources.compose.stringResource
  * The catalog lives in moko-resources and follows the system language.
  */
 object L10n {
+    val importExcludedPoints = MR.strings.import_excluded_points
+    val importHrvExcludedSamples = MR.strings.import_hrv_excluded_samples
+    val importOwnedHeartRateRevision = MR.strings.import_owned_heart_rate_revision
+    val importOwnedHrvRevision = MR.strings.import_owned_hrv_revision
+    val importOwnedRhrRevision = MR.strings.import_owned_rhr_revision
+    val syncStatusWithExclusions = MR.strings.sync_status_with_exclusions
+    val inboundHistoryUnavailable = MR.strings.inbound_history_unavailable
+    val inboundHistoryRequired = MR.strings.inbound_history_required
+    val settingsHistoryRangeHint = MR.strings.settings_history_range_hint
     @Composable
     fun string(res: StringResource): String = stringResource(res)
 
@@ -25,6 +35,95 @@ object L10n {
     fun textFmt(res: StringResource, vararg args: Any): String = L10nPlatform.format(res, args)
 
     fun metric(key: String): String = text(metricResource(key))
+
+    /** Only fixed status codes are rendered; arbitrary server/exception text is never exposed. */
+    fun pendingRecoveryStatus(code: String): String = text(when (code) {
+        "NOT_REQUESTED" -> MR.strings.import_pending_recovery_not_requested
+        "UNSUPPORTED" -> MR.strings.import_pending_recovery_unsupported
+        "NO_PENDING" -> MR.strings.import_pending_recovery_none
+        "NO_PENDING_WITH_EXCLUSIONS" -> MR.strings.import_pending_recovery_none_with_exclusions
+        "SOURCE_CHANGED" -> MR.strings.import_pending_recovery_source_changed
+        "SOURCE_COLLISION" -> MR.strings.import_pending_recovery_source_collision
+        "READ_FAILED" -> MR.strings.import_pending_recovery_read_failed
+        "HISTORY_INCOMPLETE" -> MR.strings.import_pending_recovery_history_incomplete
+        "CONFLICT" -> MR.strings.import_pending_recovery_conflict
+        "TOMBSTONE_PRESENT" -> MR.strings.import_pending_recovery_deleted
+        "OTHER_SOURCE_PRESENT" -> MR.strings.import_pending_recovery_other_source
+        "ALREADY_PRESENT" -> MR.strings.import_pending_recovery_already_present
+        "RETRY_ALREADY_CONSUMED" -> MR.strings.import_pending_recovery_consumed
+        "RESERVATION_CHANGED" -> MR.strings.import_pending_recovery_reservation_changed
+        "UPLOAD_REJECTED" -> MR.strings.import_pending_recovery_rejected
+        "UPLOAD_UNVERIFIED" -> MR.strings.import_pending_recovery_unverified
+        "VERIFIED" -> MR.strings.import_pending_recovery_verified
+        else -> MR.strings.import_pending_recovery_unknown
+    })
+
+    fun pendingReconcileStatus(code: String): String = text(when (code) {
+        "NOT_REQUESTED" -> MR.strings.import_pending_reconcile_not_requested
+        "UNSUPPORTED" -> MR.strings.import_pending_reconcile_unsupported
+        "NO_PENDING" -> MR.strings.import_pending_reconcile_none
+        "COMPLETE" -> MR.strings.import_pending_reconcile_complete
+        "PARTIAL" -> MR.strings.import_pending_reconcile_partial
+        "INCOMPLETE" -> MR.strings.import_pending_reconcile_incomplete
+        "LOCAL_SAVE_FAILED" -> MR.strings.import_pending_reconcile_save_failed
+        else -> MR.strings.import_pending_reconcile_unknown
+    })
+
+    fun importWarning(code: String): String {
+        val resource = when (code) {
+            "SOURCE_TIMEZONE_UNAVAILABLE" -> MR.strings.import_warning_timezone_unavailable
+            "SOURCE_TIMEZONE_CHANGED" -> MR.strings.import_warning_timezone_changed
+            "SOURCE_TIMEZONE_NOT_QUARTER_HOUR" -> MR.strings.import_warning_timezone_unusual
+            "PARTIAL_SLEEP_STAGES" -> MR.strings.import_warning_partial_sleep_stages
+            "SUBSECOND_PRECISION" -> MR.strings.import_warning_subsecond_precision
+            "SUBSECOND_SLEEP_STAGE" -> MR.strings.import_warning_subsecond_sleep_stage
+            "INCOMPLETE_LOCAL_DAY" -> MR.strings.import_warning_incomplete_day
+            "RESTING_HEART_RATE_RAW_ONLY" -> MR.strings.import_warning_resting_heart_rate_raw_only
+            "SOURCE_REVISION_DEDUPLICATED" -> MR.strings.import_warning_source_revision
+            "EMPTY_SAMPLES" -> MR.strings.import_warning_empty_samples
+            "OVERLAPPING_SLEEP_SESSIONS" -> MR.strings.import_warning_overlapping_sleep
+            "EXISTING_DAILY_REPORT_PRESERVED" -> MR.strings.import_warning_existing_daily_report
+            "TEST_MODE_SINGLE_RECORD" -> MR.strings.import_warning_test_mode
+            "LEGACY_SLEEP_HRV_ENRICHMENT" -> MR.strings.import_warning_legacy_hrv
+            "OWNED_SLEEP_REVISION" -> MR.strings.import_warning_owned_sleep_revision
+            "RHR_DAILY_CHECK_FAILED" -> MR.strings.import_warning_rhr_daily_check_failed
+            "RMSSD_EXPERIMENTAL_MAPPING" -> MR.strings.import_warning_rmssd_experimental
+            "HRV_INTEGER_ROUNDING" -> MR.strings.import_warning_hrv_rounding
+            "HRV_AWAKE_SAMPLE_EXCLUDED" -> MR.strings.import_warning_hrv_awake_excluded
+            "HRV_SLEEP_RANGE_ASSUMPTION" -> MR.strings.import_warning_hrv_sleep_range
+            "HRV_DUPLICATE_SAMPLE" -> MR.strings.import_warning_hrv_duplicate
+            "HRV_NO_MATCHING_SLEEP" -> MR.strings.import_issue_hrv_no_sleep
+            "HRV_AMBIGUOUS_SLEEP" -> MR.strings.import_issue_hrv_ambiguous_sleep
+            "INVALID_HRV_SAMPLE" -> MR.strings.import_issue_hrv_invalid
+            "UNREPRESENTABLE_HRV_SUMMARY" -> MR.strings.import_issue_hrv_unrepresentable
+            "CONFLICTING_HRV_REVISIONS" -> MR.strings.import_issue_hrv_revisions
+            "HRV_TIME_COLLISION" -> MR.strings.import_issue_hrv_collision
+            "HRV_ENRICHMENT_CHANGED" -> MR.strings.import_issue_hrv_changed
+            "SLEEP_REVISION_CHANGED" -> MR.strings.import_issue_sleep_revision_changed
+            "RESTING_HEART_RATE_DATE_UNKNOWN" -> MR.strings.import_issue_rhr_date_unknown
+            "INVALID_RESTING_HEART_RATE_DATE" -> MR.strings.import_issue_rhr_invalid_date
+            "RESTING_HEART_RATE_DAY_COLLISION" -> MR.strings.import_issue_rhr_collision
+            "RESTING_HEART_RATE_DAILY_MINIMUM_APPLIED" -> MR.strings.import_warning_rhr_daily_minimum
+            "INVALID_OXYGEN_SATURATION" -> MR.strings.import_issue_spo2_invalid
+            "UNREPRESENTABLE_OXYGEN_SATURATION" -> MR.strings.import_issue_spo2_unrepresentable
+            "OXYGEN_SATURATION_PRECISION" -> MR.strings.import_warning_spo2_precision
+            "INVALID_INTERVAL" -> MR.strings.import_issue_heart_interval
+            "INVALID_HEART_RATE_SAMPLE" -> MR.strings.import_issue_heart_sample
+            "INVALID_RESTING_HEART_RATE" -> MR.strings.import_issue_rhr_invalid
+            "INVALID_SLEEP_INTERVAL" -> MR.strings.import_issue_sleep_interval
+            "INVALID_SLEEP_STAGES" -> MR.strings.import_issue_sleep_stages
+            "SUBSECOND_SLEEP_INTERVAL" -> MR.strings.import_issue_sleep_precision
+            "INVALID_SOURCE" -> MR.strings.import_issue_source_invalid
+            "CONFLICTING_SOURCE_REVISIONS" -> MR.strings.import_issue_source_revisions
+            "TARGET_TIME_COLLISION", "source_target_collision" -> MR.strings.import_issue_target_collision
+            "HEART_RATE_SOURCE_POINT_EXCLUDED" -> MR.strings.import_heart_source_point_excluded
+            "REJECTED_SOURCE_PREVENTS_DAILY_REPORT" -> MR.strings.import_issue_source_prevents_daily
+            "remaining_batches_not_submitted" -> MR.strings.import_issue_batches_not_submitted
+            "UNKNOWN" -> MR.strings.import_issue_unknown
+            else -> return code
+        }
+        return text(resource)
+    }
 
     fun metricResource(key: String): StringResource = when (key) {
         "heart_rate" -> MR.strings.metric_heart_rate
@@ -40,6 +139,11 @@ object L10n {
         "blood_pressure" -> MR.strings.metric_blood_pressure
         "temperature" -> MR.strings.metric_temperature
         "vo2_max" -> MR.strings.metric_vo2_max
+        SyncPreferences.HEART_RATE_IMPORT_KEY -> MR.strings.metric_import_heart_rate
+        SyncPreferences.RESTING_HEART_RATE_IMPORT_KEY -> MR.strings.metric_import_resting_heart_rate
+        SyncPreferences.SLEEP_IMPORT_KEY -> MR.strings.metric_import_sleep
+        SyncPreferences.HRV_IMPORT_KEY -> MR.strings.metric_import_hrv
+        SyncPreferences.SPO2_IMPORT_KEY -> MR.strings.metric_import_spo2
         else -> MR.strings.metric_workouts
     }
 
@@ -233,4 +337,149 @@ object L10n {
     val backgroundRestricted get() = MR.strings.background_restricted
     val backgroundUnknown get() = MR.strings.background_unknown
     val backgroundUnknownStatus get() = MR.strings.background_unknown_status
+
+    // Health Sync Lab
+    val syncCounterDependencyFailed get() = MR.strings.sync_counter_dependency_failed
+    val syncStatusNoData get() = MR.strings.sync_status_no_data
+    val syncNoUsableData get() = MR.strings.sync_no_usable_data
+    val syncAlreadyMatched get() = MR.strings.sync_already_matched
+    val syncDirectionSummary get() = MR.strings.sync_direction_summary
+    val syncToHealthTitle get() = MR.strings.sync_to_health_title
+    val syncWeightTitle get() = MR.strings.sync_weight_title
+    val syncInboundTitle get() = MR.strings.sync_inbound_title
+    val syncStatusCloudVerified get() = MR.strings.sync_status_cloud_verified
+    val syncImportRecords get() = MR.strings.sync_import_records
+    val syncImportNoNewRecords get() = MR.strings.sync_import_no_new_records
+    val settingsToHealthDetail get() = MR.strings.settings_to_health_detail
+    val settingsWeightDetail get() = MR.strings.settings_weight_detail
+    val settingsInboundDetail get() = MR.strings.settings_inbound_detail
+    val settingsImportAdvanced get() = MR.strings.settings_import_advanced
+    val settingsInboundFirstRun get() = MR.strings.settings_inbound_first_run
+    val settingsHrvDetail get() = MR.strings.settings_hrv_detail
+    val settingsZeppCapabilityDetail get() = MR.strings.settings_zepp_capability_detail
+    val settingsInboundPermissions get() = MR.strings.settings_inbound_permissions
+    val settingsInboundPermissionsReady get() = MR.strings.settings_inbound_permissions_ready
+    val settingsInboundPermissionsMissing get() = MR.strings.settings_inbound_permissions_missing
+    val settingsInboundPermissionsFailed get() = MR.strings.settings_inbound_permissions_failed
+    val settingsBodyTitle get() = MR.strings.settings_body_title
+    val settingsBodyToggle get() = MR.strings.settings_body_toggle
+    val settingsBodyDetail get() = MR.strings.settings_body_detail
+    val settingsRetryTitle get() = MR.strings.settings_retry_title
+    val importCloudConflict get() = MR.strings.import_cloud_conflict
+    val importPendingVerification get() = MR.strings.import_pending_verification
+    val importCloudRejected get() = MR.strings.import_cloud_rejected
+    val importCloudUnverified get() = MR.strings.import_cloud_unverified
+    val importRowsRejected get() = MR.strings.import_rows_rejected
+    val importRunDetail get() = MR.strings.import_run_detail
+    val settingsBodyRetry get() = MR.strings.settings_body_retry
+    val settingsBodyRetryDetail get() = MR.strings.settings_body_retry_detail
+    val settingsBodyRetryReady get() = MR.strings.settings_body_retry_ready
+    val bodyImportNotVerified get() = MR.strings.body_import_not_verified
+    val bodyImportRejected get() = MR.strings.body_import_rejected
+    val settingsPermissionsTitle get() = MR.strings.settings_permissions_title
+    val settingsPermissionsDetail get() = MR.strings.settings_permissions_detail
+    val hrvAlgorithmUnconfirmed get() = MR.strings.hrv_algorithm_unconfirmed
+    val healthPartialWrite get() = MR.strings.health_partial_write
+    val settingsInboundTestMode get() = MR.strings.settings_inbound_test_mode
+    val settingsInboundTestModeDetail get() = MR.strings.settings_inbound_test_mode_detail
+    val settingsLegacyHrv get() = MR.strings.settings_legacy_hrv
+    val settingsLegacyHrvDetail get() = MR.strings.settings_legacy_hrv_detail
+    val settingsOwnedSleepRevision get() = MR.strings.settings_owned_sleep_revision
+    val settingsOwnedSleepRevisionDetail get() = MR.strings.settings_owned_sleep_revision_detail
+    val recoveryHistoryUnavailable get() = MR.strings.recovery_history_unavailable
+    val spo2ComparisonSummary get() = MR.strings.spo2_comparison_summary
+    val spo2ComparisonHints get() = MR.strings.spo2_comparison_hints
+    val spo2ComparisonLimit get() = MR.strings.spo2_comparison_limit
+    val importAcceptanceUnknown get() = MR.strings.import_acceptance_unknown
+    val recoveryHistoryAccepted get() = MR.strings.recovery_history_accepted
+    val recoveryHistoryRejected get() = MR.strings.recovery_history_rejected
+    val recoveryHistoryReserved get() = MR.strings.recovery_history_reserved
+    val recoveryHistoryAcceptanceUnknown get() = MR.strings.recovery_history_acceptance_unknown
+    val recoveryHistoryBusinessCode get() = MR.strings.recovery_history_business_code
+    val recoveryHistoryReadbackVerified get() = MR.strings.recovery_history_readback_verified
+    val recoveryHistoryReadbackMissing get() = MR.strings.recovery_history_readback_missing
+    val recoveryHistoryReadbackMismatch get() = MR.strings.recovery_history_readback_mismatch
+    val recoveryHistoryReadbackAmbiguous get() = MR.strings.recovery_history_readback_ambiguous
+    val recoveryHistoryReadbackUnqueried get() = MR.strings.recovery_history_readback_unqueried
+    val recoveryHistoryReadbackUnknown get() = MR.strings.recovery_history_readback_unknown
+    val importSleepRevisionAvailable get() = MR.strings.import_sleep_revision_available
+    val importSleepRevisionResult get() = MR.strings.import_sleep_revision_result
+    val syncStatusTestVerified get() = MR.strings.sync_status_test_verified
+    val syncDiagnosticsShow get() = MR.strings.sync_diagnostics_show
+    val syncDiagnosticsHide get() = MR.strings.sync_diagnostics_hide
+    val syncDiagnosticsCopy get() = MR.strings.sync_diagnostics_copy
+    val syncDiagnosticsCopied get() = MR.strings.sync_diagnostics_copied
+    val syncDiagnosticsCopyFailed get() = MR.strings.sync_diagnostics_copy_failed
+    val syncDiagnosticsPrivacy get() = MR.strings.sync_diagnostics_privacy
+    val importAffectedRecords get() = MR.strings.import_affected_records
+    val importPrecheckFailed get() = MR.strings.import_precheck_failed
+    val importServerCode get() = MR.strings.import_server_code
+    val importHttpStatus get() = MR.strings.import_http_status
+    val importServerMessage get() = MR.strings.import_server_message
+    val importMessageWithheld get() = MR.strings.import_message_withheld
+    val importStagePrepare get() = MR.strings.import_stage_prepare
+    val importStagePrecheck get() = MR.strings.import_stage_precheck
+    val importStageUpload get() = MR.strings.import_stage_upload
+    val importStageReadback get() = MR.strings.import_stage_readback
+    val importStageComplete get() = MR.strings.import_stage_complete
+    val importChannelRaw get() = MR.strings.import_channel_raw
+    val importChannelDaily get() = MR.strings.import_channel_daily
+    val importChannelAll get() = MR.strings.import_channel_all
+    val importDiagnosticStage get() = MR.strings.import_diagnostic_stage
+    val importDiagnosticBatch get() = MR.strings.import_diagnostic_batch
+    val importDiagnosticCounts get() = MR.strings.import_diagnostic_counts
+    val importBusinessAccepted get() = MR.strings.import_business_accepted
+    val importBusinessRejected get() = MR.strings.import_business_rejected
+    val rhrDisplayCheckDetail get() = MR.strings.rhr_display_check_detail
+    val pendingProbeSummary get() = MR.strings.import_pending_probe_summary
+    val pendingProbeNarrowSummary get() = MR.strings.import_pending_probe_narrow_summary
+    val pendingProbeNativeSummary get() = MR.strings.import_pending_probe_native_summary
+    val pendingProbeOtherSources get() = MR.strings.import_pending_probe_other_sources
+    val pendingProbeFailed get() = MR.strings.import_pending_probe_failed
+    val pendingRecoveryLegacy get() = MR.strings.import_pending_recovery_legacy
+    val pendingRecoverySummary get() = MR.strings.import_pending_recovery_summary
+    val pendingReconcileSummary get() = MR.strings.import_pending_reconcile_summary
+    val pendingReconcileCloudOnly get() = MR.strings.import_pending_reconcile_cloud_only
+    val pendingReconcileBlocked get() = MR.strings.import_pending_reconcile_blocked
+    val pendingReconcileUnresolved get() = MR.strings.import_pending_reconcile_unresolved
+    val pendingReconcileHistory get() = MR.strings.import_pending_reconcile_history
+    val pendingReconcileHistoryIncomplete get() = MR.strings.import_pending_reconcile_history_incomplete
+    val syncReconcileDetail get() = MR.strings.sync_reconcile_detail
+    val syncReconcileAction get() = MR.strings.sync_reconcile_action
+    val syncRecoveryTitle get() = MR.strings.sync_recovery_title
+    val syncRecoveryDetail get() = MR.strings.sync_recovery_detail
+    val syncRecoveryAction get() = MR.strings.sync_recovery_action
+    val syncRecoveryCounts get() = MR.strings.sync_recovery_counts
+    val syncRecoveryResult get() = MR.strings.sync_recovery_result
+    val syncRecoveryRange get() = MR.strings.sync_recovery_range
+    val syncRecoveryEnableSpO2 get() = MR.strings.sync_recovery_enable_spo2
+    val syncRecoveryBusy get() = MR.strings.sync_recovery_busy
+    val syncRecoveryUnavailable get() = MR.strings.sync_recovery_unavailable
+    val syncRecoveryCancelled get() = MR.strings.sync_recovery_cancelled
+    val syncRecoveryReadAccess get() = MR.strings.sync_recovery_read_access
+    val syncRecoveryAuth get() = MR.strings.sync_recovery_auth
+    val syncRecoveryNetwork get() = MR.strings.sync_recovery_network
+    val syncRecoveryRateLimited get() = MR.strings.sync_recovery_rate_limited
+    val syncRecoveryFailed get() = MR.strings.sync_recovery_failed
+    val syncStatusPartialVerified get() = MR.strings.sync_status_partial_verified
+    val importPartialProgress get() = MR.strings.import_partial_progress
+    val importDiagnosticRawProgress get() = MR.strings.import_diagnostic_raw_progress
+    val importDiagnosticReason get() = MR.strings.import_diagnostic_reason
+    val importDiagnosticBlocked get() = MR.strings.import_diagnostic_blocked
+    val importBlockedVerifiedHistory get() = MR.strings.import_blocked_verified_history
+    val importDiagnosticReadback get() = MR.strings.import_diagnostic_readback
+    val importDiagnosticPrecheckFields get() = MR.strings.import_diagnostic_precheck_fields
+    val importDiagnosticReadbackFields get() = MR.strings.import_diagnostic_readback_fields
+    val importDiagnosticPreservedDaily get() = MR.strings.import_diagnostic_preserved_daily
+    val importDiagnosticRejectedSource get() = MR.strings.import_diagnostic_rejected_source
+    val importDiagnosticIssue get() = MR.strings.import_diagnostic_issue
+    val importDiagnosticIssueOverlap get() = MR.strings.import_diagnostic_issue_overlap
+    val importIssueRejected get() = MR.strings.import_issue_rejected
+    val importIssueWarning get() = MR.strings.import_issue_warning
+    val importIssueUnknown get() = MR.strings.import_issue_unknown
+    val importReasonConflict get() = MR.strings.import_reason_conflict
+    val importReasonPending get() = MR.strings.import_reason_pending
+    val importReasonRejected get() = MR.strings.import_reason_rejected
+    val importReasonUnverified get() = MR.strings.import_reason_unverified
+    val importReasonSourceRejected get() = MR.strings.import_reason_source_rejected
 }

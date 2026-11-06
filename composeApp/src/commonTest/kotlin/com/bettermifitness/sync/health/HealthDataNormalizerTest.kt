@@ -177,7 +177,7 @@ class HealthDataNormalizerTest {
     }
 
     @Test
-    fun normalizeSleep_dropsSessionOnlyWhenNoValidStages() {
+    fun normalizeSleep_preservesReportedSessionWhenStagesAreInvalid() {
         val session = SleepSession(
             startTime = 1_700_000_000L,
             endTime = 1_700_003_600L,
@@ -187,7 +187,8 @@ class HealthDataNormalizerTest {
             tzIn15Min = 32,
         )
         val out = HealthDataNormalizer.normalizeSleep(listOf(session))
-        assertTrue(out.isEmpty())
+        assertEquals(1, out.size)
+        assertTrue(out.single().stages.isEmpty())
     }
 
     @Test
@@ -220,7 +221,9 @@ class HealthDataNormalizerTest {
         assertEquals(HealthDataNormalizer.MiSleepStageKind.LIGHT, HealthDataNormalizer.miSleepStageKind(3))
         assertEquals(HealthDataNormalizer.MiSleepStageKind.REM, HealthDataNormalizer.miSleepStageKind(4))
         assertEquals(HealthDataNormalizer.MiSleepStageKind.AWAKE, HealthDataNormalizer.miSleepStageKind(5))
-        assertEquals(HealthDataNormalizer.MiSleepStageKind.AWAKE, HealthDataNormalizer.miSleepStageKind(1))
+        assertEquals(HealthDataNormalizer.MiSleepStageKind.AWAKE, HealthDataNormalizer.miSleepStageKind(0))
+        assertEquals(HealthDataNormalizer.MiSleepStageKind.UNKNOWN, HealthDataNormalizer.miSleepStageKind(1))
+        assertEquals(HealthDataNormalizer.MiSleepStageKind.UNKNOWN, HealthDataNormalizer.miSleepStageKind(6))
         assertEquals(HealthDataNormalizer.MiSleepStageKind.UNKNOWN, HealthDataNormalizer.miSleepStageKind(99))
         assertEquals("deep", HealthDataNormalizer.miSleepStageLabel(2))
         assertEquals("light", HealthDataNormalizer.miSleepStageLabel(3))

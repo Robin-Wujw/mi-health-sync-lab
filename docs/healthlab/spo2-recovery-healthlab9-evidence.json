@@ -1,0 +1,61 @@
+{
+  "checked_at": "2026-11-03",
+  "target_version": "1.0.6-healthlab.9 (1000015)",
+  "kind": "User-supplied diagnostics and local code review; no account access or actual cloud health upload",
+  "latest_user_evidence": {
+    "reported_version": "1.0.6-healthlab.8 (1000014)",
+    "sleep": "User confirmed fixed",
+    "spo2_input_records": 203,
+    "spo2_preexisting_matches": 70,
+    "spo2_pending_candidates": 133,
+    "explicit_reconcile": {
+      "attempted_raw_rows": 0,
+      "reconciled_rows": 0,
+      "missing_rows": 133,
+      "history_pages_read": 7,
+      "history_complete": true,
+      "history_stop": "END_OF_HISTORY"
+    },
+    "single_recovery": {
+      "attempted_raw_rows": 0,
+      "status": "RETRY_ALREADY_CONSUMED",
+      "previous_outcome": "READBACK_UNVERIFIED",
+      "legacy_row_metadata_unknown": true,
+      "history_pages_read": 6,
+      "history_complete": true,
+      "history_stop": "END_OF_HISTORY"
+    },
+    "first_recovery_report_available": false
+  },
+  "interpretation": [
+    "The last command made zero health uploads; its oldest pending target had already consumed its extra recovery allowance.",
+    "READBACK_UNVERIFIED alone cannot distinguish an accepted response from transport uncertainty, and does not establish explicit rejection.",
+    "The existing recovery ledger retains accepted, businessCode and readbackStatus, but version .8 omitted those fields from its report.",
+    "legacy_row_metadata_unknown describes the original pending journal's absent outer timezone metadata; recovery sends the current validated offset.",
+    "A complete missing history result is not evidence that replay is idempotent or that the original request never applied. Increasing preflight page limits alone does not solve the reported case."
+  ],
+  "confirmed_code_gaps_and_changes": [
+    "Post-upload recovery previously queried only ordinary windows. The new fallback reads native history once after three unsuccessful windows, with a 32-page bound and no additional upload.",
+    "All observations of the target from post-upload queries are combined so later matches or exceptions cannot erase a tombstone, other source or content conflict.",
+    "Incomplete native absence is classified before persistence as UNQUERIED; it is never transiently saved as MISSING.",
+    "Authentication failure after submission remains inside the recovery runner to prevent a whole-operation retry.",
+    "Read-only recovery of an existing match now uses the journal's atomic pending-snapshot reconciliation, without granting uploaded ownership.",
+    "Both the single-recovery report and read-only reconciliation expose allowlisted previous metadata. Reconciliation chooses the same oldest pending target as recovery and never advances to another target to borrow its history."
+  ],
+  "preserved_constraints": {
+    "per_target_extra_attempts_max": 1,
+    "reservation_committed_before_upload": true,
+    "consumed_oldest_target_not_skipped": true,
+    "global_pending_reset": false,
+    "reconciliation_health_uploads": 0,
+    "sleep_workflow_changed": false,
+    "credentials_or_health_values_in_new_diagnostics": false
+  },
+  "validation_report": "validation-healthlab9.json",
+  "limits": [
+    "Synthetic regression tests validate client behavior; they do not prove these 133 user-account records can be recovered.",
+    "No device is attached, no real account is accessed and no phone instrumentation is run.",
+    "The exhausted target is not uploaded again by this release. The next read-only report can reveal the already-stored prior response but cannot reconstruct evidence never persisted.",
+    "No new proven SpO2 wire-encoding defect or server-side idempotency guarantee was established."
+  ]
+}

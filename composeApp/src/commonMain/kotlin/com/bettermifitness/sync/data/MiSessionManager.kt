@@ -32,8 +32,13 @@ class MiSessionManager(
 
     val isActive: Boolean get() = directApi != null
 
+    /** Used only to namespace the local sync journal, never included in logs. */
+    var currentUserId: String? = null
+        private set
+
     /** Activates the session with fresh credentials (called after login). */
     fun activate(credentials: MiCredentials) {
+        currentUserId = credentials.userId
         dataClient?.close()
         dataClient = MiDataClient(credentials)
         directApi = MiDirectApi(dataClient!!)
@@ -41,6 +46,7 @@ class MiSessionManager(
 
     /** Clears the session (called on logout). */
     fun clear() {
+        currentUserId = null
         dataClient?.close()
         dataClient = null
         directApi = null

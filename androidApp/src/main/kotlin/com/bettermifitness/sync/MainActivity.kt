@@ -4,12 +4,15 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.view.Gravity
+import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.PermissionController
 import com.bettermifitness.sync.health.HealthConnectPermissionBridge
+import com.bettermifitness.sync.sync.LiveTestSessionGate
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.receiveAsFlow
@@ -26,6 +29,19 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (LiveTestSessionGate.isActive) {
+            // Keep HC access in a visible Activity without constructing the
+            // normal navigation graph. HomeViewModel's independent profile
+            // refresh could otherwise replace/close the live test API client.
+            setContentView(TextView(this).apply {
+                text = "正在检查健康数据同步\n请保持手机解锁，等待电脑上的结果。\n\n检查结束后，重新打开应用即可恢复正常同步。\n\nHealth sync check in progress. Keep this screen open."
+                textSize = 18f
+                gravity = Gravity.CENTER
+                val inset = (24 * resources.displayMetrics.density).toInt()
+                setPadding(inset, inset, inset, inset)
+            })
+            return
+        }
         enableEdgeToEdge()
 
         HealthConnectPermissionBridge.requestPermissions = { permissions ->

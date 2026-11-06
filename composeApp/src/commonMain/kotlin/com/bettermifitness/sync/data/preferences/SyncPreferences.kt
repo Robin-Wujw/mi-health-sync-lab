@@ -32,6 +32,8 @@ private val prefsScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 class SyncPreferences(
     private val dataStore: DataStore<Preferences>,
 ) : SyncPreferencesPort {
+    override val lastSyncActivityTime: Flow<String?> = dataStore.data.map { it[LAST_SYNC_ACTIVITY_KEY] }
+
     val lastSyncTime: Flow<String?> = dataStore.data.map { it[LAST_SYNC_KEY] }
 
     val lastBackgroundSyncTime: Flow<String?> = dataStore.data.map { it[LAST_BACKGROUND_SYNC_KEY] }
@@ -59,13 +61,27 @@ class SyncPreferences(
         it[SYNC_RANGE_DAYS_KEY] ?: 7
     }
 
+    /** Opt-in: one real source row per selected import; no daily summaries. */
+    val inboundTestMode: Flow<Boolean> = dataStore.data.map {
+        it[INBOUND_TEST_MODE_KEY]?.toBooleanStrictOrNull() ?: false
+    }
+
+    val allowLegacySleepHrvEnrichment: Flow<Boolean> = dataStore.data.map {
+        it[LEGACY_SLEEP_HRV_KEY]?.toBooleanStrictOrNull() ?: false
+    }
+
+    /** Separate opt-in to replace an unchanged, locally owned sleep target with selected HC data. */
+    val allowOwnedSleepRevision: Flow<Boolean> = dataStore.data.map {
+        it[OWNED_SLEEP_REVISION_KEY]?.toBooleanStrictOrNull() ?: false
+    }
+
     /**
      * Hot snapshot shared by all screens: single DataStore subscription for the
      * whole process. Started eagerly so the first emission lands before screens
      * draw; collectors created later observe the latest value immediately.
      * Sync/config writes still go through the suspend setters below.
      */
-    val snapshot: StateFlow<UserPrefsSnapshot> = combine(
+    val snapshot: StateFlow<UserPrefsSnapshot> = combine(combine(
         enabledMetrics,
         syncRangeDays,
         autoSync,
@@ -80,6 +96,9 @@ class SyncPreferences(
             lastSyncTime = lastSync,
             lastBackgroundSyncTime = lastBg,
         )
+    }, inboundTestMode, allowLegacySleepHrvEnrichment, allowOwnedSleepRevision) { snapshot, testMode, allowLegacy, allowRevision ->
+        snapshot.copy(inboundTestMode = testMode, allowLegacySleepHrvEnrichment = allowLegacy,
+            allowOwnedSleepRevision = allowRevision)
     }.stateIn(
         scope = prefsScope,
         started = SharingStarted.Eagerly,
@@ -88,6 +107,10 @@ class SyncPreferences(
 
     override suspend fun updateLastSync(timestamp: String) {
         dataStore.edit { it[LAST_SYNC_KEY] = timestamp }
+    }
+
+    override suspend fun updateLastSyncActivity(timestamp: String) {
+        dataStore.edit { it[LAST_SYNC_ACTIVITY_KEY] = timestamp }
     }
 
     override suspend fun updateLastBackgroundSync(timestamp: String) {
@@ -132,7 +155,38 @@ class SyncPreferences(
         dataStore.edit { it[SYNC_RANGE_DAYS_KEY] = days }
     }
 
+    suspend fun setInboundTestMode(enabled: Boolean) {
+        dataStore.edit { it[INBOUND_TEST_MODE_KEY] = enabled.toString() }
+    }
+
+    suspend fun setAllowLegacySleepHrvEnrichment(enabled: Boolean) {
+        dataStore.edit { it[LEGACY_SLEEP_HRV_KEY] = enabled.toString() }
+    }
+
+    suspend fun setAllowOwnedSleepRevision(enabled: Boolean) {
+        dataStore.edit { it[OWNED_SLEEP_REVISION_KEY] = enabled.toString() }
+    }
+
     companion object {
+        /** Explicit opt-in, intentionally absent from ALL_METRIC_KEYS. */
+        const val BODY_COMPOSITION_IMPORT_KEY = "body_composition_import_experimental"
+
+        const val HEART_RATE_IMPORT_KEY = "heart_rate_import_experimental"
+        const val RESTING_HEART_RATE_IMPORT_KEY = "resting_heart_rate_import_experimental"
+        const val SLEEP_IMPORT_KEY = "sleep_import_experimental"
+        const val HRV_IMPORT_KEY = "hrv_import_experimental"
+        const val SPO2_IMPORT_KEY = "spo2_import_experimental"
+
+        /** Separate directions; an existing Xiaomi export toggle never opts into an import. */
+        val INBOUND_METRIC_KEYS = setOf(
+            HEART_RATE_IMPORT_KEY,
+            RESTING_HEART_RATE_IMPORT_KEY,
+            SLEEP_IMPORT_KEY,
+            HRV_IMPORT_KEY,
+            SPO2_IMPORT_KEY,
+        )
+
+        /** Existing default selection. Experimental imports must remain absent. */
         val ALL_METRIC_KEYS = setOf(
             "heart_rate",
             "resting_heart_rate",
@@ -150,6 +204,7 @@ class SyncPreferences(
         )
 
         private val LAST_SYNC_KEY = stringPreferencesKey("last_sync_time")
+        private val LAST_SYNC_ACTIVITY_KEY = stringPreferencesKey("last_sync_activity_time")
         private val LAST_BACKGROUND_SYNC_KEY = stringPreferencesKey("last_background_sync_time")
         private val LAST_SYNC_STATUS_KEY = stringPreferencesKey("last_sync_status")
         private val LAST_SYNC_MESSAGE_KEY = stringPreferencesKey("last_sync_message")
@@ -160,5 +215,8 @@ class SyncPreferences(
         private val AUTO_SYNC_KEY = stringPreferencesKey("auto_sync")
         private val ENABLED_METRICS_KEY = stringSetPreferencesKey("enabled_metrics")
         private val SYNC_RANGE_DAYS_KEY = intPreferencesKey("sync_range_days")
+        private val INBOUND_TEST_MODE_KEY = stringPreferencesKey("inbound_single_record_test_mode")
+        private val LEGACY_SLEEP_HRV_KEY = stringPreferencesKey("allow_legacy_sleep_hrv_enrichment")
+        private val OWNED_SLEEP_REVISION_KEY = stringPreferencesKey("allow_owned_sleep_revision")
     }
 }

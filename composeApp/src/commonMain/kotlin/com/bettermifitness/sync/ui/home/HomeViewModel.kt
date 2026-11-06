@@ -13,7 +13,7 @@ import com.bettermifitness.sync.health.HealthPermissionRequester
 import com.bettermifitness.sync.health.HealthReadiness
 import com.bettermifitness.sync.sync.SyncCoordinator
 import com.bettermifitness.sync.sync.SyncOutcomeLabels
-import com.bettermifitness.sync.ui.SyncMetric
+import com.bettermifitness.sync.ui.SyncSelection
 import com.bettermifitness.sync.util.RelativeTime
 import com.mifitness.miclient.api.MiApiException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -38,7 +38,7 @@ data class HomeUiState(
     val lastBackgroundIsError: Boolean = false,
     /** Empty until prefs load — do not assume all metrics on. */
     val enabledMetricsCount: Int = 0,
-    val totalMetricsCount: Int = SyncMetric.entries.size,
+    val totalMetricsCount: Int = SyncSelection.taskKeys.size,
     val rangeDays: Int = 7,
     val autoSync: Boolean = false,
     val canSync: Boolean = false,
@@ -127,11 +127,11 @@ class HomeViewModel(
                     prefsSnap.lastBgMessage,
                 ),
                 lastBackgroundIsError = SyncOutcomeLabels.isError(prefsSnap.lastBgStatus),
-                enabledMetricsCount = prefsSnap.enabled.size,
-                totalMetricsCount = SyncMetric.entries.size,
+                enabledMetricsCount = SyncSelection.selectedTaskKeys(prefsSnap.enabled).size,
+                totalMetricsCount = SyncSelection.taskKeys.size,
                 rangeDays = prefsSnap.rangeDays,
                 autoSync = prefsSnap.autoSync,
-                canSync = prefsSnap.enabled.isNotEmpty(),
+                canSync = SyncSelection.selectedTaskKeys(prefsSnap.enabled).isNotEmpty(),
                 healthServiceName = health.serviceName,
                 healthReady = health.isReady,
                 healthStatusTitle = health.statusTitle,
@@ -159,28 +159,30 @@ class HomeViewModel(
 
     fun loadProfile() {
         viewModelScope.launch {
-            if (!session.isActive) {
-                profileErrorState.value = L10n.text(L10n.homeSignedIn)
-                return@launch
-            }
-            try {
-                profileState.value = session.api.getMe()
-                profileErrorState.value = null
-            } catch (e: MiApiException.AuthExpired) {
-                val refresh = session.refreshSessionDetailed()
-                if (refresh.isSuccess) {
-                    try {
-                        profileState.value = session.api.getMe()
-                        profileErrorState.value = null
-                        return@launch
-                    } catch (retry: Exception) {
-                        profileErrorState.value = retry.message ?: L10n.text(L10n.homeSignedIn)
-                        return@launch
-                    }
+            syncCoordinator.runSessionMaintenance {
+                if (!session.isActive) {
+                    profileErrorState.value = L10n.text(L10n.homeSignedIn)
+                    return@runSessionMaintenance
                 }
-                profileErrorState.value = refresh.userMessage
-            } catch (e: Exception) {
-                profileErrorState.value = e.message ?: L10n.text(L10n.homeSignedIn)
+                try {
+                    profileState.value = session.api.getMe()
+                    profileErrorState.value = null
+                } catch (e: MiApiException.AuthExpired) {
+                    val refresh = session.refreshSessionDetailed()
+                    if (refresh.isSuccess) {
+                        try {
+                            profileState.value = session.api.getMe()
+                            profileErrorState.value = null
+                            return@runSessionMaintenance
+                        } catch (retry: Exception) {
+                            profileErrorState.value = retry.message ?: L10n.text(L10n.homeSignedIn)
+                            return@runSessionMaintenance
+                        }
+                    }
+                    profileErrorState.value = refresh.userMessage
+                } catch (e: Exception) {
+                    profileErrorState.value = e.message ?: L10n.text(L10n.homeSignedIn)
+                }
             }
         }
     }

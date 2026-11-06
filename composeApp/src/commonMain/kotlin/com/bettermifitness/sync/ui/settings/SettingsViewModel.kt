@@ -5,6 +5,8 @@ import androidx.lifecycle.viewModelScope
 import com.bettermifitness.sync.i18n.L10n
 import com.bettermifitness.sync.AutoSyncPlatform
 import com.bettermifitness.sync.data.MiSessionManager
+import com.bettermifitness.sync.data.preferences.BodySyncLedger
+import com.bettermifitness.sync.data.preferences.HealthImportLedger
 import com.bettermifitness.sync.data.preferences.SyncPreferences
 import com.bettermifitness.sync.data.preferences.TokenStore
 import com.bettermifitness.sync.data.preferences.UserPrefsSnapshot
@@ -12,6 +14,7 @@ import com.bettermifitness.sync.health.HealthAvailability
 import com.bettermifitness.sync.health.HealthPermissionRequester
 import com.bettermifitness.sync.health.HealthReadiness
 import com.bettermifitness.sync.sync.SyncOutcomeLabels
+import com.bettermifitness.sync.ui.SyncSelection
 import com.bettermifitness.sync.util.RelativeTime
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -20,6 +23,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 
 data class SettingsUiState(
     /**
@@ -50,6 +54,12 @@ data class SettingsUiState(
     val healthStatusDetail: String = "",
     val healthNeedsAction: Boolean = false,
     val loggedOut: Boolean = false,
+    val bodyRetryReady: Boolean = false,
+    val inboundPermissionMessage: String? = null,
+    val inboundPermissionNeedsAction: Boolean = false,
+    val inboundTestMode: Boolean = false,
+    val allowLegacySleepHrvEnrichment: Boolean = false,
+    val allowOwnedSleepRevision: Boolean = false,
 )
 
 class SettingsViewModel(
@@ -58,6 +68,8 @@ class SettingsViewModel(
     private val healthPermissions: HealthPermissionRequester,
     private val tokenStore: TokenStore,
     private val session: MiSessionManager,
+    private val bodyLedger: BodySyncLedger,
+    private val importLedger: HealthImportLedger,
 ) : ViewModel() {
 
     /** Hot snapshot: single DataStore subscription, shared with all screens. */
@@ -92,25 +104,21 @@ class SettingsViewModel(
         syncPreferences.lastBackgroundSyncMessage,
     ) { t, s, m -> Triple(t, s, m) }
 
-    private val configBundle = combine(
-        prefsSnapshot,
-    ) { snaps ->
-        val snap = snaps[0]
-        Triple(snap.enabledMetrics, snap.syncRangeDays, snap.autoSync) to snap.ready
-    }
-
     val uiState: StateFlow<SettingsUiState> = combine(
-        configBundle,
+        prefsSnapshot,
         lastSyncBundle,
         lastBgBundle,
         localState,
         healthState,
     ) { config, lastSync, lastBg, local, health ->
         SettingsUiState(
-            enabledMetrics = config.first.first,
-            prefsReady = config.second,
-            rangeDays = config.first.second,
-            autoSync = config.first.third,
+            enabledMetrics = config.enabledMetrics,
+            prefsReady = config.ready,
+            rangeDays = config.syncRangeDays,
+            autoSync = config.autoSync,
+            inboundTestMode = config.inboundTestMode,
+            allowLegacySleepHrvEnrichment = config.allowLegacySleepHrvEnrichment,
+            allowOwnedSleepRevision = config.allowOwnedSleepRevision,
             lastBackgroundSyncLabel = RelativeTime.format(lastBg.first),
             lastBackgroundStatusTitle = SyncOutcomeLabels.title(lastBg.second),
             lastBackgroundDetail = SyncOutcomeLabels.detail(lastBg.second, lastBg.third),
@@ -130,6 +138,9 @@ class SettingsViewModel(
             healthStatusDetail = health.statusDetail,
             healthNeedsAction = !health.isReady,
             loggedOut = local.loggedOut,
+            bodyRetryReady = local.bodyRetryReady,
+            inboundPermissionMessage = local.inboundPermissionMessage,
+            inboundPermissionNeedsAction = local.inboundPermissionNeedsAction,
         )
     }.stateIn(
         scope = viewModelScope,
@@ -169,6 +180,7 @@ class SettingsViewModel(
             } catch (_: Exception) {
                 // Denied / failed — open Settings or Health Connect below.
             }
+            requestSelectedInboundPermissions()
             if (!healthAvailability.hasWritePermissions()) {
                 healthAvailability.openHealthService()
             }
@@ -179,6 +191,54 @@ class SettingsViewModel(
     fun setMetricEnabled(key: String, enabled: Boolean) {
         viewModelScope.launch {
             syncPreferences.setMetricEnabled(key, enabled)
+            if (key in SyncPreferences.INBOUND_METRIC_KEYS) {
+                localState.update { it.copy(inboundPermissionMessage = null, inboundPermissionNeedsAction = false) }
+            }
+        }
+    }
+
+    fun openInboundPermissions() {
+        viewModelScope.launch {
+            requestSelectedInboundPermissions()
+            refreshHealth()
+        }
+    }
+
+    private suspend fun requestSelectedInboundPermissions() {
+        val snapshot = prefsSnapshot.value
+        val requested = SyncSelection.inboundMetrics(snapshot.enabledMetrics)
+        if (requested.isEmpty()) return
+        try {
+            val granted = healthPermissions.requestReadPermissions(requested, includeBackground = snapshot.autoSync, includeHistory = snapshot.syncRangeDays > 27)
+            val missing = requested - granted
+            localState.update {
+                it.copy(
+                    inboundPermissionMessage = if (missing.isEmpty()) {
+                        L10n.text(L10n.settingsInboundPermissionsReady)
+                    } else {
+                        L10n.textFmt(L10n.settingsInboundPermissionsMissing, missing.joinToString(", ") { metric -> L10n.metric(metric.metricKey) })
+                    },
+                    inboundPermissionNeedsAction = missing.isNotEmpty(),
+                )
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            localState.update {
+                it.copy(
+                    inboundPermissionMessage = L10n.text(L10n.settingsInboundPermissionsFailed),
+                    inboundPermissionNeedsAction = true,
+                )
+            }
+        }
+    }
+
+    fun retryBodyImports() {
+        viewModelScope.launch {
+            bodyLedger.resetPendingImports()
+            // Other health metrics retain their uncertain-write journal. Their
+            // explicit single-row recovery action records a durable retry budget.
+            localState.update { it.copy(bodyRetryReady = true) }
         }
     }
 
@@ -186,6 +246,18 @@ class SettingsViewModel(
         viewModelScope.launch {
             syncPreferences.setSyncRangeDays(days)
         }
+    }
+
+    fun setInboundTestMode(enabled: Boolean) {
+        viewModelScope.launch { syncPreferences.setInboundTestMode(enabled) }
+    }
+
+    fun setAllowLegacySleepHrvEnrichment(enabled: Boolean) {
+        viewModelScope.launch { syncPreferences.setAllowLegacySleepHrvEnrichment(enabled) }
+    }
+
+    fun setAllowOwnedSleepRevision(enabled: Boolean) {
+        viewModelScope.launch { syncPreferences.setAllowOwnedSleepRevision(enabled) }
     }
 
     fun setAutoSync(enabled: Boolean) {
@@ -234,6 +306,7 @@ class SettingsViewModel(
 
     private fun mapBgTestStatus(status: String): String = when (status) {
         "success" -> L10n.text(L10n.settingsTestOk)
+        "completed_with_skips" -> L10n.text(L10n.settingsTestOk)
         "partial_success" -> L10n.text(L10n.settingsPartialOk)
         "skipped" -> L10n.text(L10n.settingsSkipped)
         "not_logged_in" -> L10n.text(L10n.settingsNotSignedIn)
@@ -246,5 +319,8 @@ class SettingsViewModel(
         val bgTestStatus: String? = null,
         val bgTestRunning: Boolean = false,
         val loggedOut: Boolean = false,
+        val bodyRetryReady: Boolean = false,
+        val inboundPermissionMessage: String? = null,
+        val inboundPermissionNeedsAction: Boolean = false,
     )
 }

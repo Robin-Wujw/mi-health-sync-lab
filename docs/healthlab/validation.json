@@ -1,0 +1,312 @@
+{
+  "variant": "Android experimental Better Mi Fitness Sync fork; healthlab.7 cloud-read-only batch reconciliation of already-matching pending SpO2",
+  "base_commit": "c1dd886328c82f15faf17ec24dc485cb61a70cec",
+  "package": "com.bettermifitness.sync.healthlab",
+  "application_label": "Mi Health Sync Lab",
+  "version": "1.0.6-healthlab.7",
+  "version_code": 1000013,
+  "minimum_android_api": 28,
+  "target_android_api": 36,
+  "test_results": [
+    {
+      "module": "composeApp",
+      "suites": 51,
+      "tests": 459,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "miclient",
+      "suites": 11,
+      "tests": 60,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  ],
+  "tests_total": 519,
+  "apk_validation": "passed",
+  "apk_bytes": 43758820,
+  "apk_sha256": "38cee80edd33a962320b1fa798ff643e01ff473459443c1136e3b7e918e4235c",
+  "apk_signature_verified": true,
+  "apk_signature_schemes": [
+    "v2"
+  ],
+  "signer_certificate_sha256": "77bfa8d392de05f06643b045e6f9de3364269992816293efaa57fb0c20a580ab",
+  "same_signer_as_delivered_healthlab_2": true,
+  "debuggable": false,
+  "manifest_verified": true,
+  "apk_zip_integrity": "passed",
+  "license_assets": [
+    {
+      "path": "assets/healthlab-license.txt",
+      "bytes": 1352,
+      "sha256": "d9d7cb9a0cd0d1c9b14a04f2692b3f4dbff8d045609a0409a09d08a796887974",
+      "matches_source": true
+    },
+    {
+      "path": "assets/huami-health-bridge-license.txt",
+      "bytes": 1224,
+      "sha256": "c276abd60800628d9c18d2a3114b85d8f42dc4a2a0f02dba4a2aae7ea095eb27",
+      "matches_source": true
+    }
+  ],
+  "baseline_profile_included": true,
+  "android_abis": [
+    "arm64-v8a",
+    "armeabi-v7a",
+    "x86",
+    "x86_64"
+  ],
+  "build_result": "Release main and matching instrumentation APKs built successfully. Actual binary manifests match healthlab.7/1000013. 519 Android JVM/host tests passed, with zero failures, errors or skips. Generated Android module outputs were cleaned in a separate invocation before the build to prevent stale resource IDs.",
+  "validation_scope": "519 Android JVM/host tests using synthetic records, count-shaped fixtures, fake cloud responses, memory-backed journal fixtures, one real temporary PreferencesDataStore file close-and-reopen test, and four real loopback HTTP transport tests. Main/test APK compilation, signatures, binary manifests, ZIP integrity, license assets and baseline profile checked. No phone installation, user-account read/write, instrumentation execution, Windows PowerShell execution, official Mi Fitness UI check, physical device reboot/process kill/disk failure or iOS build by the assistant.",
+  "prior_version_user_feedback": {
+    "version": "1.0.6-healthlab.5 (1000011)",
+    "metric": "spo2",
+    "input_records": 195,
+    "planned_raw_rows": 195,
+    "already_present_raw_rows": 63,
+    "attempted_raw_rows": 0,
+    "newly_verified_raw_rows": 0,
+    "blocked_pending_rows": 132,
+    "stage": "PRECHECK",
+    "failure_reason": "PENDING",
+    "issue_code": "INCOMPLETE_LOCAL_DAY",
+    "probe_missing": 132,
+    "probe_verified": 0,
+    "broad_read_groups": 2,
+    "broad_read_failure_groups": 0,
+    "narrow_selected": 3,
+    "narrow_missing": 3,
+    "broad_narrow_disagreement": 0,
+    "interpretation_limit": "Successful bounded queries returned no matching active default-SID targets for the pending identities. This does not prove remote non-persistence. Ordinary MISSING also includes targets returned only as deleted or under a different explicit SID. Changed counts from .4 are not evidence of fifteen recovered rows."
+  },
+  "feedback_changes": [
+    "Phone action reconcile all pending SpO2 and PC mode reconcile-pending read the cloud but upload zero health rows. Only actually observed matches can update local pending state.",
+    "Combine all broad/native observations before classification. Tombstones, other or unknown SIDs and content conflicts take precedence over a match from another view. Incomplete history leaves absent targets unqueried.",
+    "Commit all eligible local reconciliations in one DataStore transaction with per-target pending/recovery CAS. Preserve consumed budgets, latest business metadata and observed-only upload provenance.",
+    "Report a disjoint candidate outcome partition, distinguish local CAS changes from persistence failures, and keep new-upload counters at zero.",
+    "Real temporary PreferencesDataStore is closed, joined and reopened to verify pending, recovery budget, observed fingerprints and business metadata persistence. This is not a physical process-death test.",
+    "Phone actions share the sync/session lock and an independent result panel. inspect remains no local journal mutation; only the two health-write PC modes require AllowCloudWrite."
+  ],
+  "import_defaults": {
+    "new_hrv_enabled": false,
+    "new_spo2_enabled": false,
+    "single_record_test_mode": false,
+    "allow_legacy_sleep_hrv_enrichment": false,
+    "source_package": "com.huami.watch.hmwatchmanager",
+    "recent_window_limit_days": 28,
+    "raw_batch_limit": 50,
+    "daily_batch_limit": 30,
+    "verify_by_cloud_readback": true
+  },
+  "limitations": [
+    "Passing offline tests does not prove acceptance by a particular Xiaomi account or App display.",
+    "HC HRV source is RMSSD; Xiaomi native HRV algorithm remains unconfirmed. Experimental summaries do not reconstruct baseline, scoring, full-night beat-interval RMSSD, or detailed curves.",
+    "No confirmed conditional field-update/CAS endpoint; enrichment double-read narrows but cannot eliminate concurrent-client races.",
+    "Latest weight sync retained; no dedicated S400 Pro Mi Home/member historical fallback.",
+    "No addition to official Zepp HC read capabilities or private receiving endpoints.",
+    "Any rejected source currently suppresses daily aggregation across the selected range; unresolved raw rows also defer daily writes. Raw persistence does not guarantee Mi Fitness charts.",
+    "Unverified earlier date groups that become visible later are reconciled at the next normal sync precheck; no extra end-of-run sweep or automatic POST retry.",
+    "The three RHR source instants are absent from the user log; .5 only merges distinct-time observations. True same-instant contradictions still reject the date.",
+    "A different existing cloud RHR value is still protected; an observed lower daily value does not authorize automatic replacement.",
+    "Pending reads are observations, not proof of absence or remote API completeness; the new probe does not unlock pending rows.",
+    "The live RHR single-record path verifies RAW only, without the normal-sync daily display check.",
+    "The instrumentation harness and PowerShell driver are built/reviewed but not run on a user device or on Windows.",
+    "Android replay protection applies to MiDataClient default transport; iOS URLSession behavior and arbitrary injected clients are not covered."
+  ],
+  "same_signer_as_delivered_healthlab_3": true,
+  "older_version_user_feedback": {
+    "version": "1.0.6-healthlab.3 (1000009)",
+    "heart_rate": {
+      "input_records": 9412,
+      "source_raw_rows": 9540,
+      "planned_raw_rows": 9540,
+      "attempted_raw_rows": 0,
+      "verified_raw_rows": 9322,
+      "affected_rows": 218,
+      "stage": "PRECHECK"
+    },
+    "spo2": {
+      "input_records": 1542,
+      "planned_raw_rows": 1542,
+      "planned_daily_rows": 6,
+      "attempted_raw_rows": 233,
+      "verified_raw_rows": 411,
+      "affected_rows": 171,
+      "stage": "READBACK",
+      "upload_business_code": 0,
+      "upload_accepted": true
+    },
+    "hrv": {
+      "input_records": 2888,
+      "planned_raw_rows": 10,
+      "attempted_raw_rows": 0,
+      "verified_raw_rows": 10,
+      "affected_rows": 170,
+      "stage": "PREPARE"
+    },
+    "resting_heart_rate": {
+      "input_records": 27,
+      "planned_raw_rows": 1,
+      "attempted_raw_rows": 0,
+      "verified_raw_rows": 1,
+      "affected_rows": 24,
+      "stage": "PREPARE"
+    },
+    "interpretation_limit": "Diagnostic v1 omitted failure reasons, source issue codes and verification-status partitions. Synthetic fixtures reproduce count shapes; they do not establish actual private-source causes or App display."
+  },
+  "prior_feedback_changes": [
+    "Continue independent raw-date groups after accepted POST plus healthy but semantically unverified readback; retain pending locks and never automatically resend uncertain writes.",
+    "Bounded GET-only readback pauses of 1000 and 3000 milliseconds.",
+    "Classify unmatched-sleep HRV samples as exclusions/warnings while retaining rejected ambiguous or invalid sources.",
+    "Diagnostic v2 includes failure reasons, source issue counts, existing/new/unattempted counts, pending/conflict/ambiguity partitions and allowlisted field mismatch counts.",
+    "Preserve partial verified progress at both metric and overall-run level; keep incomplete tasks incomplete.",
+    "Retain detail and copyable diagnostic for nonempty-source zero-mapped NoData outcomes.",
+    "Run the read-only RHR daily diagnostic after source-rejected partial outcomes only when all mapped selected raw targets are verified.",
+    "Reject conflicting equal-latest HC revisions instead of selecting by page order; preserve exact duplicate deduplication.",
+    "Clear stale earlier upload/batch context when reporting later PREPARE or PRECHECK failures."
+  ],
+  "same_signer_as_delivered_healthlab_4": true,
+  "device_test_apk": {
+    "source_path": "androidApp/build/outputs/apk/androidTest/release/androidApp-release-androidTest.apk",
+    "package": "com.bettermifitness.sync.healthlab.test",
+    "runner": "com.bettermifitness.sync.lab.HealthLabInstrumentation",
+    "target_package": "com.bettermifitness.sync.healthlab",
+    "bytes": 27480,
+    "sha256": "3281b50300bbdb0b09b6374dd5ac6317ef8bd57ddf6b88c41ca091230f70411b",
+    "signature_verified": true,
+    "signer_certificate_sha256": "77bfa8d392de05f06643b045e6f9de3364269992816293efaa57fb0c20a580ab",
+    "same_signer_as_main": true,
+    "manifest_verified": true,
+    "zip_integrity": "passed",
+    "device_execution": "not_run_no_connected_device",
+    "powershell_execution": "not_run_pwsh_unavailable",
+    "driver": "scripts/Invoke-MiHealthLiveTest.ps1",
+    "default_mode": "inspect",
+    "local_reconciliation_mode": "reconcile-pending (spo2 only), without AllowCloudWrite",
+    "explicit_write_modes": [
+      "sync-one plus AllowCloudWrite",
+      "recover-one-pending plus AllowCloudWrite (spo2 only)"
+    ],
+    "range_days_min": 1,
+    "range_days_max": 27,
+    "raw_targets_per_write_run_max": 1,
+    "daily_targets_per_write_run_max": 0,
+    "reconciliation_health_upload_max": 0
+  },
+  "healthlab5_validation_summary": {
+    "version": "1.0.6-healthlab.5",
+    "version_code": 1000011,
+    "tests_total": 440,
+    "apk_sha256": "778b6d1aaa25e56ea4d93d9e93c09ebf6076ebf7dc1d003bb2bd6745cf6b706a",
+    "prior_version_user_feedback": {
+      "version": "1.0.6-healthlab.4 (1000010)",
+      "resting_heart_rate": {
+        "input_records": 3,
+        "planned_raw_rows": 0,
+        "attempted_raw_rows": 0,
+        "verified_raw_rows": 0,
+        "source_rejected_records": 3,
+        "stage": "PREPARE",
+        "failure_reason": "SOURCE_REJECTED",
+        "issue_code": "RESTING_HEART_RATE_DAY_COLLISION"
+      },
+      "spo2": {
+        "input_records": 219,
+        "planned_raw_rows": 219,
+        "attempted_raw_rows": 0,
+        "already_present_raw_rows": 72,
+        "blocked_pending_rows": 147,
+        "stage": "PRECHECK",
+        "failure_reason": "PENDING",
+        "issue_code": "INCOMPLETE_LOCAL_DAY"
+      },
+      "interpretation_limit": "With the complete pasted diagnostic, absent precheck mismatch fields imply all 147 pending rows were MISSING in that preflight query. This does not prove cloud non-persistence. RHR source instants were excluded, so distinct-time observations cannot be distinguished from same-instant contradictions from the old report."
+    },
+    "feedback_changes": [
+      "Use native-evidenced minimum of valid actual RHR observations at different source instants per source date; retain same-instant/revision conflicts and all source associations.",
+      "Attach bounded read-only broad/narrow pending probes to incomplete normal imports and device inspection; never change journal state or infer retry authorization from missing reads.",
+      "Provide a separate same-signer instrumentation APK and PowerShell driver: default inspect; explicit sync-one selects at most one RAW target and no DAILY target.",
+      "Isolate live tests before Application startup; block ordinary coordinator/worker sync and display a minimal Activity without home-profile refresh.",
+      "Disable automatic Android health-data POST-body replay, including connection recovery, redirects and 503 Retry-After follow-ups; verify with real localhost fixtures.",
+      "Keep diagnostic read observations separate from uploaded/verified progress; diagnostics export only allowlisted fields and counts."
+    ]
+  },
+  "healthlab6_key_test_suites": [
+    {
+      "suite": "com.bettermifitness.sync.data.api.MiHealthImportNativeReadTest",
+      "tests": 11,
+      "report": "composeApp/build/test-results/testAndroidHostTest/TEST-com.bettermifitness.sync.data.api.MiHealthImportNativeReadTest.xml"
+    },
+    {
+      "suite": "com.bettermifitness.sync.data.api.MiPendingImportProbeTest",
+      "tests": 17,
+      "report": "composeApp/build/test-results/testAndroidHostTest/TEST-com.bettermifitness.sync.data.api.MiPendingImportProbeTest.xml"
+    },
+    {
+      "suite": "com.bettermifitness.sync.data.preferences.HealthImportLedgerRecoveryTest",
+      "tests": 5,
+      "report": "composeApp/build/test-results/testAndroidHostTest/TEST-com.bettermifitness.sync.data.preferences.HealthImportLedgerRecoveryTest.xml"
+    },
+    {
+      "suite": "com.bettermifitness.sync.data.repository.MiPendingSpO2RecoveryTest",
+      "tests": 18,
+      "report": "composeApp/build/test-results/testAndroidHostTest/TEST-com.bettermifitness.sync.data.repository.MiPendingSpO2RecoveryTest.xml"
+    }
+  ],
+  "same_signer_as_delivered_healthlab_5": true,
+  "healthlab6_recovery_limits": [
+    "No server-side idempotence, atomicity or exactly-once guarantee has been established. A single explicit extra attempt can still encounter a previously persisted but invisible record.",
+    "Old journals did not retain full request or business-outcome provenance. A matching old identity/content/source digest cannot prove the original outer timezone or HTTP envelope.",
+    "Native diagnostic control is capped at five pages; recovery is capped at 32 pages. Without explicit valid pagination completion, missing is unqueried/incomplete and no recovery write is made.",
+    "Repeated recovery cannot skip a consumed oldest unresolved target within the same source plan. Changing or sliding the time range can change which target is oldest; the persistent budget is per target.",
+    "Uninstalling/clearing application data destroys local history and is not a recovery procedure. The old weight-reset action is no longer linked to health-import pending.",
+    "One verified RAW recovery neither repairs the other pending targets nor establishes official Mi Fitness display. No DAILY record is created by recovery.",
+    "Assistant cannot access the user USB phone from the cloud environment; the compiled phone action and optional PC driver still require real-device execution."
+  ],
+  "healthlab6_validation_summary": {
+    "version": "1.0.6-healthlab.6",
+    "version_code": 1000012,
+    "tests_total": 488,
+    "apk_sha256": "a2265c80db9baaf3e2054d1d7fecd75e878d9be189f18abda3eefe472f7ab9ac",
+    "feedback_changes": [
+      "Phone sync page exposes an explicit one-pending-SpO2 recovery action. Device-test mode recover-one-pending uses the same implementation; it requires the write flag and only accepts spo2.",
+      "Inspect/normal pending probes add a bounded native no-start-time history control and counts for deleted/other-source occupancy. These probes never mutate the journal or increase normal verified counts.",
+      "Recovery checks one oldest in-range pending target against current source identity, content, source association and known timezone; it checks broad/native/final-narrow views and requires complete native traversal before treating missing as eligible for the explicit extra attempt.",
+      "Recovery persists a per-account/per-target CAS reservation before its sole health upload. Cancellation, rejection, response loss or process restart cannot reauthorize that target. A partial native read can positively confirm an observed match but cannot establish absence.",
+      "Normal RAW sync protects every previously verified identity from automatic re-upload when a later query omits it, with a separate blocked_verified_history_rows counter.",
+      "UI recovery, ordinary sync, background keepalive and home profile refresh share a session-mutation lock. The old weight retry setting no longer clears health-import pending state.",
+      "Preserve previous transport no-replay protections, RHR day policy, metric mappings and diagnostics privacy; no fake health values, source timestamps or source IDs introduced."
+    ]
+  },
+  "healthlab7_key_test_suites": [
+    {
+      "suite": "com.bettermifitness.sync.data.repository.MiPendingSpO2ReconcilerTest",
+      "tests": 18,
+      "report": "composeApp/build/test-results/testAndroidHostTest/TEST-com.bettermifitness.sync.data.repository.MiPendingSpO2ReconcilerTest.xml"
+    },
+    {
+      "suite": "com.bettermifitness.sync.data.preferences.HealthImportLedgerReconciliationTest",
+      "tests": 10,
+      "report": "composeApp/build/test-results/testAndroidHostTest/TEST-com.bettermifitness.sync.data.preferences.HealthImportLedgerReconciliationTest.xml"
+    },
+    {
+      "suite": "com.bettermifitness.sync.data.preferences.HealthImportLedgerDiskReconciliationTest",
+      "tests": 1,
+      "report": "composeApp/build/test-results/testAndroidHostTest/TEST-com.bettermifitness.sync.data.preferences.HealthImportLedgerDiskReconciliationTest.xml"
+    }
+  ],
+  "healthlab7_added_cases": 31,
+  "same_signer_as_delivered_healthlab_6": true,
+  "latest_user_device_feedback_unchanged": "The most recent supplied device diagnostic is still healthlab.5 SpO2: 195 source targets, 63 existing matches, 132 pending, zero attempted health uploads. No new .6/.7 user device report was provided for this implementation.",
+  "healthlab7_reconciliation_limits": [
+    "This improves local reconciliation workflow, without evidence that the user 132 targets are available through any current cloud view.",
+    "Current source-plan pending only; unavailable/deleted HC source history and out-of-window pending are outside this action.",
+    "One endpoint traversal ending does not prove historical non-persistence, nor official App display or future retention.",
+    "All-broad-matched targets can reconcile without native traversal. Otherwise, native traversal is capped at 32 pages and unresolved absent targets stay unqueried if incomplete.",
+    "Source-plan REJECTED problems with unknown target attribution conservatively block that plan; no automatic rewrite or arbitrary source selection.",
+    "No automated transition from batch reconciliation to health upload; explicit single recovery remains separate with its existing durable budget."
+  ]
+}

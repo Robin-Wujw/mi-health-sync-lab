@@ -34,6 +34,8 @@ struct SyncBetterMiFitnessIntent: AppIntent {
         switch status {
         case BackgroundSync.shared.STATUS_SUCCESS:
             return IntentDialog("\(L10n.outcomeSuccessDetail)")
+        case BackgroundSync.shared.STATUS_COMPLETED_WITH_SKIPS:
+            return IntentDialog("\(L10n.outcomeSuccessDetail)")
         case BackgroundSync.shared.STATUS_PARTIAL_SUCCESS:
             return IntentDialog("\(L10n.outcomePartialDetail)")
         case BackgroundSync.shared.STATUS_SKIPPED:

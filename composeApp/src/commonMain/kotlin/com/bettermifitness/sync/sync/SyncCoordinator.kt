@@ -10,8 +10,15 @@ import com.bettermifitness.sync.data.repository.SyncRunResult
 import com.bettermifitness.sync.health.HealthAvailability
 import com.bettermifitness.sync.health.HealthPermissionRequester
 import com.bettermifitness.sync.health.HealthStore
+import com.bettermifitness.sync.health.HealthInboundMetric
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.days
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.ZERO
+import kotlin.time.Instant
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
@@ -31,6 +38,7 @@ class SyncCoordinator(
     private val healthAvailability: HealthAvailability,
     private val healthPermissions: HealthPermissionRequester,
     private val repository: HealthSyncRunner,
+    private val now: () -> Instant = { Clock.System.now() },
 ) {
     constructor(
         session: SyncSessionPort,
@@ -56,6 +64,30 @@ class SyncCoordinator(
     val lastOutcome: StateFlow<SyncOutcome?>
         field = MutableStateFlow(null)
 
+    /** A bounded user action shares the normal sync lock without changing saved sync settings/results. */
+    suspend fun <T> runExclusiveUserAction(action: suspend () -> T): ExclusiveSyncActionResult<T> {
+        if (LiveTestSessionGate.isActive) return ExclusiveSyncActionResult.Unavailable
+        if (!runMutex.tryLock()) return ExclusiveSyncActionResult.Busy
+        isRunning.value = true
+        return try {
+            ExclusiveSyncActionResult.Completed(trackSyncActivity(action))
+        } finally {
+            isRunning.value = false
+            runMutex.unlock()
+        }
+    }
+
+    /** Profile/keepalive refresh must not replace the API client during a health write or readback. */
+    suspend fun runSessionMaintenance(action: suspend () -> Unit): Boolean {
+        if (LiveTestSessionGate.isActive || !runMutex.tryLock()) return false
+        return try {
+            action()
+            true
+        } finally {
+            runMutex.unlock()
+        }
+    }
+
     /**
      * @param rangeDaysOverride when > 0, overrides user range (e.g. BG 1-day refresh)
      * @param requireAutoSync when true, no-ops unless auto-sync is enabled
@@ -72,6 +104,9 @@ class SyncCoordinator(
         resetProgress: Boolean = false,
         userInitiated: Boolean = true,
     ): SyncOutcome {
+        // Check before credentials, session refresh, permissions, or preferences.
+        // Instrumentation invokes a separate bounded repository entry point.
+        if (LiveTestSessionGate.isActive) return SyncOutcome.Skipped
         if (!runMutex.tryLock()) {
             return SyncOutcome.AlreadyRunning
         }
@@ -87,7 +122,7 @@ class SyncCoordinator(
             )
             // Do not clobber last sync prefs when we never started work.
             if (outcome !is SyncOutcome.AlreadyRunning) {
-                recordOutcome(outcome, recordAsBackground)
+                recordOutcome(outcome, recordAsBackground, userInitiated)
                 lastOutcome.value = outcome
             }
             return outcome
@@ -125,58 +160,102 @@ class SyncCoordinator(
             return SyncOutcome.Skipped
         }
 
+        // A return from the background must not restart a recent manual run.
+        // The durable start/end marker also covers cancellation and process recreation.
+        // Scheduled workers retain their own retry/backoff policy.
+        if (requireAutoSync && !recordAsBackground && !userInitiated && hasRecentSyncActivity()) {
+            return SyncOutcome.Skipped
+        }
+
+        val enabled = syncPreferences.enabledMetrics.first()
+        if (enabled.none { it in SyncPreferences.ALL_METRIC_KEYS || it in SyncPreferences.INBOUND_METRIC_KEYS }) {
+            return SyncOutcome.Skipped
+        }
+
         if (!healthAvailability.isAvailable()) {
             return SyncOutcome.HealthUnavailable
         }
 
-        if (requestHealthPermissions) {
+        val days = if (rangeDaysOverride > 0) rangeDaysOverride else syncPreferences.syncRangeDays.first()
+        return trackSyncActivity {
+            if (requestHealthPermissions) {
+                try {
+                    // Inbound-only runs must not request unrelated write access.
+                    if (enabled.any { it in SyncPreferences.ALL_METRIC_KEYS }) {
+                        healthPermissions.requestPermissions()
+                    }
+                    val inbound = buildSet {
+                        if (SyncPreferences.HEART_RATE_IMPORT_KEY in enabled) add(HealthInboundMetric.HEART_RATE)
+                        if (SyncPreferences.RESTING_HEART_RATE_IMPORT_KEY in enabled) add(HealthInboundMetric.RESTING_HEART_RATE)
+                        if (SyncPreferences.SLEEP_IMPORT_KEY in enabled) add(HealthInboundMetric.SLEEP)
+                        if (SyncPreferences.HRV_IMPORT_KEY in enabled) {
+                            add(HealthInboundMetric.HRV)
+                            // Experimental RMSSD summaries require a real, same-source
+                            // sleep session; no night interval is invented from a clock.
+                            add(HealthInboundMetric.SLEEP)
+                        }
+                        if (SyncPreferences.SPO2_IMPORT_KEY in enabled) add(HealthInboundMetric.OXYGEN_SATURATION)
+                    }
+                    if (inbound.isNotEmpty()) {
+                        healthPermissions.requestReadPermissions(inbound, includeBackground = syncPreferences.autoSync.first(), includeHistory = days > 27)
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    return@trackSyncActivity SyncOutcome.Failed(
+                        message = e.message ?: "Health permissions denied",
+                        retryable = false,
+                    )
+                }
+            }
+
             try {
-                healthPermissions.requestPermissions()
+                if (resetProgress) repository.resetProgress()
+                val now = now()
+                val result = repository.syncAll(
+                    from = now.minus(days.days).toString(),
+                    to = now.toString(),
+                    enabled = enabled,
+                )
+                mapRunResult(result, now.toString(), recordAsBackground, userInitiated, requireAutoSync)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                return SyncOutcome.Failed(
-                    message = e.message ?: "Health permissions denied",
-                    retryable = false,
+                SyncOutcome.Failed(
+                    message = e.message,
+                    retryable = true,
                 )
             }
         }
+    }
 
-        val enabled = syncPreferences.enabledMetrics.first()
-        if (enabled.isEmpty()) {
-            return SyncOutcome.Skipped
-        }
+    private suspend fun hasRecentSyncActivity(): Boolean {
+        val timestamp = syncPreferences.lastSyncActivityTime.first() ?: return false
+        val previous = try { Instant.parse(timestamp) } catch (_: IllegalArgumentException) { return false }
+        val elapsed = now() - previous
+        return elapsed >= ZERO && elapsed < 15.minutes
+    }
 
-        val days = if (rangeDaysOverride > 0) {
-            rangeDaysOverride
-        } else {
-            syncPreferences.syncRangeDays.first()
-        }
-
+    private suspend fun <T> trackSyncActivity(action: suspend () -> T): T {
+        syncPreferences.updateLastSyncActivity(now().toString())
         return try {
-            if (resetProgress) repository.resetProgress()
-            val now = Clock.System.now()
-            val result = repository.syncAll(
-                from = now.minus(days.days).toString(),
-                to = now.toString(),
-                enabled = enabled,
-            )
-            mapRunResult(result, now.toString(), recordAsBackground, userInitiated, requireAutoSync)
-        } catch (e: Exception) {
-            SyncOutcome.Failed(
-                message = e.message,
-                retryable = true,
-            )
+            action()
+        } finally {
+            withContext(NonCancellable) {
+                syncPreferences.updateLastSyncActivity(now().toString())
+            }
         }
     }
 
-    private suspend fun recordOutcome(outcome: SyncOutcome, recordAsBackground: Boolean) {
-        // Skipped means no work ran (auto-sync off, nothing enabled) — leave the last
-        // real result alone instead of stamping it over with "nothing to do".
-        if (outcome is SyncOutcome.Skipped) return
+    private suspend fun recordOutcome(outcome: SyncOutcome, recordAsBackground: Boolean, userInitiated: Boolean) {
+        // Explicit no-op results replace an old partial result; automatic no-ops
+        // (including foreground cooldown) leave the last user-visible result alone.
+        if (outcome is SyncOutcome.Skipped && !userInitiated) return
         val status = outcome.toStatusCode()
         val message = outcome.userMessage()
         if (recordAsBackground) {
             syncPreferences.updateLastBackgroundSyncOutcome(status, message)
-            syncPreferences.updateLastBackgroundSync(Clock.System.now().toString())
+            syncPreferences.updateLastBackgroundSync(now().toString())
         } else {
             syncPreferences.updateLastSyncOutcome(status, message)
         }
@@ -190,7 +269,7 @@ class SyncCoordinator(
         requireAutoSync: Boolean,
     ): SyncOutcome {
         if (result.isEmpty) return SyncOutcome.Skipped
-        if (result.succeeded > 0) {
+        if (result.hasVerifiedProgress) {
             syncPreferences.updateLastSync(now)
             if (recordAsBackground) {
                 syncPreferences.updateLastBackgroundSync(now)
@@ -198,7 +277,9 @@ class SyncCoordinator(
         }
 
         return when {
+            result.isCompletedWithSkips -> SyncOutcome.CompletedWithSkips(result.summary())
             result.isFullSuccess -> SyncOutcome.Success
+            result.isNoData -> SyncOutcome.NoData(result.summary())
             result.isPartialSuccess -> SyncOutcome.PartialSuccess(
                 succeeded = result.succeeded,
                 failed = result.failed,
@@ -230,8 +311,16 @@ class SyncCoordinator(
     }
 }
 
+sealed interface ExclusiveSyncActionResult<out T> {
+    data class Completed<T>(val value: T) : ExclusiveSyncActionResult<T>
+    data object Busy : ExclusiveSyncActionResult<Nothing>
+    data object Unavailable : ExclusiveSyncActionResult<Nothing>
+}
+
 sealed class SyncOutcome {
     data object Success : SyncOutcome()
+    data class CompletedWithSkips(val summary: String) : SyncOutcome()
+    data class NoData(val message: String) : SyncOutcome()
 
     data class PartialSuccess(
         val succeeded: Int,
@@ -257,6 +346,8 @@ sealed class SyncOutcome {
 
     fun toStatusCode(): String = when (this) {
         Success -> STATUS_SUCCESS
+        is CompletedWithSkips -> STATUS_COMPLETED_WITH_SKIPS
+        is NoData -> STATUS_NO_DATA
         is PartialSuccess -> STATUS_PARTIAL_SUCCESS
         Skipped -> STATUS_SKIPPED
         NotLoggedIn -> STATUS_NOT_LOGGED_IN
@@ -267,6 +358,8 @@ sealed class SyncOutcome {
 
     companion object {
         const val STATUS_SUCCESS = "success"
+        const val STATUS_COMPLETED_WITH_SKIPS = "completed_with_skips"
+        const val STATUS_NO_DATA = "no_data"
         const val STATUS_PARTIAL_SUCCESS = "partial_success"
         const val STATUS_SKIPPED = "skipped"
         const val STATUS_NOT_LOGGED_IN = "not_logged_in"

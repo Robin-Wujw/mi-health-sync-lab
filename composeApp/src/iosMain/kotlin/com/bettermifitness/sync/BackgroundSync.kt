@@ -20,6 +20,7 @@ import org.koin.mp.KoinPlatform
  */
 object BackgroundSync {
     const val STATUS_SUCCESS = SyncOutcome.STATUS_SUCCESS
+    const val STATUS_COMPLETED_WITH_SKIPS = SyncOutcome.STATUS_COMPLETED_WITH_SKIPS
     const val STATUS_PARTIAL_SUCCESS = SyncOutcome.STATUS_PARTIAL_SUCCESS
     const val STATUS_SKIPPED = SyncOutcome.STATUS_SKIPPED
     const val STATUS_NOT_LOGGED_IN = SyncOutcome.STATUS_NOT_LOGGED_IN
@@ -72,7 +73,7 @@ object BackgroundSync {
 
     fun runAutoSync(completion: (Boolean) -> Unit) {
         runForegroundAutoSync { status ->
-            completion(status == STATUS_SUCCESS || status == STATUS_SKIPPED)
+            completion(status == STATUS_SUCCESS || status == STATUS_COMPLETED_WITH_SKIPS || status == STATUS_SKIPPED)
         }
     }
 

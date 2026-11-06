@@ -1,0 +1,101 @@
+{
+  "checked_at": "2026-11-03",
+  "kind": "Independent static contract evidence; no health records or remote test writes",
+  "official_apk": {
+    "package": "com.mi.health",
+    "versionName": "3.59.2",
+    "sha256": "112e603b8342cb134402a6dcabdf3ec16fd5171ec65a1d5f7cb7efd83cb0995d",
+    "path": "research-work/mifitness-apk-static/mifitness-3.59.2-cn-tencent.apk"
+  },
+  "public_comparison": {
+    "repository": "KurenaiRyu/XiaomiHealth",
+    "commit": "04e79cf5debe3f9a43e57f6d981e472ea6b59637",
+    "caveat": "Public decompiled app is not assumed identical to the 3.59.2 APK; differences are recorded explicitly."
+  },
+  "heart_rate": {
+    "point_schema": {
+      "time": "Long epoch seconds",
+      "bpm": "Int",
+      "type": "nullable Integer, omitted when absent"
+    },
+    "source": "decompiler/com/xiaomi/fit/fitness/export/data/item/HrItem.java",
+    "recorder": "FitnessDataRecorderImpl.recordDailyHr -> heart_rate; recordManualHr -> single_heart_rate",
+    "outcome": "Current BMFS time+bpm value is consistent. No proven per-field cause of server rejection.",
+    "return_contract": "FitnessApiService.uploadFitnessData -> BaseResult<DataBooleanResult>; DataBooleanResult.result is boolean. Do not reinterpret explicit false as success.",
+    "batch": {
+      "current_apk": 50,
+      "hex": "0x32",
+      "older_public_decompile": 60,
+      "bmfs_healthlab2": 100,
+      "evidence": "feedback-incremental-sync.smali: pushDeviceFitnessData passes 0x32 to getDailyRecordNotUpload; pushLocalPhoneData passes 0x32 to getLocalPhoneRecordToUpload",
+      "limitation": "Native batching evidence is not proof of a server hard limit or the observed rejection's cause."
+    }
+  },
+  "resting_heart_rate": {
+    "scalar_schema": {
+      "date_time": "Long UTC-encoded source calendar date",
+      "bpm": "Int"
+    },
+    "native_chain": [
+      "DailyRecordDaoRepo.hasOneDateRecordOneDay(resting_heart_rate) = true",
+      "DailyRecordDaoUtils.reprocessModelRecordIfNeed: when source offset != 0, changeToDestZeroTimeOneDay(time,sourceOffset,0)",
+      "write transformed time to both model.time and item.timestamp; reset model.zoneOffsetInSec=0",
+      "IncrementalSyncController converts model/entity time and raw JSON into upload row"
+    ],
+    "evidence": "research-work/mifitness-access-static/feedback-daily-record-utils.smali, reprocessModelRecordIfNeed",
+    "formula": "floorDiv(epochSeconds + sourceOffsetSeconds, 86400) * 86400; transport zone_offset = 0",
+    "example": {
+      "source_epoch_seconds": 1727974800,
+      "source_offset_seconds": 28800,
+      "calendar_date_utc_anchor_seconds": 1728000000
+    },
+    "policy": "Healthlab.5 coalesces equal same-date values and selects the lowest valid actual RHR observation among different source instants on a source calendar date, following Mi Fitness 3.59.2's native daily-report minimum rule. Different same-date values produce WARNING RESTING_HEART_RATE_DAILY_MINIMUM_APPLIED rather than rejecting normal observations. Conflicting values at the same source instant still reject the date. Resolve the latest revision of each HC record ID first, retain rejection of contradictory equal-latest revisions, and reject missing source offset instead of inventing a calendar date. No average, ordinary-heart-rate-derived RHR, cloud overwrite or complete-day claim is introduced.",
+    "day_selection_evidence": "docs/healthlab/rhr-day-policy-evidence.json",
+    "cloud_report": "CloudHrReport.avg_rhr is populated from DailyHrReport.restHr. HeartRateBiz.convertServerAggregateReport restores it into DailyHrReport.restHr. Current mapper does not overwrite or merge any existing HR daily report.",
+    "graph_chain": [
+      "HrmRestingItemFragment.onViewCreated -> HrmViewModel.queryRestingHrmRecords",
+      "HeartRateRepository.getMonthRestHrReport -> BaseRepository.getReportList(tag=days, precedingDays=29)",
+      "HrmRestingItemFragment.createDayEntries reads DailyHrReport.restHr",
+      "HeartRateBiz.splitDailyReport accepts resting_heart_rate raw RestHrItem records and constructs DailyHrReport.restHr"
+    ],
+    "graph_evidence": [
+      "research-work/mifitness-access-static/feedback-resting-fragment.smali",
+      "research-work/mifitness-access-static/feedback-hr-viewmodel.smali",
+      "research-work/mifitness-access-static/feedback-heart-rate-repository.smali",
+      "research-work/mifitness-access-static/feedback-heart-rate-biz.smali"
+    ],
+    "app_visibility": "Date contract fix is independently established. A particular App graph refresh/display remains a separate device verification.",
+    "avg_rhr_only_daily_report": {
+      "decision": "Not emitted; only read-only cloud daily-report diagnostics are added.",
+      "evidence": [
+        "Mi 3.59.2 CloudDailyHelper.convertHr checks DailyHrReport.maxHr > 0 before building an uploadable CloudHrReport.",
+        "Mi 3.59.2 DailyHrReport.isEmpty checks hrRecords and does not consider restHr.",
+        "CloudHrReport can deserialize avg_rhr, but this alone does not establish that a sparse avg_rhr-only upload is accepted or rendered."
+      ],
+      "files": [
+        "import-cloud-daily-helper.smali, convertHr",
+        "import-hr-report.smali, isEmpty"
+      ]
+    }
+  },
+  "spo2": {
+    "point_schema": {
+      "time": "Long epoch seconds",
+      "spo2": "Int whole percentage"
+    },
+    "keys": "recordDailySpo2 -> spo2; recordManualSpo2 -> single_spo2. HC instant record alone does not establish manual measurement.",
+    "aggregate_fields": [
+      "min_spo2",
+      "max_spo2",
+      "avg_spo2",
+      "latest_spo2"
+    ],
+    "omitted_unknowns": [
+      "lack_spo2_count",
+      "sleep/adaptive device analytics"
+    ],
+    "evidence": "CloudDailyHelper.convertSpo2 in import-cloud-daily-helper.smali reads DailySpo2Report min/max/avg/latest and constructs CloudSpo2Report; current APK feedback-cloud-spo2.smali and feedback-spo2-item.smali confirm exact SerializedName values and primitive types.",
+    "rounding": "Round HC floating percentage to nearest whole percentage with explicit precision warning; original HC data remains unmodified.",
+    "aggregation": "Only a fully queried source-local calendar day with reliable offset produces candidate daily output."
+  }
+}

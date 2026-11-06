@@ -5,6 +5,8 @@ import com.bettermifitness.sync.data.MiSessionManager
 import com.bettermifitness.sync.data.preferences.CredentialsPort
 import com.bettermifitness.sync.data.preferences.CredentialsStore
 import com.bettermifitness.sync.data.preferences.SyncPreferences
+import com.bettermifitness.sync.data.preferences.BodySyncLedger
+import com.bettermifitness.sync.data.preferences.HealthImportLedger
 import com.bettermifitness.sync.data.preferences.SyncPreferencesPort
 import com.bettermifitness.sync.data.preferences.SyncSessionPort
 import com.bettermifitness.sync.data.preferences.TokenStore
@@ -33,6 +35,8 @@ fun commonAppModule(): Module = module {
     single { CredentialsStore(get()) }
     single<CredentialsPort> { get<CredentialsStore>() }
     single { SyncPreferences(get()) }
+    single { BodySyncLedger(get()) }
+    single { HealthImportLedger(get()) }
     single<SyncPreferencesPort> { get<SyncPreferences>() }
     single { TokenStore(get(), get(), get()) }
 
@@ -48,7 +52,7 @@ fun commonAppModule(): Module = module {
     single<HealthAvailability> { get<HealthWriter>() }
     single<HealthPermissionRequester> { get<HealthWriter>() }
 
-    single { HealthRepository(get(), get<HealthStore>()) }
+    single { HealthRepository(get(), get<HealthStore>(), get(), get(), get()) }
     single<HealthSyncRunner> { get<HealthRepository>() }
     single {
         SyncCoordinator(

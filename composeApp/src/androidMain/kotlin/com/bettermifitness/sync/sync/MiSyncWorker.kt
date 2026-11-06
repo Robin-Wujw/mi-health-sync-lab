@@ -2,6 +2,7 @@ package com.bettermifitness.sync.sync
 
 import android.content.Context
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.bettermifitness.sync.data.MiSessionManager
@@ -24,6 +25,8 @@ class MiSyncWorker(
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
+        // Includes refresh-only jobs, which do not pass through SyncCoordinator.
+        if (LiveTestSessionGate.isActive) return Result.success()
         if (inputData.getBoolean(KEY_REFRESH_ONLY, false)) {
             return doSessionRefresh()
         }
@@ -41,6 +44,8 @@ class MiSyncWorker(
             Log.i(TAG, "background sync finished: $outcome")
             when (outcome) {
                 SyncOutcome.Success,
+                is SyncOutcome.CompletedWithSkips,
+                is SyncOutcome.NoData,
                 is SyncOutcome.PartialSuccess,
                 SyncOutcome.Skipped,
                 SyncOutcome.HealthUnavailable,
@@ -58,6 +63,8 @@ class MiSyncWorker(
                     Result.failure()
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "background sync error", e)
             Result.retry()
@@ -74,8 +81,9 @@ class MiSyncWorker(
         return try {
             ensureKoin()
             val session = KoinPlatform.getKoin().get<MiSessionManager>()
-            if (session.ensureActive()) {
-                session.refreshSessionIfStale()
+            val coordinator = KoinPlatform.getKoin().get<SyncCoordinator>()
+            coordinator.runSessionMaintenance {
+                if (session.ensureActive()) session.refreshSessionIfStale()
             }
             Log.i(TAG, "background session refresh finished")
             Result.success()

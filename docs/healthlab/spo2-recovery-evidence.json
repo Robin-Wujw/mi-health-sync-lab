@@ -1,0 +1,119 @@
+{
+  "checked_at": "2026-11-03",
+  "target_version": "1.0.6-healthlab.6 (1000012)",
+  "kind": "Read-only SpO2 upload, verifier and legacy pending-journal review; recovery-entry implementation; no user-account write or device test",
+  "user_feedback": {
+    "version": "1.0.6-healthlab.5 (1000011)",
+    "metric": "spo2",
+    "planned_raw_rows": 195,
+    "already_present_raw_rows": 63,
+    "attempted_raw_rows": 0,
+    "newly_verified_raw_rows": 0,
+    "blocked_pending_rows": 132,
+    "probe": {
+      "pending_rows": 132,
+      "verified": 0,
+      "missing": 132,
+      "mismatched": 0,
+      "ambiguous": 0,
+      "unqueried": 0,
+      "broad_read_groups": 2,
+      "broad_read_failure_groups": 0,
+      "narrow_selected": 3,
+      "narrow_found": 0,
+      "narrow_missing": 3,
+      "broad_narrow_disagreement": 0
+    },
+    "limits": [
+      "No new health upload occurred in this run. Successful reads did not return a matching active default-SID target for the pending identities.",
+      "Only three missing targets were independently sampled by narrower queries; their absence does not establish a complete server search or prove non-persistence.",
+      "The earlier 219/72/147 and current 195/63/132 counts describe different selected sets. Zero newly-verified/probe-verified rows does not support a claim that fifteen pending rows were recovered."
+    ]
+  },
+  "upload_contract": {
+    "official_apk": {
+      "package": "com.mi.health",
+      "version": "3.59.2",
+      "sha256": "112e603b8342cb134402a6dcabdf3ec16fd5171ec65a1d5f7cb7efd83cb0995d"
+    },
+    "native_point": "Spo2Item serializes time as Long seconds and spo2 as Int percentage; current mapper follows this shape.",
+    "native_upload": "FitnessDataRequest.uploadFitnessData builds UploadFitnessDataParam(phoneId, List<FitnessDataModel>) and serializes it for data/up_fitness_data.",
+    "native_result": "FitnessApiService declares BaseResult<DataBooleanResult>; FitnessDataRequest returns DataBooleanResult.getResult(): Boolean. No per-row acceptance or server transaction guarantee was established.",
+    "native_files": [
+      "research-work/mifitness-access-static/feedback-spo2-item.smali",
+      "research-work/mifitness-access-static/import-fitness-request.smali",
+      "research-work/mifitness-access-static/import-fitness-service.smali"
+    ],
+    "public_comparison": "https://github.com/Mori-17/huami-health-bridge/blob/main/xiaomi_health_import.py",
+    "comparison_result": "The original author's importer also uses sid=default, key=spo2, seconds in both outer/inner time, a JSON string value, zone_offset and deleted=false. It fixes zone_name to Asia/Shanghai; our HC importer leaves zone_name empty because an offset does not identify an IANA zone. This difference is not a demonstrated cause of the user's missing records.",
+    "finding": "No proven SpO2 field-encoding error was found that explains the 132 missing pending targets. Do not alter actual measurement values, source times or SID to manufacture a verification result."
+  },
+  "legacy_pending_findings": {
+    "stored_shape": "timestamp | canonical-value fingerprint | source-key-set digest",
+    "write_order": "MiHealthImportRunner persists pending before POST. Explicit business rejection also retains pending unless later readback verifies the target.",
+    "missing_outcome_history": "Accepted-but-unverified, explicitly rejected, response-lost and write-not-started-after-journal are not distinguishable from the legacy stored pending entry.",
+    "fingerprint_limit": "The legacy content fingerprint covers row.value, not zoneOffsetSeconds. Target identity also omits the offset. The source digest hashes package:recordId keys, not the complete source revision. Matching legacy identity/content/source digests cannot prove byte-equivalence of the original complete request.",
+    "global_reset_limit": "resetPendingImports removes retry locks across the ledger; it does not establish remote absence, make requests idempotent or preserve a per-target consumed recovery budget. It must not be used as an automatic recovery step.",
+    "source_files": [
+      "composeApp/src/commonMain/kotlin/com/bettermifitness/sync/data/preferences/HealthImportLedger.kt",
+      "composeApp/src/commonMain/kotlin/com/bettermifitness/sync/data/repository/MiHealthImportRunner.kt"
+    ]
+  },
+  "legacy_missing_semantics": {
+    "source_file": "composeApp/src/commonMain/kotlin/com/bettermifitness/sync/data/api/MiHealthImportVerifier.kt",
+    "same_classification": [
+      "No matching key/time target was returned.",
+      "Rows with the same key/time exist only under a different explicit SID.",
+      "The expected SID/key/time appears only as deleted=true."
+    ],
+    "unknown_sid": "A same-key/time active row with missing or blank SID becomes AMBIGUOUS, not MISSING.",
+    "recovery_requirement": "Recovery must inspect returned rows for tombstones, different-source occupancy and ambiguous identity instead of treating verifier MISSING alone as sufficient authorization to resend. A deleted observation must not silently become a new default record."
+  },
+  "entry_points": {
+    "phone": "The main App exposes an explicit one-pending-SpO2 recovery action using the same recovery flow as the device-test entry.",
+    "instrumentation": "com.bettermifitness.sync.healthlab.test/com.bettermifitness.sync.lab.HealthLabInstrumentation",
+    "mode": "recover-one-pending",
+    "allowed_metric": "spo2",
+    "required_write_flag": "allowWrites=true, or PowerShell -AllowCloudWrite",
+    "repository_api": "HealthRepository.recoverPendingSpO2ForLiveTest(from: String, to: String): MiHealthImportDiagnostic",
+    "maximum_selected_raw_targets": 1,
+    "maximum_daily_targets": 0,
+    "range_days": "1..27",
+    "default_mode_unchanged": "inspect",
+    "failure_behavior": "No automatic command repetition; prechecks or exhausted recovery budget may produce zero health uploads. No global pending reset.",
+    "session": "Use existing App login and Health Connect grants; the instrumentation process gate continues to suppress normal sync and home-profile refresh."
+  },
+  "validation": {
+    "status": "PASSED_ROOT_COORDINATED_LOCAL_BUILD_AND_TEST",
+    "gradle_executed_by_document_author": false,
+    "device_test_executed_by_document_author": false,
+    "windows_powershell_executed_by_document_author": false,
+    "real_account_write_executed_by_document_author": false,
+    "result_report": "validation.json",
+    "gradle_executed_by_root": true,
+    "tests_total": 488,
+    "new_recovery_tests": 23,
+    "device_test_executed_by_root": false,
+    "windows_powershell_executed_by_root": false,
+    "real_account_write_executed_by_root": false
+  },
+  "limitations": [
+    "One successful recovery does not establish that all remaining pending rows can be replayed safely or that the official Mi Fitness App has displayed them.",
+    "A stable client target identity is not evidence of server-side exactly-once or upsert semantics.",
+    "A local fingerprint cannot reconstruct fields that old versions did not persist.",
+    "Authentication refresh and data-read requests can use HTTP POST without constituting a health-data mutation; distinguish attempted health rows from raw HTTP request counts."
+  ],
+  "final_implementation": {
+    "native_history_missing_requires_complete": true,
+    "native_partial_positive_match_can_reconcile": true,
+    "normal_verified_identity_missing_cannot_repost": true,
+    "normal_guard_counter": "blocked_verified_history_rows",
+    "phone_and_pc_share_recovery": true,
+    "pending_source_candidates_selected_max": 1,
+    "per_target_extra_attempts_max": 1,
+    "reservation_committed_before_upload": true,
+    "other_pending_not_reset": true,
+    "body_retry_no_longer_clears_health_pending": true,
+    "same_plan_consumed_oldest_target_not_skipped": true
+  }
+}

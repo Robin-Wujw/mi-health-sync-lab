@@ -1,0 +1,40 @@
+{
+  "checked_at": "2026-11-03",
+  "kind": "Post-healthlab9 source-only correction; no new APK built or published",
+  "tests": {
+    "composeApp": {
+      "suites": 57,
+      "tests": 533,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "miclient": {
+      "suites": 11,
+      "tests": 60,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  "total_tests": 593,
+  "added_tests": 6,
+  "tasks": [
+    ":composeApp:testAndroidHostTest",
+    ":miclient:androidTest"
+  ],
+  "limits": [
+    "No actual user account access, uploads or device tests",
+    "The 131 missing SpO2 records remain unresolved",
+    "Existing healthlab9 APK and validation remain unchanged"
+  ],
+  "source_sha256": {
+    "composeApp/src/commonMain/kotlin/com/bettermifitness/sync/data/api/MiHealthImportDiagnostics.kt": "208f943cd6c206105ed871ad1f33d80187019c3231fe7cbd9ed1f632fa4029b4",
+    "composeApp/src/commonMain/kotlin/com/bettermifitness/sync/data/api/MiHealthImportModels.kt": "cfefb42fa1854e4a66c407d41595a9fe9b6a85a420e79b316fc82a75e15855d0",
+    "composeApp/src/commonMain/kotlin/com/bettermifitness/sync/data/api/MiHealthImportTransport.kt": "75decd0c0ad844520e793d2e7c985fa2285371db5459466862603fc47b53712b",
+    "composeApp/src/commonMain/kotlin/com/bettermifitness/sync/data/repository/MiPendingSpO2Recovery.kt": "f73744d908375c48363bf75f6c012a0d8522a917a8fff22e015d06d44cdf9bab",
+    "composeApp/src/commonMain/kotlin/com/bettermifitness/sync/data/repository/MiHealthImportDiagnosticText.kt": "e86522cc4f2a47906d1d7c86cbc9f5b9243e2b5adb8d31f1cb5690b7adb2b256",
+    "composeApp/src/commonMain/moko-resources/base/strings.xml": "c505228af24076cb00d294e9af8392b35060bb656529d0a1936cc6c5d062a3bb",
+    "composeApp/src/commonMain/moko-resources/zh-rCN/strings.xml": "d24831b4f85e17da444886055f0180cfdd7995f15f0aa5ae2f1a6f2dc4ed9a9d"
+  }
+}

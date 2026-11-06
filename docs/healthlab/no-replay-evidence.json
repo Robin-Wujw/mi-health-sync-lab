@@ -1,0 +1,79 @@
+{
+  "checked_at": "2026-11-03",
+  "kind": "Transport replay policy, cached dependency bytecode and four passing real localhost HTTP fixture tests; no user account access or remote health-data writes",
+  "scope": {
+    "target": "MiDataClient's default Android/JVM transport for health-cloud POST requests",
+    "api": "createPlatformHttpClient(allowAutomaticReplay: Boolean = true)",
+    "opt_out": "MiDataClient defaults to createPlatformHttpClient(allowAutomaticReplay = false).",
+    "unchanged_defaults": "Passport authentication and FDS clients keep their existing no-argument factory calls and previous default transport behavior.",
+    "injected_client": "A caller that supplies its own HttpClient must preserve equivalent request-body replay protection when performing writes. The default constructor cannot enforce the behavior of an arbitrary injected client."
+  },
+  "dependencies_inspected": {
+    "ktor_client": "3.6.0",
+    "okhttp_jvm": "5.5.0",
+    "inspection_method": "Read cached dependency classes using javap -p -c; no library or application code was executed by the static inspection.",
+    "ktor_reference": "https://api.ktor.io/ktor-client-core/io.ktor.client.plugins/-http-redirect-config/index.html"
+  },
+  "static_findings": [
+    "Ktor 3.6.0 OkHttpConfig's initial builder configuration disables OkHttp followRedirects and followSslRedirects and enables retryOnConnectionFailure. Explicitly retaining disabled engine redirects protects the data-client policy from assumptions about these defaults.",
+    "Ktor's implicit redirect policy normally allows GET and HEAD. Disabling Ktor followRedirects for the data client prevents its separate redirect layer from issuing a new call.",
+    "OkHttp 5.5.0 RetryAndFollowUpInterceptor.recover checks retryOnConnectionFailure before recovering from a connection exception.",
+    "The HTTP 408 branch checks retryOnConnectionFailure, but the HTTP 503 branch can return the original request when Retry-After is zero without checking that setting.",
+    "OkHttp's follow-up processing checks a non-null follow-up RequestBody.isOneShot before repeating the request. Marking an already-sent data body one-shot prevents the 503 path from silently sending the POST body again."
+  ],
+  "android_controls": {
+    "ktor": "followRedirects = false",
+    "okhttp": [
+      "retryOnConnectionFailure(false)",
+      "followRedirects(false)",
+      "followSslRedirects(false)"
+    ],
+    "request_body": "For opt-out clients, an application interceptor wraps every non-null RequestBody in NonReplayableRequestBody. It returns true from isOneShot and delegates contentType, contentLength, isDuplex and writeTo to the original body.",
+    "purpose": "A lost upload response must be reconciled with cloud readback rather than an automatic replay below the import runner's journal and conflict checks."
+  },
+  "implementation_files": [
+    "miclient/src/commonMain/kotlin/com/mifitness/miclient/HttpClientFactory.kt",
+    "miclient/src/androidMain/kotlin/com/mifitness/miclient/HttpClientFactory.android.kt",
+    "miclient/src/iosMain/kotlin/com/mifitness/miclient/HttpClientFactory.ios.kt",
+    "miclient/src/commonMain/kotlin/com/mifitness/miclient/api/MiDataClient.kt"
+  ],
+  "local_fixture_tests": {
+    "file": "miclient/src/androidTest/kotlin/com/mifitness/miclient/HttpClientReplayPolicyTest.kt",
+    "command": "./gradlew :miclient:androidTest --tests '*HttpClientReplayPolicyTest' --no-daemon --console=plain",
+    "status": "PASSED_ROOT_COORDINATED_TEST_RUN",
+    "executed_by_document_author": false,
+    "result_report": "miclient/build/test-results/androidTest/TEST-com.mifitness.miclient.HttpClientReplayPolicyTest.xml",
+    "fixture": "JDK HttpServer bound to 127.0.0.1 on an ephemeral port, real Ktor/OkHttp client, opaque synthetic bodies, no Xiaomi credentials or health measurements.",
+    "cases": [
+      {
+        "test": "healthDataPostIsNotResubmittedAfter307Redirect",
+        "expected": "The data client returns HTTP 307 and the fixture receives one POST at the original path, with no redirected replay."
+      },
+      {
+        "test": "healthDataDisablesKtorRedirectsWhileDefaultAuthenticationTransportKeepsThem",
+        "expected": "The data client does not follow a GET 302; the no-argument default client follows it. This controls for an ineffective redirect fixture and preserves authentication defaults."
+      },
+      {
+        "test": "oneShotBodyStops503ReplayThatRetryOnConnectionFailureAloneDoesNotStop",
+        "expected": "After HTTP 503 with Retry-After: 0, the data client sends one POST and returns 503, while the unchanged default-client control sends the body twice and receives the second response."
+      },
+      {
+        "test": "acceptedPostWithDroppedResponseFailsWithoutSendingTheBodyAgain",
+        "expected": "After a warmup GET, the server consumes a POST body and closes without a response. The data call fails; only one POST body reaches the fixture."
+      }
+    ],
+    "executed_by_root": true,
+    "tests": 4,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "limitations": [
+    "The local tests exercise the real Android/JVM transport factory over loopback HTTP. They do not perform an encrypted MiDataClient call against Xiaomi, verify live acceptance, or show a record in the official App.",
+    "The change blocks automatic POST body replay on the default Android data transport; it is not a guarantee of exactly one HTTP request for an entire synchronization or instrumentation run.",
+    "GET requests may still receive native read-only HTTP follow-ups such as 503 handling. Authentication refresh, planned prechecks and later readback requests are also separate from upload replay.",
+    "The protection does not prohibit a caller or user from explicitly starting a new request. The import ledger and reconciliation policy remain responsible for deciding whether a later write is safe.",
+    "The iOS factory only adapts the shared API and disables Ktor-level redirects. No equivalent NSURLSession connection-recovery or body-replay guarantee has been tested or claimed.",
+    "Dependency updates may change follow-up behavior; the loopback regression tests should remain part of the Android/JVM validation gate."
+  ]
+}

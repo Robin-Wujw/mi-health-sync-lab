@@ -15,6 +15,7 @@ import com.bettermifitness.sync.data.api.WeightMeasurement
 import com.bettermifitness.sync.data.api.WorkoutRoutePoint
 import com.bettermifitness.sync.data.api.WorkoutSession
 import com.bettermifitness.sync.data.api.WorkoutTimedSample
+import com.bettermifitness.sync.data.api.sanitizedComposition
 import kotlin.math.roundToInt
 
 /**
@@ -60,7 +61,7 @@ object HealthDataNormalizer {
             val t = toEpochSeconds(s.timestamp)
             if (!usablePoint(t, nowEpochSeconds)) continue
             if (s.bpm !in 20..250) continue
-            byTime[t] = HeartRateSample(timestamp = t, bpm = s.bpm, tzIn15Min = s.tzIn15Min)
+            byTime[t] = s.copy(timestamp = t)
         }
         return byTime.values.sortedBy { it.timestamp }
     }
@@ -221,111 +222,39 @@ object HealthDataNormalizer {
     fun normalizeSleep(
         sessions: List<SleepSession>,
         nowEpochSeconds: Long = HealthTimePolicy.nowEpochSeconds(),
-    ): List<SleepSession> {
-        val byStart = LinkedHashMap<Long, SleepSession>(sessions.size)
-        for (session in sessions) {
-            val cleaned = cleanSleepSession(session, nowEpochSeconds) ?: continue
-            val existing = byStart[cleaned.startTime]
-            byStart[cleaned.startTime] =
-                if (existing == null) cleaned else mergeSleepSessions(existing, cleaned)
-        }
-        return byStart.values.sortedBy { it.startTime }
-    }
-
-    private fun cleanSleepSession(
-        session: SleepSession,
-        nowEpochSeconds: Long,
-    ): SleepSession? {
-        val start = toEpochSeconds(session.startTime)
-        val endRaw = toEpochSeconds(session.endTime)
-        if (!isPlausibleEpochSeconds(start)) return null
-        val clamped = HealthTimePolicy.clampInterval(start, endRaw, nowEpochSeconds)
-            ?: return null
-        val (clampedStart, end) = clamped
-        // Trim invalid stages (1.0.2 semantics); only drop the session when
-        // nothing valid remains.
-        val stageByStart = LinkedHashMap<Long, SleepStage>()
-        for (stage in session.stages) {
-            val s = toEpochSeconds(stage.startTime)
-            val e = toEpochSeconds(stage.endTime)
-            if (e <= s) continue
-            if (s < clampedStart || e > end) continue
-            if (!HealthTimePolicy.isNotFuture(e, nowEpochSeconds)) continue
-            stageByStart[s] = SleepStage(startTime = s, endTime = e, stage = stage.stage)
-        }
-        if (stageByStart.isEmpty()) return null
-        val stages = stageByStart.values.sortedBy { it.startTime }
-        val inBedStart = toEpochSeconds(session.inBedStart)
-            .takeIf { isPlausibleEpochSeconds(it) && it <= end } ?: clampedStart
-        val inBedEnd = toEpochSeconds(session.inBedEnd)
-            .takeIf { isPlausibleEpochSeconds(it) }
-            ?.let { minOf(it, end) }
-            ?: end
-        return SleepSession(
-            startTime = clampedStart,
-            endTime = end,
-            inBedStart = inBedStart,
-            inBedEnd = maxOf(inBedStart + 1, inBedEnd),
-            stages = stages,
-            avgHrvMs = session.avgHrvMs?.takeIf { it in 5..300 },
-            minHrvMs = session.minHrvMs?.takeIf { it in 5..300 },
-            maxHrvMs = session.maxHrvMs?.takeIf { it in 5..300 },
-            hrvAnalysisTimeSec = session.hrvAnalysisTimeSec
-                ?.let { toEpochSeconds(it) }
-                ?.takeIf { usablePoint(it, nowEpochSeconds) },
-            tzIn15Min = session.tzIn15Min,
-        )
-    }
+    ): List<SleepSession> = SleepTimelineNormalizer.normalize(sessions, nowEpochSeconds)
 
     /**
-     * Unions two sessions sharing the same start (e.g. full `sleep` row plus a
-     * first-block-only legacy watch report): stages merged by start, end
-     * extended to the latest wake, HRV kept from the first non-null source.
+     * Merge duplicate/overlapping reports without overlapping their stage ranges.
+     * Conflicting explicit phases become unknown; missing periods are left empty.
      */
-    internal fun mergeSleepSessions(a: SleepSession, b: SleepSession): SleepSession {
-        val stages = (a.stages + b.stages)
-            .associateBy { it.startTime }
-            .values
-            .sortedBy { it.startTime }
-        val end = maxOf(a.endTime, b.endTime)
-        val inBedStart = minOf(a.inBedStart, b.inBedStart)
-        val inBedEnd = maxOf(a.inBedEnd, b.inBedEnd)
-        return SleepSession(
-            startTime = a.startTime,
-            endTime = end,
-            inBedStart = inBedStart,
-            inBedEnd = maxOf(inBedStart + 1, inBedEnd),
-            stages = stages,
-            avgHrvMs = a.avgHrvMs ?: b.avgHrvMs,
-            minHrvMs = a.minHrvMs ?: b.minHrvMs,
-            maxHrvMs = a.maxHrvMs ?: b.maxHrvMs,
-            hrvAnalysisTimeSec = a.hrvAnalysisTimeSec ?: b.hrvAnalysisTimeSec,
-            tzIn15Min = a.tzIn15Min ?: b.tzIn15Min,
-        )
-    }
+    internal fun mergeSleepSessions(a: SleepSession, b: SleepSession): SleepSession =
+        SleepTimelineNormalizer.merge(a, b)
 
     fun normalizeHrv(
         samples: List<HrvSample>,
         nowEpochSeconds: Long = HealthTimePolicy.nowEpochSeconds(),
     ): List<HrvSample> {
-        val byTime = LinkedHashMap<Long, HrvSample>(samples.size)
+        // Different algorithms are different quantities, even at the same instant.
+        // Retain UNKNOWN alongside known values so the writer can diagnose it.
+        val byTime = LinkedHashMap<Pair<Long, com.bettermifitness.sync.data.api.HrvAlgorithm>, HrvSample>(samples.size)
         for (s in samples) {
             val t = toEpochSeconds(s.timestamp)
             if (!usablePoint(t, nowEpochSeconds)) continue
-            if (s.hrvMs !in 5.0..300.0) continue
-            byTime[t] = HrvSample(timestamp = t, hrvMs = s.hrvMs, tzIn15Min = s.tzIn15Min)
+            if (!s.hrvMs.isFinite() || s.hrvMs <= 0.0) continue
+            byTime[t to s.algorithm] = s.copy(timestamp = t)
         }
         return byTime.values.sortedBy { it.timestamp }
     }
 
     /**
-     * Raw Mi Fitness stages, verified against its aggregate duration fields:
-     * state 2=deep, 3=light/core, 4=REM, and 5 (or legacy 1)=awake.
+     * Mi's documented stages: 0=not asleep, 1=unknown, 2=deep, 3=light,
+     * 4=REM, 5=awake, 6=phone sleep tracking. Unknown is not evidence of sleep.
      */
     enum class MiSleepStageKind { AWAKE, DEEP, LIGHT, REM, UNKNOWN }
 
     fun miSleepStageKind(stage: Int): MiSleepStageKind = when (stage) {
-        5, 1 -> MiSleepStageKind.AWAKE
+        0, 5 -> MiSleepStageKind.AWAKE
         2 -> MiSleepStageKind.DEEP
         3 -> MiSleepStageKind.LIGHT
         4 -> MiSleepStageKind.REM
@@ -394,17 +323,10 @@ object HealthDataNormalizer {
         for (m in measurements) {
             val t = toEpochSeconds(m.timestamp)
             if (!usablePoint(t, nowEpochSeconds)) continue
-            if (m.weightKg !in 1.0..500.0) continue
-            val fat = m.bodyFatPercent?.takeIf { it in 1.0..70.0 }
-            byTime[t] = WeightMeasurement(
-                timestamp = t,
-                weightKg = m.weightKg,
-                bodyFatPercent = fat,
-                muscleMassKg = m.muscleMassKg?.takeIf { it in 1.0..200.0 },
-                boneMassKg = m.boneMassKg?.takeIf { it in 0.1..50.0 },
-                basalMetabolismKcal = m.basalMetabolismKcal?.takeIf { it in 200.0..10_000.0 },
-                tzIn15Min = m.tzIn15Min,
-            )
+            if (!m.weightKg.isFinite() || m.weightKg !in 1.0..500.0) continue
+            // copy preserves provenance and raw report fields while invalid
+            // optional measurements remain null instead of becoming zero.
+            byTime[t] = m.copy(timestamp = t).sanitizedComposition()
         }
         return byTime.values.sortedBy { it.timestamp }
     }

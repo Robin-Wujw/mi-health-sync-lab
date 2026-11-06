@@ -3,7 +3,7 @@ package com.bettermifitness.sync.util
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
-class RelativeTimeTest {
+class RelativeTimeTest : com.bettermifitness.sync.LocalizedTest() {
 
     @Test
     fun format_nullIsNever() {

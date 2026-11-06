@@ -10,8 +10,8 @@ fun appVersionProp(name: String, envKey: String, default: String): String =
         ?: System.getenv(envKey)?.takeIf { it.isNotBlank() }
         ?: default
 
-val appVersionName: String = appVersionProp("versionName", "VERSION_NAME", "1.0.6")
-val appVersionCode: Int = appVersionProp("versionCode", "VERSION_CODE", "1000006").toInt()
+val appVersionName: String = appVersionProp("versionName", "VERSION_NAME", "1.0.6-healthlab.18")
+val appVersionCode: Int = appVersionProp("versionCode", "VERSION_CODE", "1000024").toInt()
 
 android {
     namespace = "com.bettermifitness.sync"
@@ -24,12 +24,19 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.bettermifitness.sync"
+        applicationId = "com.bettermifitness.sync.healthlab"
         minSdk = 28
         targetSdk = 36
         versionCode = appVersionCode
         versionName = appVersionName
+        testApplicationId = "com.bettermifitness.sync.healthlab.test"
+        testInstrumentationRunner = "com.bettermifitness.sync.lab.HealthLabInstrumentation"
     }
+
+    // A separately installed, same-signer test APK operates on the user's release
+    // installation. The production APK stays non-debuggable and gains no exported
+    // test Activity/receiver. Tests run only through an explicit adb am instrument.
+    testBuildType = "release"
 
     buildFeatures {
         compose = true
@@ -79,4 +86,8 @@ dependencies {
     implementation(project(":composeApp"))
     implementation(libs.androidx.activity.compose)
     implementation(libs.health.connect)
+    androidTestImplementation(libs.koin.core)
+    androidTestImplementation(libs.kotlinx.coroutines.core)
+    androidTestImplementation(libs.kotlinx.serialization.json)
+    androidTestImplementation(project(":miclient"))
 }

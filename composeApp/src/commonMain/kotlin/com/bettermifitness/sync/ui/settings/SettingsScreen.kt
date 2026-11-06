@@ -35,6 +35,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,6 +49,8 @@ import com.bettermifitness.sync.platform.appVersionLabel
 import com.bettermifitness.sync.theme.BrandShapes
 import com.bettermifitness.sync.theme.BrandSpacing
 import com.bettermifitness.sync.ui.SyncMetric
+import com.bettermifitness.sync.ui.SyncSelection
+import com.bettermifitness.sync.data.preferences.SyncPreferences
 import com.bettermifitness.sync.ui.components.StatusBanner
 import com.bettermifitness.sync.ui.components.StatusTone
 import com.bettermifitness.sync.ui.icons.AppIcon
@@ -128,10 +132,37 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit, onLogout: (
                     onAutoSyncChange = viewModel::setAutoSync,
                     onTestBg = viewModel::runBackgroundRefreshTest,
                 )
+                SettingsGroup(title = L10n.string(L10n.settingsPermissionsTitle)) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(L10n.string(L10n.settingsPermissionsDetail), style = MaterialTheme.typography.bodySmall)
+                        OutlinedButton(onClick = viewModel::openHealthService) { Text(L10n.stringFmt(L10n.openHealth, healthName)) }
+                    }
+                }
                 WhatToSyncCard(
+                    healthName = healthName,
                     enabledMetrics = state.enabledMetrics,
                     onToggle = viewModel::setMetricEnabled,
                 )
+                WeightSyncCard(
+                    state = state,
+                    healthName = healthName,
+                    onToggle = viewModel::setMetricEnabled,
+                )
+                InboundSyncCard(
+                    state = state,
+                    onToggle = viewModel::setMetricEnabled,
+                    onPermissions = viewModel::openInboundPermissions,
+                    onTestMode = viewModel::setInboundTestMode,
+                    onLegacyHrv = viewModel::setAllowLegacySleepHrvEnrichment,
+                    onOwnedSleepRevision = viewModel::setAllowOwnedSleepRevision,
+                )
+                SettingsGroup(title = L10n.string(L10n.settingsRetryTitle)) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(L10n.string(L10n.settingsBodyRetryDetail), style = MaterialTheme.typography.bodySmall)
+                        OutlinedButton(onClick = viewModel::retryBodyImports) { Text(L10n.string(L10n.settingsBodyRetry)) }
+                        if (state.bodyRetryReady) Text(L10n.string(L10n.settingsBodyRetryReady), style = MaterialTheme.typography.bodySmall)
+                    }
+                }
             } else {
                 SettingsGroup(title = L10n.string(L10n.settingsSyncOptionsLoading)) {
                     Row(
@@ -197,22 +228,125 @@ private fun StatusRow(label: String, value: String) {
 
 @Composable
 private fun WhatToSyncCard(
+    healthName: String,
     enabledMetrics: Set<String>,
     onToggle: (String, Boolean) -> Unit,
 ) {
-    SettingsGroup(title = L10n.string(L10n.settingsSectionMetrics)) {
-        SyncMetric.entries.forEachIndexed { index, metric ->
+    val metrics = SyncMetric.entries.filterNot { it == SyncMetric.WEIGHT }
+    SettingsGroup(title = L10n.stringFmt(L10n.syncToHealthTitle, healthName)) {
+        Text(L10n.string(L10n.settingsToHealthDetail), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(14.dp))
+        metrics.forEachIndexed { index, metric ->
             MetricRow(
-                metric = metric,
+                metricKey = metric.key,
                 enabled = metric.key in enabledMetrics,
                 onToggle = { on -> onToggle(metric.key, on) },
             )
-            if (index < SyncMetric.entries.lastIndex) {
+            if (index < metrics.lastIndex) {
                 HorizontalDivider(
                     Modifier.padding(start = 50.dp),
                     color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
                 )
             }
+        }
+        Text(L10n.string(L10n.settingsHrvDetail), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(14.dp))
+    }
+}
+
+@Composable
+private fun WeightSyncCard(
+    state: SettingsUiState,
+    healthName: String,
+    onToggle: (String, Boolean) -> Unit,
+) {
+    val weightEnabled = SyncMetric.WEIGHT.key in state.enabledMetrics
+    SettingsGroup(title = L10n.string(L10n.syncWeightTitle)) {
+        MetricRow(
+            metricKey = SyncMetric.WEIGHT.key,
+            enabled = weightEnabled,
+            onToggle = { onToggle(SyncMetric.WEIGHT.key, it) },
+        )
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(L10n.stringFmt(L10n.settingsWeightDetail, healthName), style = MaterialTheme.typography.bodySmall)
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    L10n.string(L10n.settingsBodyToggle),
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Switch(
+                    checked = SyncPreferences.BODY_COMPOSITION_IMPORT_KEY in state.enabledMetrics,
+                    enabled = weightEnabled,
+                    onCheckedChange = { onToggle(SyncPreferences.BODY_COMPOSITION_IMPORT_KEY, it) },
+                )
+            }
+            Text(L10n.string(L10n.settingsBodyDetail), style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
+private fun InboundSyncCard(
+    state: SettingsUiState,
+    onToggle: (String, Boolean) -> Unit,
+    onPermissions: () -> Unit,
+    onTestMode: (Boolean) -> Unit,
+    onLegacyHrv: (Boolean) -> Unit,
+    onOwnedSleepRevision: (Boolean) -> Unit,
+) {
+    var advanced by remember { mutableStateOf(false) }
+    val keys = SyncPreferences.INBOUND_METRIC_KEYS.toList()
+    SettingsGroup(title = L10n.string(L10n.syncInboundTitle)) {
+        Text(L10n.string(L10n.settingsInboundDetail), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(14.dp))
+        keys.forEachIndexed { index, key ->
+            MetricRow(
+                metricKey = key,
+                label = L10n.metric(SyncSelection.sourceMetricKey(key)),
+                enabled = key in state.enabledMetrics,
+                onToggle = { onToggle(key, it) },
+            )
+            if (index < keys.lastIndex) {
+                HorizontalDivider(Modifier.padding(start = 50.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+            }
+        }
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            TextButton(onClick = { advanced = !advanced }) { Text(L10n.string(L10n.settingsImportAdvanced)) }
+            if (advanced) {
+            Text(L10n.string(L10n.settingsInboundFirstRun), style = MaterialTheme.typography.bodySmall)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(L10n.string(L10n.settingsInboundTestMode), modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                Switch(checked = state.inboundTestMode, onCheckedChange = onTestMode)
+            }
+            Text(L10n.string(L10n.settingsInboundTestModeDetail), style = MaterialTheme.typography.bodySmall)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(L10n.string(L10n.settingsLegacyHrv), modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                Switch(checked = state.allowLegacySleepHrvEnrichment,
+                    enabled = SyncPreferences.HRV_IMPORT_KEY in state.enabledMetrics,
+                    onCheckedChange = onLegacyHrv)
+            }
+            Text(L10n.string(L10n.settingsLegacyHrvDetail), style = MaterialTheme.typography.bodySmall)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(L10n.string(L10n.settingsOwnedSleepRevision), modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                Switch(checked = state.allowOwnedSleepRevision,
+                    enabled = SyncPreferences.SLEEP_IMPORT_KEY in state.enabledMetrics,
+                    onCheckedChange = onOwnedSleepRevision)
+            }
+            Text(L10n.string(L10n.settingsOwnedSleepRevisionDetail), style = MaterialTheme.typography.bodySmall)
+            }
+            OutlinedButton(
+                onClick = onPermissions,
+                enabled = state.enabledMetrics.any { it in SyncPreferences.INBOUND_METRIC_KEYS },
+            ) {
+                Text(L10n.string(L10n.settingsInboundPermissions))
+            }
+            state.inboundPermissionMessage?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (state.inboundPermissionNeedsAction) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(L10n.string(L10n.settingsZeppCapabilityDetail), style = MaterialTheme.typography.bodySmall)
         }
     }
 }
@@ -221,6 +355,8 @@ private fun WhatToSyncCard(
 private fun HowFarBackCard(rangeDays: Int, onRangeSelected: (Int) -> Unit) {
     val options = listOf(1, 7, 14, 30)
     SettingsGroup(title = L10n.string(L10n.settingsSectionSyncRange)) {
+        if (rangeDays > 27) Text(L10n.string(L10n.settingsHistoryRangeHint),
+            style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(12.dp))
         SingleChoiceSegmentedButtonRow(
             modifier = Modifier
                 .fillMaxWidth()
@@ -404,7 +540,12 @@ private fun SettingsGroup(
 }
 
 @Composable
-private fun MetricRow(metric: SyncMetric, enabled: Boolean, onToggle: (Boolean) -> Unit) {
+private fun MetricRow(
+    metricKey: String,
+    enabled: Boolean,
+    onToggle: (Boolean) -> Unit,
+    label: String? = null,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -414,7 +555,7 @@ private fun MetricRow(metric: SyncMetric, enabled: Boolean, onToggle: (Boolean) 
         verticalAlignment = Alignment.CenterVertically,
     ) {
         AppIcon(
-            AppIcons.forMetric(metric.key),
+            AppIcons.forMetric(SyncSelection.sourceMetricKey(metricKey)),
             contentDescription = null,
             tint = if (enabled) {
                 MaterialTheme.colorScheme.primary
@@ -424,7 +565,7 @@ private fun MetricRow(metric: SyncMetric, enabled: Boolean, onToggle: (Boolean) 
             modifier = Modifier.size(22.dp),
         )
         Text(
-            L10n.metric(metric.key),
+            label ?: L10n.metric(metricKey),
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurface,
             maxLines = 2,
