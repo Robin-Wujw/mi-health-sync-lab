@@ -149,7 +149,7 @@ class MiHealthImportDiagnosticsTest {
         val text = MiHealthImportDiagnostic("resting_heart_rate", MiHealthImportStage.PREPARE,
             failureReason = "SOURCE_REJECTED", verifiedRawRows = 1, sourceRejectedRecords = 1,
             issueCounts = summary).copyableText("test")
-        assertTrue(text.startsWith("Mi Health Sync Lab import diagnostic v2"))
+        assertTrue(text.startsWith("Mi Health Sync Lab import diagnostic v3"))
         assertTrue("outcome=PARTIAL" in text)
         assertTrue("failure_reason=SOURCE_REJECTED" in text)
         assertTrue("source_rejected_records=1" in text)

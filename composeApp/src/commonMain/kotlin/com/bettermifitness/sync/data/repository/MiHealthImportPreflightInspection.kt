@@ -9,33 +9,27 @@ import com.bettermifitness.sync.data.api.MiHealthImportPlan
 import com.bettermifitness.sync.data.api.MiHealthImportStage
 import com.bettermifitness.sync.data.api.MiHealthImportVerification
 import com.bettermifitness.sync.data.api.MiHealthImportVerificationStatus
-import com.bettermifitness.sync.data.api.canonicalMiHealthImportJson
 import com.bettermifitness.sync.data.api.summarizeMiHealthImportMismatchFields
 import com.bettermifitness.sync.data.api.MiSpO2MinuteMatchPolicy
-import com.bettermifitness.sync.data.api.MiOwnedRevisionMetadataIssue
+import com.bettermifitness.sync.data.api.MiRevisionMetadataIssue
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import com.bettermifitness.sync.data.preferences.HealthImportJournal
-import com.bettermifitness.sync.data.preferences.HealthImportLedger
 import com.bettermifitness.sync.health.HealthInboundMetric
-import com.bettermifitness.sync.health.HealthRecordIds
 
-/** Cloud reads and ledger reads only. No reservation, ownership change or health write. */
+/** Cloud reads and ledger reads only. No reservation or health write. */
 internal suspend fun inspectMiHealthImportPreflight(
     account: String, plan: MiHealthImportPlan, cloud: MiHealthImportCloud, journal: HealthImportJournal,
 ): MiHealthImportDiagnostic {
     val base = plan.inspectionDiagnostic()
     val rows = plan.rawRows.distinctBy { it.identity }
-    val owned = journal.ownedVerifiedFingerprints(account)
     val pending = journal.pendingIdentities(account, rows.map { it.identity.stableKey }.toSet())
     var matched = 0
     var conflicts = 0
     var ambiguous = 0
     var blockedPending = 0
     var eligible = 0
-    var unowned = 0
-    var changed = 0
-    val metadata = mutableListOf<MiOwnedRevisionMetadataIssue>()
+    val metadata = mutableListOf<MiRevisionMetadataIssue>()
     val verifications = mutableListOf<MiHealthImportVerification>()
     val minutePolicy = MiSpO2MinuteMatchPolicy(plan.rawRows)
     val sourceValid = plan.issues.none { it.severity == MiHealthImportIssueSeverity.REJECTED }
@@ -52,27 +46,19 @@ internal suspend fun inspectMiHealthImportPreflight(
             if (row.identity.stableKey in pending) { blockedPending++; continue }
             if (verification.status == MiHealthImportVerificationStatus.MISSING) continue
             if (verification.status == MiHealthImportVerificationStatus.AMBIGUOUS) ambiguous++ else conflicts++
-            if (plan.metric !in setOf(HealthInboundMetric.HEART_RATE, HealthInboundMetric.RESTING_HEART_RATE,
-                    HealthInboundMetric.HRV)) continue
-            val fingerprint = owned[HealthImportLedger.identityDigest(row.identity.stableKey)]
             val actual = index.atTarget(row)
-            if (sourceValid && (prepareOwnedHeartRateRevision(row, actual, fingerprint) != null ||
-                    prepareOwnedHrvSummaryRevision(row, actual, fingerprint) != null)) {
-                eligible++
-            } else if (fingerprint == null) unowned++
-            else if (actual.none {
-                HealthRecordIds.version(canonicalMiHealthImportJson(it.value)).toString() == fingerprint
-            }) changed++
-            if (plan.metric == HealthInboundMetric.RESTING_HEART_RATE && fingerprint != null) {
-                if (actual.any { it.zoneOffsetSeconds == null }) metadata += MiOwnedRevisionMetadataIssue.CLOUD_ZONE_ABSENT
-                if (actual.any { it.tag != null && it.tag.isBlank() }) metadata += MiOwnedRevisionMetadataIssue.CLOUD_TAG_BLANK
-                if (actual.any { !it.tag.isNullOrBlank() }) metadata += MiOwnedRevisionMetadataIssue.CLOUD_TAG_NONBLANK
+            if (sourceValid && (prepareHeartRateRevision(row, actual) != null ||
+                    prepareSleepRevision(row, actual, sourceTimezoneReliable = true) != null)) eligible++
+            if (plan.metric == HealthInboundMetric.RESTING_HEART_RATE) {
+                if (actual.any { it.zoneOffsetSeconds == null }) metadata += MiRevisionMetadataIssue.CLOUD_ZONE_ABSENT
+                if (actual.any { it.tag != null && it.tag.isBlank() }) metadata += MiRevisionMetadataIssue.CLOUD_TAG_BLANK
+                if (actual.any { !it.tag.isNullOrBlank() }) metadata += MiRevisionMetadataIssue.CLOUD_TAG_NONBLANK
                 if (actual.any { (it.value["bpm"] as? JsonPrimitive)?.longOrNull == null })
-                    metadata += MiOwnedRevisionMetadataIssue.CLOUD_BPM_NON_INTEGER_ENCODING
+                    metadata += MiRevisionMetadataIssue.CLOUD_BPM_NON_INTEGER_ENCODING
                 if (actual.any { (it.value["date_time"] as? JsonPrimitive)?.longOrNull == null })
-                    metadata += MiOwnedRevisionMetadataIssue.CLOUD_DATE_NON_INTEGER_ENCODING
-                if (row.value.keys != setOf("date_time", "bpm")) metadata += MiOwnedRevisionMetadataIssue.SOURCE_SCHEMA_UNEXPECTED
-                if (row.identity.time % 86_400L != 0L) metadata += MiOwnedRevisionMetadataIssue.SOURCE_DATE_UNALIGNED
+                    metadata += MiRevisionMetadataIssue.CLOUD_DATE_NON_INTEGER_ENCODING
+                if (row.value.keys != setOf("date_time", "bpm")) metadata += MiRevisionMetadataIssue.SOURCE_SCHEMA_UNEXPECTED
+                if (row.identity.time % 86_400L != 0L) metadata += MiRevisionMetadataIssue.SOURCE_DATE_UNALIGNED
             }
         }
     }
@@ -85,8 +71,7 @@ internal suspend fun inspectMiHealthImportPreflight(
         channel = MiHealthImportChannel.RAW, verifiedRawRows = matched, alreadyPresentRawRows = matched,
         notAttemptedRawRows = rows.size - matched, blockedConflictRows = conflicts,
         blockedAmbiguousRows = ambiguous, blockedPendingRows = blockedPending,
-        eligibleOwnedRevisionRows = eligible, unownedConflictRows = unowned, changedOwnedBaselineRows = changed,
-        ownedRevisionMetadataIssues = metadata.groupingBy { it }.eachCount(),
+        eligibleRevisionRows = eligible, revisionMetadataIssues = metadata.groupingBy { it }.eachCount(),
         affectedRows = rows.size - matched + base.sourceRejectedRecords,
         precheckMismatchFields = summarizeMiHealthImportMismatchFields(verifications), failureReason = reason)
 }

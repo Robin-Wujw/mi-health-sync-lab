@@ -45,7 +45,7 @@ class MiHealthImportWorkflowTest : com.bettermifitness.sync.LocalizedTest() {
     private val day = 20_000L * 86_400L
 
     @Test
-    fun userOneDayCountsRepair194UnchangedOwnedPointsAndKeep1228ExistingMatches() = runBlocking {
+    fun userOneDayCountsRepair194PointsAndKeep1228ExistingMatches() = runBlocking {
         val rows = (0 until 1422).map { row(it) }
         val old = rows.drop(1228).map { oldValue(it) }
         val ledger = HealthImportLedger(MemoryStore())
@@ -60,8 +60,8 @@ class MiHealthImportWorkflowTest : com.bettermifitness.sync.LocalizedTest() {
         assertEquals(1422, result.verifiedRawCount)
         assertEquals(1228, result.alreadyPresentRawCount)
         assertEquals(194, result.newlyUploadedRawCount)
-        assertEquals(194, diagnostic.attemptedOwnedRevisionRows)
-        assertEquals(194, diagnostic.verifiedOwnedRevisionRows)
+        assertEquals(194, diagnostic.attemptedRevisionRows)
+        assertEquals(194, diagnostic.verifiedRevisionRows)
         assertEquals(1, diagnostic.excludedSourcePoints)
         assertEquals(194, cloud.uploads.flatten().size)
         assertTrue(cloud.uploads.all { it.size <= 50 })
@@ -74,7 +74,7 @@ class MiHealthImportWorkflowTest : com.bettermifitness.sync.LocalizedTest() {
     }
 
     @Test
-    fun latestFeedbackRepairs163OwnedConflictsAlongside88NewPoints() = runBlocking {
+    fun latestFeedbackRepairs163ConflictsAlongside88NewPoints() = runBlocking {
         val rows = (0 until 1426).map { row(it) }
         val previous = rows.subList(1175, 1175 + 163).map { oldValue(it) }
         val ledger = HealthImportLedger(MemoryStore())
@@ -84,44 +84,37 @@ class MiHealthImportWorkflowTest : com.bettermifitness.sync.LocalizedTest() {
         assertEquals(1426, result.verifiedRawCount)
         assertEquals(1175, result.alreadyPresentRawCount)
         assertEquals(251, result.newlyUploadedRawCount)
-        assertEquals(163, result.diagnostic?.verifiedOwnedRevisionRows)
+        assertEquals(163, result.diagnostic?.verifiedRevisionRows)
         assertEquals(0, result.diagnostic?.blockedConflictRows)
         assertEquals(251, cloud.uploads.flatten().size)
     }
 
     @Test
-    fun sameFeedbackWithoutOwnershipKeeps163ConflictsAndStillUploads88FreshPoints() = runBlocking {
+    fun sameFeedbackWithoutUploadHistoryRepairsThe163ConflictsFromZepp() = runBlocking {
         val rows = (0 until 1426).map { row(it) }
         val previous = rows.subList(1175, 1175 + 163).map { oldValue(it) }
         val cloud = Cloud().apply { persist(rows.take(1175) + previous) }
-        val error = assertFailsWith<MiHealthImportRunException> {
-            workflow(cloud, HealthImportLedger(MemoryStore())).run(account, plan(rows, listOf(excludedSecond())))
-        }
-        val diagnostic = assertNotNull(error.diagnostic)
-        assertEquals(1263, error.verifiedRawCount)
-        assertEquals(1175, diagnostic.alreadyPresentRawRows)
-        assertEquals(88, diagnostic.newlyVerifiedRawRows)
-        assertEquals(163, diagnostic.blockedConflictRows)
-        assertEquals(163, diagnostic.unownedConflictRows)
-        assertEquals(88, cloud.uploads.flatten().size)
-        assertEquals(163, diagnostic.precheckMismatchFields["bpm"])
+        val result = workflow(cloud, HealthImportLedger(MemoryStore())).run(account, plan(rows, listOf(excludedSecond())))
+        assertEquals(1426, result.verifiedRawCount)
+        assertEquals(1175, result.alreadyPresentRawCount)
+        assertEquals(251, result.newlyUploadedRawCount)
+        assertEquals(163, result.diagnostic?.verifiedRevisionRows)
+        assertEquals(0, result.diagnostic?.blockedConflictRows)
+        assertEquals(251, cloud.uploads.flatten().size)
     }
 
     @Test
-    fun readOnlyPreflightSeparatesOwnedAndUnownedConflictsWithoutChangingTheJournal() = runBlocking {
+    fun readOnlyPreflightCountsRevisableConflictsWithoutChangingTheJournal() = runBlocking {
         val rows = (0 until 4).map { row(it) }
         val previous = rows.take(3).map { oldValue(it) }
         val ledger = HealthImportLedger(MemoryStore())
         ledger.markVerified(account, listOf(MiHealthImportRunner.journalEntry(previous[0]).copy(ownedUpload = true)))
-        ledger.markVerified(account, listOf(MiHealthImportRunner.journalEntry(previous[1]).copy(ownedUpload = true)))
-        val cloud = Cloud().apply { persist(listOf(previous[0], oldValue(rows[1], 99), previous[2], rows[3])) }
+        val cloud = Cloud().apply { persist(listOf(previous[0], oldValue(rows[1], 99), oldValue(rows[2], unrevisableBpm), rows[3])) }
         val before = ledger.verifiedFingerprints(account)
         val diagnostic = inspectMiHealthImportPreflight(account, plan(rows), cloud, ledger)
         assertEquals(1, diagnostic.alreadyPresentRawRows)
         assertEquals(3, diagnostic.blockedConflictRows)
-        assertEquals(1, diagnostic.eligibleOwnedRevisionRows)
-        assertEquals(1, diagnostic.changedOwnedBaselineRows)
-        assertEquals(1, diagnostic.unownedConflictRows)
+        assertEquals(2, diagnostic.eligibleRevisionRows)
         assertEquals(0, diagnostic.attemptedRawRows)
         assertTrue(cloud.uploads.isEmpty())
         assertEquals(before, ledger.verifiedFingerprints(account))
@@ -129,7 +122,7 @@ class MiHealthImportWorkflowTest : com.bettermifitness.sync.LocalizedTest() {
     }
 
     @Test
-    fun normalHrvSyncUpdatesOnlyItsOwnedSummaryAndPreservesTheSleepAndServerFields() = runBlocking {
+    fun normalHrvSyncUpdatesItsSummaryAndPreservesTheSleepAndServerFields() = runBlocking {
         val current = hrvRow(60, 40, 80)
         val previous = hrvRow(50, 30, 70).let { it.copy(value = kotlinx.serialization.json.JsonObject(
             it.value + ("server_extension" to kotlinx.serialization.json.JsonPrimitive("retained")))) }
@@ -138,10 +131,10 @@ class MiHealthImportWorkflowTest : com.bettermifitness.sync.LocalizedTest() {
         val cloud = Cloud().apply { persist(listOf(previous)) }
         val plan = plan(listOf(current)).copy(metric = HealthInboundMetric.HRV)
         val dryRun = inspectMiHealthImportPreflight(account, plan, cloud, ledger)
-        assertEquals(1, dryRun.eligibleOwnedRevisionRows)
+        assertEquals(1, dryRun.eligibleRevisionRows)
         val result = workflow(cloud, ledger).run(account, plan)
         assertEquals(1, result.verifiedRawCount)
-        assertEquals(1, result.diagnostic?.verifiedOwnedRevisionRows)
+        assertEquals(1, result.diagnostic?.verifiedRevisionRows)
         assertEquals(1, cloud.uploads.size)
         assertEquals(previous.value.filterKeys { it !in setOf("avg_hrv", "min_hrv", "max_hrv") },
             cloud.stored.single().value.filterKeys { it !in setOf("avg_hrv", "min_hrv", "max_hrv") })
@@ -151,8 +144,8 @@ class MiHealthImportWorkflowTest : com.bettermifitness.sync.LocalizedTest() {
     }
 
     @Test
-    fun hrvRevisionCannotReplaceUnownedPartialOrChangedSleepSummaries() = runBlocking {
-        for (kind in listOf("unowned", "partial-summary", "sleep-changed", "other-origin", "deleted")) {
+    fun hrvRevisionReplacesUnownedPartialAndChangedSleepSummaries() = runBlocking {
+        for (kind in listOf("unowned", "partial-summary", "sleep-changed")) {
             val current = hrvRow(60, 40, 80)
             val previous = hrvRow(50, 30, 70).let { row -> when (kind) {
                 "partial-summary" -> row.copy(value = kotlinx.serialization.json.JsonObject(row.value - "min_hrv"))
@@ -162,6 +155,20 @@ class MiHealthImportWorkflowTest : com.bettermifitness.sync.LocalizedTest() {
             } }
             val ledger = HealthImportLedger(MemoryStore())
             ledger.markVerified(account, listOf(MiHealthImportRunner.journalEntry(previous).copy(ownedUpload = kind != "unowned")))
+            val cloud = Cloud().apply { persist(listOf(previous)) }
+            val result = workflow(cloud, ledger).run(account, plan(listOf(current)).copy(metric = HealthInboundMetric.HRV))
+            assertEquals(1, result.diagnostic?.verifiedRevisionRows, kind)
+            assertEquals(current.value, cloud.stored.single().value, kind)
+        }
+    }
+
+    @Test
+    fun hrvRevisionLeavesOtherOriginAndDeletedTargetsAlone() = runBlocking {
+        for (kind in listOf("other-origin", "deleted")) {
+            val current = hrvRow(60, 40, 80)
+            val previous = hrvRow(50, 30, 70)
+            val ledger = HealthImportLedger(MemoryStore())
+            ledger.markVerified(account, listOf(MiHealthImportRunner.journalEntry(previous).copy(ownedUpload = true)))
             val cloud = Cloud().apply { persist(listOf(previous)) }
             if (kind == "other-origin") cloud.stored += previous.cloud().copy(sid = "other")
             if (kind == "deleted") cloud.stored += previous.cloud().copy(deleted = true)
@@ -204,11 +211,11 @@ class MiHealthImportWorkflowTest : com.bettermifitness.sync.LocalizedTest() {
     }
 
     @Test
-    fun oneDayUnownedConflictDoesNotPreventIndependentNewPointsFromSyncing() = runBlocking {
+    fun oneDayConflictThatCannotBeRevisedDoesNotPreventIndependentNewPointsFromSyncing() = runBlocking {
         val matched = row(0)
         val conflict = row(1)
         val fresh = row(2)
-        val previous = oldValue(conflict)
+        val previous = oldValue(conflict, unrevisableBpm)
         val cloud = Cloud().apply { persist(listOf(matched, previous)) }
         val error = assertFailsWith<MiHealthImportRunException> {
             workflow(cloud, HealthImportLedger(MemoryStore())).run(account,
@@ -221,7 +228,7 @@ class MiHealthImportWorkflowTest : com.bettermifitness.sync.LocalizedTest() {
     }
 
     @Test
-    fun ownedBaselineChangingBetweenPrecheckAndWriteIsNeverOverwritten() = runBlocking {
+    fun cloudChangingBetweenPrecheckAndWriteIsNeverOverwritten() = runBlocking {
         val target = row(0)
         val previous = oldValue(target)
         val cloud = Cloud().apply { persist(listOf(previous)) }
@@ -237,13 +244,13 @@ class MiHealthImportWorkflowTest : com.bettermifitness.sync.LocalizedTest() {
     }
 
     @Test
-    fun lostOwnershipTombstoneOtherSourceAndChangedTimezoneBlockAutomaticRevision() = runBlocking {
-        for (kind in listOf("observed", "deleted", "other-source", "timezone", "missing-zone")) {
+    fun tombstoneOtherSourceAndChangedTimezoneBlockAutomaticRevision() = runBlocking {
+        for (kind in listOf("deleted", "other-source", "timezone", "missing-zone")) {
             val target = row(0)
             val previous = oldValue(target)
             val cloud = Cloud().apply { persist(listOf(previous)) }
             val ledger = HealthImportLedger(MemoryStore())
-            ledger.markVerified(account, listOf(MiHealthImportRunner.journalEntry(previous).copy(ownedUpload = kind != "observed")))
+            ledger.markVerified(account, listOf(MiHealthImportRunner.journalEntry(previous).copy(ownedUpload = true)))
             if (kind == "deleted") cloud.stored += previous.cloud().copy(deleted = true)
             if (kind == "other-source") cloud.stored += previous.cloud().copy(sid = "another-origin")
             if (kind == "timezone") cloud.stored[0] = previous.cloud().copy(zoneOffsetSeconds = 0)
@@ -375,8 +382,11 @@ class MiHealthImportWorkflowTest : com.bettermifitness.sync.LocalizedTest() {
 
     private fun workflow(cloud: Cloud, ledger: HealthImportLedger) = MiHealthImportWorkflow(cloud, ledger, readbackPause = {})
 
+    /** Outside the valid range, so the row cannot be revised and stays a real conflict. */
+    private val unrevisableBpm = 999
+
     @Test
-    fun twoRestingMeasurementsUpdateThePreviouslyOwnedDailyValueAutomatically() = runBlocking {
+    fun twoRestingMeasurementsUpdateTheDailyValueAutomatically() = runBlocking {
         val observations = listOf(65L, 61L).mapIndexed { index, bpm ->
             com.bettermifitness.sync.health.HealthInboundRestingHeartRateRecord(
                 HealthRecordOrigin("rhr-$index", source, null, 1, day * 1000),
@@ -388,9 +398,9 @@ class MiHealthImportWorkflowTest : com.bettermifitness.sync.LocalizedTest() {
         val ledger = HealthImportLedger(MemoryStore())
         ledger.markVerified(account, listOf(MiHealthImportRunner.journalEntry(previous).copy(ownedUpload = true)))
         val cloud = Cloud().apply { persist(listOf(previous)) }
-        assertEquals(1, inspectMiHealthImportPreflight(account, plan, cloud, ledger).eligibleOwnedRevisionRows)
+        assertEquals(1, inspectMiHealthImportPreflight(account, plan, cloud, ledger).eligibleRevisionRows)
         val result = workflow(cloud, ledger).run(account, plan)
-        assertEquals(1, result.diagnostic?.verifiedOwnedRevisionRows)
+        assertEquals(1, result.diagnostic?.verifiedRevisionRows)
         assertEquals(1, result.newlyUploadedRawCount)
         assertEquals(1, cloud.uploads.size)
         assertEquals(target.identity, cloud.uploads.single().single().identity)
@@ -402,7 +412,7 @@ class MiHealthImportWorkflowTest : com.bettermifitness.sync.LocalizedTest() {
     }
 
     @Test
-    fun ownedDateCodedRestingValueCanBeRevisedWhenTheCloudOmitsZeroOffset() = runBlocking {
+    fun dateCodedRestingValueCanBeRevisedWhenTheCloudOmitsZeroOffset() = runBlocking {
         val target = row(0).copy(identity = row(0).identity.copy(key = "resting_heart_rate", time = day),
             value = buildJsonObject { put("date_time", day); put("bpm", 61) }, zoneOffsetSeconds = 0)
         val previous = oldValue(target, 65)
@@ -411,7 +421,7 @@ class MiHealthImportWorkflowTest : com.bettermifitness.sync.LocalizedTest() {
         val cloud = Cloud().apply { omitZeroZone = true; persist(listOf(previous)) }
         val result = workflow(cloud, ledger).run(account,
             plan(listOf(target)).copy(metric = HealthInboundMetric.RESTING_HEART_RATE))
-        assertEquals(1, result.diagnostic?.verifiedOwnedRevisionRows)
+        assertEquals(1, result.diagnostic?.verifiedRevisionRows)
         assertEquals(1, result.newlyUploadedRawCount)
         assertEquals(0, cloud.uploads.single().single().zoneOffsetSeconds)
         assertNull(cloud.stored.single().zoneOffsetSeconds)
@@ -419,16 +429,32 @@ class MiHealthImportWorkflowTest : com.bettermifitness.sync.LocalizedTest() {
     }
 
     @Test
-    fun restingRevisionDoesNotOverwriteUnownedChangedOrContestedCloudValues() = runBlocking {
+    fun restingRevisionReplacesUnownedAndChangedCloudValues() = runBlocking {
         val target = row(0).copy(identity = row(0).identity.copy(key = "resting_heart_rate", time = day),
             value = buildJsonObject { put("date_time", day); put("bpm", 61) }, zoneOffsetSeconds = 0)
-        for (kind in listOf("unowned", "changed", "deleted", "other-source", "timezone", "date-field")) {
+        for (kind in listOf("unowned", "changed")) {
             val previous = oldValue(target, 65)
             val cloud = Cloud().apply { persist(listOf(previous)) }
             val ledger = HealthImportLedger(MemoryStore())
             ledger.markVerified(account, listOf(MiHealthImportRunner.journalEntry(previous).copy(ownedUpload = kind != "unowned")))
+            if (kind == "changed") cloud.persist(listOf(oldValue(target, 70)))
+            val result = workflow(cloud, ledger).run(account,
+                plan(listOf(target)).copy(metric = HealthInboundMetric.RESTING_HEART_RATE))
+            assertEquals(1, result.diagnostic?.verifiedRevisionRows, kind)
+            assertEquals(target.value, cloud.stored.single().value, kind)
+        }
+    }
+
+    @Test
+    fun restingRevisionDoesNotOverwriteContestedCloudValues() = runBlocking {
+        val target = row(0).copy(identity = row(0).identity.copy(key = "resting_heart_rate", time = day),
+            value = buildJsonObject { put("date_time", day); put("bpm", 61) }, zoneOffsetSeconds = 0)
+        for (kind in listOf("deleted", "other-source", "timezone", "date-field")) {
+            val previous = oldValue(target, 65)
+            val cloud = Cloud().apply { persist(listOf(previous)) }
+            val ledger = HealthImportLedger(MemoryStore())
+            ledger.markVerified(account, listOf(MiHealthImportRunner.journalEntry(previous).copy(ownedUpload = true)))
             when (kind) {
-                "changed" -> cloud.persist(listOf(oldValue(target, 70)))
                 "deleted" -> cloud.stored += previous.cloud().copy(deleted = true)
                 "other-source" -> cloud.stored += previous.cloud().copy(sid = "another-source")
                 "timezone" -> cloud.stored[0] = previous.cloud().copy(zoneOffsetSeconds = 28_800)

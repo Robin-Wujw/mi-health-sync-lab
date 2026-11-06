@@ -8,6 +8,8 @@ import kotlinx.serialization.json.JsonObject
  * The software/default source used by the independently tested raw importer.
  * It is NOT exclusive to BMFS: loop prevention must use the verified target
  * identity AND content from the import ledger, never exclude all `default` rows.
+ * A differing `default` row at a target is still replaced: the user syncs from Zepp
+ * only and treats it as the source of truth.
  */
 const val MI_HEALTH_CONNECT_IMPORT_SID = "default"
 // Mi Fitness 3.59.2 IncrementalSyncController bounds pending raw uploads to 50 rows.

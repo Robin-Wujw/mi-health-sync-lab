@@ -135,7 +135,7 @@ class HealthLabInstrumentation : Instrumentation() {
                         MODE_SYNC_ONE_DAY -> repository.runOneDayInboundForLiveTest(
                             options.metric, from.toString(), until.toString(),
                         ).copyableText(version)
-                        MODE_REPAIR_ONE_OWNED -> repository.repairOneOwnedImportForLiveTest(
+                        MODE_REPAIR_ONE -> repository.repairOneImportForLiveTest(
                             options.metric, from.toString(), until.toString(),
                         ).copyableText(version)
                         MODE_RECOVER_ONE_PENDING -> repository.recoverPendingSpO2ForLiveTest(
@@ -192,14 +192,14 @@ class HealthLabInstrumentation : Instrumentation() {
         val mode = arguments.getString("mode") ?: MODE_INSPECT
         if (mode !in setOf(MODE_INSPECT, MODE_INSPECT_MINUTE, MODE_VERIFY_EXISTING, MODE_INSPECT_HEART,
                 MODE_PREVIEW_HEART, MODE_INSPECT_HEART_COVERAGE, MODE_RECONCILE_HEART, MODE_VERIFY_HEART,
-                MODE_INSPECT_CHAIN, MODE_SYNC_ONE, MODE_SYNC_ONE_DAY, MODE_REPAIR_ONE_OWNED,
+                MODE_INSPECT_CHAIN, MODE_SYNC_ONE, MODE_SYNC_ONE_DAY, MODE_REPAIR_ONE,
                 MODE_RECOVER_ONE_PENDING, MODE_RECONCILE_PENDING)) throw LiveTestFailure("INVALID_MODE")
         val metricKey = arguments.getString("metric") ?: "spo2"
         val metric = HealthInboundMetric.entries.singleOrNull { it.metricKey == metricKey }
             ?: throw LiveTestFailure("INVALID_METRIC")
-        if (mode == MODE_REPAIR_ONE_OWNED && metric !in setOf(HealthInboundMetric.HEART_RATE,
-                HealthInboundMetric.RESTING_HEART_RATE, HealthInboundMetric.HRV))
-            throw LiveTestFailure("OWNED_REPAIR_REQUIRES_PULSE_OR_HRV")
+        if (mode == MODE_REPAIR_ONE && metric !in setOf(HealthInboundMetric.HEART_RATE,
+                HealthInboundMetric.RESTING_HEART_RATE, HealthInboundMetric.HRV, HealthInboundMetric.SLEEP))
+            throw LiveTestFailure("REPAIR_REQUIRES_PULSE_SLEEP_OR_HRV")
         if (mode == MODE_RECOVER_ONE_PENDING && metric != HealthInboundMetric.OXYGEN_SATURATION) {
             throw LiveTestFailure("RECOVERY_REQUIRES_SPO2")
         }
@@ -263,10 +263,10 @@ class HealthLabInstrumentation : Instrumentation() {
         private const val MODE_INSPECT_CHAIN = "inspect-hc-chain"
         private const val MODE_SYNC_ONE = "sync-one"
         private const val MODE_SYNC_ONE_DAY = "sync-one-day"
-        private const val MODE_REPAIR_ONE_OWNED = "repair-one-owned"
+        private const val MODE_REPAIR_ONE = "repair-one"
         private const val MODE_RECOVER_ONE_PENDING = "recover-one-pending"
         private const val MODE_RECONCILE_PENDING = "reconcile-pending"
-        private val WRITE_MODES = setOf(MODE_SYNC_ONE, MODE_SYNC_ONE_DAY, MODE_REPAIR_ONE_OWNED, MODE_RECOVER_ONE_PENDING)
+        private val WRITE_MODES = setOf(MODE_SYNC_ONE, MODE_SYNC_ONE_DAY, MODE_REPAIR_ONE, MODE_RECOVER_ONE_PENDING)
         private const val TEST_TIMEOUT_MILLIS = 600_000L
     }
 }

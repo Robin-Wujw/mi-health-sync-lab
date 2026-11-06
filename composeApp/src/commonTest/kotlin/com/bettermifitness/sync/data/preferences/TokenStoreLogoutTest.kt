@@ -8,6 +8,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -72,6 +73,20 @@ class TokenStoreLogoutTest {
 
         assertEquals("exported", bodyLedger.lastExport(ACCOUNT))
         assertEquals("pending", bodyLedger.attempt(ACCOUNT, "uploaded"))
+    }
+
+    @Test
+    fun everyJournalPreferenceSurvivesAndNothingElseDoes() {
+        for (name in listOf(
+            "hc_import_pending_v1:a", "hc_import_verified_v1:a", "hc_import_ownership_v2:a",
+            "hc_import_single_recovery_v1:a", "hc_import_spo2_alias_source_v1:a",
+        )) assertTrue(HealthImportLedger.ownsPreference(name), name)
+        assertTrue(BodySyncLedger.ownsPreference("body_import_attempt:a"))
+        assertTrue(BodySyncLedger.ownsPreference("body_export:a"))
+        for (name in listOf("bearer_token", "mi_user_id", "enabled_metrics", "sync_range_days")) {
+            assertFalse(HealthImportLedger.ownsPreference(name), name)
+            assertFalse(BodySyncLedger.ownsPreference(name), name)
+        }
     }
 
     @Test

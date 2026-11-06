@@ -153,8 +153,6 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit, onLogout: (
                     onToggle = viewModel::setMetricEnabled,
                     onPermissions = viewModel::openInboundPermissions,
                     onTestMode = viewModel::setInboundTestMode,
-                    onLegacyHrv = viewModel::setAllowLegacySleepHrvEnrichment,
-                    onOwnedSleepRevision = viewModel::setAllowOwnedSleepRevision,
                 )
                 SettingsGroup(title = L10n.string(L10n.settingsRetryTitle)) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -291,8 +289,6 @@ private fun InboundSyncCard(
     onToggle: (String, Boolean) -> Unit,
     onPermissions: () -> Unit,
     onTestMode: (Boolean) -> Unit,
-    onLegacyHrv: (Boolean) -> Unit,
-    onOwnedSleepRevision: (Boolean) -> Unit,
 ) {
     var advanced by remember { mutableStateOf(false) }
     val keys = SyncPreferences.INBOUND_METRIC_KEYS.toList()
@@ -318,21 +314,6 @@ private fun InboundSyncCard(
                 Switch(checked = state.inboundTestMode, onCheckedChange = onTestMode)
             }
             Text(L10n.string(L10n.settingsInboundTestModeDetail), style = MaterialTheme.typography.bodySmall)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(L10n.string(L10n.settingsLegacyHrv), modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-                Switch(checked = state.allowLegacySleepHrvEnrichment,
-                    enabled = SyncPreferences.HRV_IMPORT_KEY in state.enabledMetrics,
-                    onCheckedChange = onLegacyHrv)
-            }
-            Text(L10n.string(L10n.settingsLegacyHrvDetail), style = MaterialTheme.typography.bodySmall)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(L10n.string(L10n.settingsOwnedSleepRevision), modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.bodyMedium)
-                Switch(checked = state.allowOwnedSleepRevision,
-                    enabled = SyncPreferences.SLEEP_IMPORT_KEY in state.enabledMetrics,
-                    onCheckedChange = onOwnedSleepRevision)
-            }
-            Text(L10n.string(L10n.settingsOwnedSleepRevisionDetail), style = MaterialTheme.typography.bodySmall)
             }
             OutlinedButton(
                 onClick = onPermissions,

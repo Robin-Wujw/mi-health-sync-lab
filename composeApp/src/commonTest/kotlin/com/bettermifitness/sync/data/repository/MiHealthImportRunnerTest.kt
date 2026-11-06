@@ -23,6 +23,7 @@ import com.bettermifitness.sync.data.preferences.HealthImportLedger
 import com.bettermifitness.sync.health.HealthInboundMetric
 import com.bettermifitness.sync.health.HealthRecordIds
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlin.test.Test
@@ -36,6 +37,9 @@ import kotlin.test.assertNull
 
 /** Remote outcomes and a durable write-ahead journal, with no network or user account. */
 class MiHealthImportRunnerTest {
+    /** Outside the valid range, so the row cannot be revised and stays a real conflict. */
+    private val unrevisableBpm = 999
+
     @Test fun userOneDayCaseVerifies760PointsAndSkipsOneConflictingSecondWithoutWarning() = runBlocking {
         val source = "com.huami.watch.hmwatchmanager"
         val day = timestamp.floorDiv(86_400) * 86_400
@@ -84,7 +88,7 @@ class MiHealthImportRunnerTest {
     @Test fun exclusionsNeverHideAnIndependentCloudConflict() = runBlocking {
         val issue = MiHealthImportIssue("HEART_RATE_SOURCE_POINT_EXCLUDED", setOf("broken"), "excluded",
             MiHealthImportIssueSeverity.WARNING)
-        val cloud = FakeCloud().apply { persist(listOf(raw(bpm = 99))) }
+        val cloud = FakeCloud().apply { persist(listOf(raw(bpm = unrevisableBpm))) }
         val failure = assertFailsWith<MiHealthImportRunException> {
             runner(cloud, MemoryJournal()).run(account, plan(listOf(raw()), listOf(issue)))
         }
@@ -260,10 +264,26 @@ class MiHealthImportRunnerTest {
     }
 
     @Test
-    fun equalExistingValuesAreSkippedAndDifferentValuesRemainUnchangedWhileCountsStayPartial() = runBlocking {
+    fun differentValuesAreReplacedFromTheSourceAndEqualValuesAreSkipped() = runBlocking {
+        val alreadyPresent = raw(0)
+        val different = raw(1)
+        val fresh = raw(2)
+        val journal = MemoryJournal()
+        val cloud = FakeCloud().apply { persist(listOf(alreadyPresent, raw(1, bpm = 99))) }
+
+        val result = runner(cloud, journal).run(account, plan(listOf(alreadyPresent, different, fresh)))
+
+        assertEquals(3, result.verifiedRawCount)
+        assertEquals(1, result.diagnostic?.verifiedRevisionRows)
+        assertEquals(listOf(listOf(different, fresh)), cloud.uploads)
+        assertEquals(different.asCloudRow(), cloud.stored.single { it.second.time == different.identity.time }.second)
+    }
+
+    @Test
+    fun aConflictThatCannotBeRevisedStaysUnchangedWhileCountsStayPartial() = runBlocking {
         val alreadyPresent = raw(0)
         val conflict = raw(1)
-        val originalCloudValue = raw(1, bpm = 99)
+        val originalCloudValue = raw(1, bpm = unrevisableBpm)
         val fresh = raw(2)
         val journal = MemoryJournal()
         val cloud = FakeCloud().apply { persist(listOf(alreadyPresent, originalCloudValue)) }
@@ -597,7 +617,7 @@ class MiHealthImportRunnerTest {
     }
 
     @Test
-    fun ownedUnchangedSleepCanReceiveMissingHrvWhilePreservingServerFields() = runBlocking {
+    fun sleepCanReceiveMissingHrvWhilePreservingServerFields() = runBlocking<Unit> {
         val journal = MemoryJournal()
         val cloud = FakeCloud().apply {
             onUpload = { batch ->
@@ -612,45 +632,39 @@ class MiHealthImportRunnerTest {
         }
         val runner = runner(cloud, journal)
         runner.run(account, plan(listOf(sleepBase())))
-        val result = runner.run(account, plan(listOf(sleepWithHrv())))
+        val result = runner.run(account, hrvPlan(sleepWithHrv()))
         assertEquals(1, result.verifiedRawCount)
         assertEquals(2, cloud.uploads.size)
         assertEquals(cloud.stored.single().second.value["server_extra"], cloud.uploads.last().single().value["server_extra"])
         assertNotNull(cloud.uploads.last().single().value["avg_hrv"])
-        assertFalse("LEGACY_SLEEP_HRV_ENRICHMENT" in result.warnings)
     }
 
     @Test
-    fun observedOnlySleepCannotBecomeOwnedThroughAReadOnlyMatch() = runBlocking {
+    fun observedSleepBecomesOwnedOnlyAfterAnUpload() = runBlocking {
         val journal = MemoryJournal()
         val cloud = FakeCloud().apply { persist(listOf(sleepBase())) }
         val runner = runner(cloud, journal)
         runner.run(account, plan(listOf(sleepBase())))
         assertTrue(journal.ownedVerifiedFingerprints(account).isEmpty())
-        val error = assertFailsWith<MiHealthImportRunException> {
-            runner.run(account, plan(listOf(sleepWithHrv())), allowLegacySleepHrvEnrichment = true)
-        }
-        assertEquals(MiHealthImportFailureReason.CONFLICT, error.reason)
         assertTrue(cloud.uploads.isEmpty())
+        runner.run(account, hrvPlan(sleepWithHrv()))
+        assertEquals(1, cloud.uploads.size)
+        assertTrue(journal.ownedVerifiedFingerprints(account).isNotEmpty())
     }
 
     @Test
-    fun legacySleepNeedsExplicitPermissionAndIsUpgradedOnlyAfterTheEnrichmentIsVerified() = runBlocking {
+    fun legacySleepIsUpgradedOnlyAfterItsSummaryIsVerified() = runBlocking {
         val journal = MemoryJournal()
         val cloud = FakeCloud().apply { persist(listOf(sleepBase())) }
         journal.seedLegacy(account, MiHealthImportRunner.journalEntry(sleepBase()))
-        val runner = runner(cloud, journal)
-        assertFailsWith<MiHealthImportRunException> { runner.run(account, plan(listOf(sleepWithHrv()))) }
-        assertTrue(cloud.uploads.isEmpty())
-        assertTrue(journal.legacyVerifiedFingerprints(account).isNotEmpty())
-        val result = runner.run(account, plan(listOf(sleepWithHrv())), allowLegacySleepHrvEnrichment = true)
-        assertTrue("LEGACY_SLEEP_HRV_ENRICHMENT" in result.warnings)
+        val result = runner(cloud, journal).run(account, hrvPlan(sleepWithHrv()))
+        assertEquals(1, result.verifiedRawCount)
         assertTrue(journal.legacyVerifiedFingerprints(account).isEmpty())
         assertTrue(journal.ownedVerifiedFingerprints(account).isNotEmpty())
     }
 
     @Test
-    fun conflictingHrvAndPendingEnrichmentAreNeverOverwrittenOrResent() = runBlocking {
+    fun changedHrvSummaryIsUpdatedFromTheSource() = runBlocking {
         val journal = MemoryJournal()
         val cloud = FakeCloud()
         val runner = runner(cloud, journal)
@@ -659,16 +673,20 @@ class MiHealthImportRunnerTest {
             sleepWithHrv().value.forEach { (key, value) -> put(key, value) }
             put("avg_hrv", 60)
         })
-        assertFailsWith<MiHealthImportRunException> { runner.run(account, plan(listOf(changed))) }
-        assertEquals(1, cloud.uploads.size)
+        runner.run(account, hrvPlan(changed))
+        assertEquals(2, cloud.uploads.size)
+        assertEquals(changed.value, cloud.stored.single().second.value)
+    }
 
+    @Test
+    fun pendingHrvIsNeverResent() = runBlocking {
         val pendingJournal = MemoryJournal()
         val pendingCloud = FakeCloud()
         val pendingRunner = runner(pendingCloud, pendingJournal)
         pendingRunner.run(account, plan(listOf(sleepBase())))
         pendingJournal.markPending(account, listOf(MiHealthImportRunner.journalEntry(sleepWithHrv())))
         val error = assertFailsWith<MiHealthImportRunException> {
-            pendingRunner.run(account, plan(listOf(sleepWithHrv())))
+            pendingRunner.run(account, hrvPlan(sleepWithHrv()))
         }
         assertEquals(MiHealthImportFailureReason.PENDING, error.reason)
         assertEquals(1, pendingCloud.uploads.size)
@@ -691,10 +709,10 @@ class MiHealthImportRunnerTest {
             }
         }
         val error = assertFailsWith<MiHealthImportRunException> {
-            runner.run(account, plan(listOf(sleepWithHrv())))
+            runner.run(account, hrvPlan(sleepWithHrv()))
         }
         assertEquals(MiHealthImportFailureReason.CONFLICT, error.reason)
-        assertEquals("HRV_ENRICHMENT_CHANGED", error.details)
+        assertEquals("SLEEP_REVISION_CHANGED", error.details)
         assertEquals(1, cloud.uploads.size)
         assertTrue(journal.pendingFor(account).isEmpty())
     }
@@ -768,7 +786,7 @@ class MiHealthImportRunnerTest {
             stored += rows.take(9322).map { MiHealthImportChannel.RAW to it.asCloudRow() }
             stored += rows.subList(9522, 9532).map { row ->
                 MiHealthImportChannel.RAW to row.copy(value = buildJsonObject {
-                    put("time", row.identity.time); put("bpm", 99)
+                    put("time", row.identity.time); put("bpm", unrevisableBpm)
                 }).asCloudRow()
             }
             stored += rows.takeLast(8).map { MiHealthImportChannel.RAW to it.asCloudRow().copy(sid = null) }
@@ -905,7 +923,15 @@ class MiHealthImportRunnerTest {
 
     private fun sleepBase() = raw().copy(
         identity = MiHealthImportIdentity(MiHealthImportChannel.RAW, MI_HEALTH_CONNECT_IMPORT_SID, "sleep", timestamp),
-        value = buildJsonObject { put("start_time", timestamp); put("end_time", timestamp + 3600); put("duration", 60) },
+        value = buildJsonObject {
+            put("bedtime", timestamp - 3600); put("wake_up_time", timestamp)
+            put("bed_timestamp", timestamp - 3600); put("out_bed_timestamp", timestamp)
+            put("duration", 60); put("sleep_deep_duration", 0); put("sleep_light_duration", 60)
+            put("sleep_rem_duration", 0); put("sleep_awake_duration", 0); put("awake_count", 0)
+            put("items", buildJsonArray {
+                add(buildJsonObject { put("start_time", timestamp - 3600); put("end_time", timestamp); put("state", 3) })
+            })
+        },
     )
 
     private fun sleepWithHrv() = sleepBase().copy(
@@ -914,6 +940,8 @@ class MiHealthImportRunnerTest {
             put("avg_hrv", 45); put("min_hrv", 30); put("max_hrv", 60)
         }, enrichment = MiHealthImportEnrichment.SLEEP_HRV,
     )
+
+    private fun hrvPlan(row: MiHealthImportRow) = plan(listOf(row)).copy(metric = HealthInboundMetric.HRV)
 
     private fun runner(cloud: FakeCloud, journal: MemoryJournal) =
         MiHealthImportRunner(cloud, journal, readbackPause = {})

@@ -5,8 +5,8 @@ import com.bettermifitness.sync.data.api.MiHealthImportCloudRow
 import com.bettermifitness.sync.data.api.MiHealthImportEnrichment
 import com.bettermifitness.sync.data.api.MiHealthImportIdentity
 import com.bettermifitness.sync.data.api.MiHealthImportRow
-import com.bettermifitness.sync.data.api.MiOwnedSleepRevisionStatus
 import com.bettermifitness.sync.data.api.MiSleepConflictOwnership
+import com.bettermifitness.sync.data.api.MiSleepRevisionStatus
 import com.bettermifitness.sync.data.api.canonicalMiHealthImportJson
 import com.bettermifitness.sync.health.HealthRecordIds
 import kotlinx.serialization.json.Json
@@ -20,7 +20,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-class MiOwnedSleepRevisionPolicyTest {
+class MiSleepRevisionPolicyTest {
     private val end = 1_700_000_000L
     private val old = row(end - 3_600, 2)
     private val revised = row(end - 7_200, 3)
@@ -40,15 +40,19 @@ class MiOwnedSleepRevisionPolicyTest {
     )
     private fun fingerprint(actual: MiHealthImportCloudRow) = HealthRecordIds.version(canonicalMiHealthImportJson(actual.value)).toString()
     private fun prepare(source: MiHealthImportRow = revised, actual: List<MiHealthImportCloudRow> = listOf(observed()),
-        owned: String? = fingerprint(observed()), requested: Boolean = true, zoneReliable: Boolean = true) =
-        prepareOwnedSleepRevision(source, actual, owned, requested, zoneReliable)
+        zoneReliable: Boolean = true) = prepareSleepRevision(source, actual, zoneReliable)
     private fun status(source: MiHealthImportRow = revised, actual: List<MiHealthImportCloudRow> = listOf(observed()),
-        owned: String? = fingerprint(observed()), zoneReliable: Boolean = true) =
-        assessOwnedSleepRevision(source, actual, owned, zoneReliable)
+        zoneReliable: Boolean = true) = assessSleepRevision(source, actual, zoneReliable)
+    private fun withSummary(row: MiHealthImportRow, average: Int) = JsonObject(row.value + mapOf(
+        "avg_hrv" to JsonPrimitive(average), "min_hrv" to JsonPrimitive(average - 10), "max_hrv" to JsonPrimitive(average + 10)))
+    private fun hrvRow(average: Int = 60) = revised.copy(
+        value = withSummary(revised, average),
+        sourceRecordKeys = revised.sourceRecordKeys + setOf("source:sample-1", "source:sample-2"),
+        enrichment = MiHealthImportEnrichment.SLEEP_HRV,
+    )
 
     @Test
-    fun explicitOptInReplacesOwnedSleepFieldsWithoutChangingTargetOrSource() {
-        assertNull(prepare(requested = false))
+    fun differingSleepIsReplacedWithoutChangingTargetOrSource() {
         val result = assertNotNull(prepare())
         assertEquals(revised, result.row)
         assertEquals(old.identity, result.row.identity)
@@ -60,7 +64,7 @@ class MiOwnedSleepRevisionPolicyTest {
     fun preservesCloudExtensionsAndRemovesObsoletePartialStageFlag() {
         val actual = observed().copy(value = JsonObject(old.value + mapOf(
             "server_extension" to json("""{"original":true}"""), "is_uncomplete" to JsonPrimitive(true))))
-        val result = assertNotNull(prepare(actual = listOf(actual), owned = fingerprint(actual)))
+        val result = assertNotNull(prepare(actual = listOf(actual)))
         assertEquals(actual.value["server_extension"], result.row.value["server_extension"])
         assertFalse("is_uncomplete" in result.row.value)
         assertEquals(revised.value["items"], result.row.value["items"])
@@ -71,70 +75,84 @@ class MiOwnedSleepRevisionPolicyTest {
         val partial = revised.copy(dayAggregationEligible = false,
             value = JsonObject(revised.value + ("is_uncomplete" to JsonPrimitive(true))))
         assertEquals(partial, assertNotNull(prepare(source = partial)).row)
-        assertEquals(MiOwnedSleepRevisionStatus.SOURCE_TIMEZONE_UNCERTAIN, status(source = partial, zoneReliable = false))
+        assertEquals(MiSleepRevisionStatus.SOURCE_TIMEZONE_UNCERTAIN, status(source = partial, zoneReliable = false))
     }
 
     @Test
-    fun observedAndLegacyRecordsNeverGainReplacementPermission() {
-        assertEquals(MiOwnedSleepRevisionStatus.NOT_OWNED, status(owned = null))
-        assertNull(prepare(owned = null))
-        assertEquals(MiSleepConflictOwnership.OBSERVED_BASELINE_UNCHANGED,
-            describeSleepConflictOwnership(revised, listOf(observed()), fingerprint(observed()), null, null))
-        assertEquals(MiSleepConflictOwnership.LEGACY_BASELINE_UNCHANGED,
-            describeSleepConflictOwnership(revised, listOf(observed()), fingerprint(observed()), null, fingerprint(observed())))
-    }
-
-    @Test
-    fun cloudContentChangeSinceOwnedReadBlocksEvenWhenMappedBaseStillMatches() {
-        val actual = observed().copy(value = JsonObject(old.value + ("new_server_field" to JsonPrimitive(1))))
-        assertEquals(MiOwnedSleepRevisionStatus.CLOUD_BASELINE_CHANGED, status(actual = listOf(actual)))
-        assertNull(prepare(actual = listOf(actual)))
-        assertEquals(MiSleepConflictOwnership.OWNED_BASELINE_CHANGED,
-            describeSleepConflictOwnership(revised, listOf(actual), fingerprint(observed()), fingerprint(observed()), null))
-    }
-
-    @Test
-    fun currentSourceMustResolveToExactlyOneRecord() {
-        for (sources in listOf(emptySet(), setOf(""), setOf("source:one", "source:two"))) {
-            assertEquals(MiOwnedSleepRevisionStatus.SOURCE_NOT_UNIQUE, status(source = revised.copy(sourceRecordKeys = sources)))
+    fun sleepRevisionKeepsAnExistingHrvSummaryForTheHrvImportToRecompute() {
+        for (field in listOf("avg_hrv", "min_hrv", "max_hrv")) {
+            val actual = observed().copy(value = JsonObject(old.value + (field to JsonPrimitive(40))))
+            assertEquals(MiSleepRevisionStatus.ELIGIBLE, status(actual = listOf(actual)))
+            val result = assertNotNull(prepare(actual = listOf(actual)))
+            assertEquals(JsonPrimitive(40), result.row.value[field])
+            assertEquals(revised.value["bedtime"], result.row.value["bedtime"])
         }
     }
 
     @Test
-    fun hrvEnrichmentAndOtherTargetsCannotUseReplacement() {
+    fun hrvRowReplacesTheSleepAndItsSummaryAndKeepsCloudExtensions() {
+        val actual = observed().copy(value = JsonObject(withSummary(old, 40) + ("server_extension" to JsonPrimitive("kept"))))
+        val result = assertNotNull(prepare(source = hrvRow(60), actual = listOf(actual)))
+        assertEquals(JsonPrimitive(60), result.row.value["avg_hrv"])
+        assertEquals(JsonPrimitive(50), result.row.value["min_hrv"])
+        assertEquals(revised.value["bedtime"], result.row.value["bedtime"])
+        assertEquals(JsonPrimitive("kept"), result.row.value["server_extension"])
+    }
+
+    @Test
+    fun hrvRowCanAddAMissingSummaryToAMatchingSleep() {
+        val result = assertNotNull(prepare(source = hrvRow(), actual = listOf(observed(revised))))
+        assertEquals(hrvRow().value, result.row.value)
+    }
+
+    @Test
+    fun identicalHrvRowIsNotReplaced() {
+        assertEquals(MiSleepRevisionStatus.ALREADY_MATCHED,
+            status(source = hrvRow(), actual = listOf(observed(revised.copy(value = hrvRow().value)))))
+    }
+
+    @Test
+    fun currentSleepSourceMustResolveToExactlyOneRecord() {
+        for (sources in listOf(emptySet(), setOf(""), setOf("source:one", "source:two"))) {
+            assertEquals(MiSleepRevisionStatus.SOURCE_NOT_UNIQUE, status(source = revised.copy(sourceRecordKeys = sources)))
+        }
+    }
+
+    @Test
+    fun hrvRowMayListItsSamplesAsSourcesButNeedsAtLeastOneValidSource() {
+        assertEquals(MiSleepRevisionStatus.ELIGIBLE, status(source = hrvRow()))
+        for (sources in listOf(emptySet(), setOf("source:one", ""))) {
+            assertEquals(MiSleepRevisionStatus.SOURCE_NOT_UNIQUE, status(source = hrvRow().copy(sourceRecordKeys = sources)))
+        }
+    }
+
+    @Test
+    fun otherTargetsCannotUseReplacement() {
         for (source in listOf(
-            revised.copy(enrichment = MiHealthImportEnrichment.SLEEP_HRV),
             revised.copy(identity = revised.identity.copy(channel = MiHealthImportChannel.DAILY_AGGREGATE)),
             revised.copy(identity = revised.identity.copy(key = "spo2")),
             revised.copy(identity = revised.identity.copy(sid = "watch")),
             revised.copy(value = JsonObject(revised.value + ("avg_hrv" to JsonPrimitive(40)))),
-        )) assertEquals(MiOwnedSleepRevisionStatus.UNSUPPORTED_TARGET, status(source = source))
-    }
-
-    @Test
-    fun existingHrvCannotBeSilentlyDeletedOrReassociatedToChangedSleep() {
-        for (field in listOf("avg_hrv", "min_hrv", "max_hrv")) {
-            val actual = observed().copy(value = JsonObject(old.value + (field to JsonPrimitive(40))))
-            assertEquals(MiOwnedSleepRevisionStatus.HRV_PRESENT, status(actual = listOf(actual), owned = fingerprint(actual)))
-            assertNull(prepare(actual = listOf(actual), owned = fingerprint(actual)))
-        }
+            revised.copy(value = JsonObject(revised.value + ("unknown_field" to JsonPrimitive(1))),
+                enrichment = MiHealthImportEnrichment.SLEEP_HRV),
+        )) assertEquals(MiSleepRevisionStatus.UNSUPPORTED_TARGET, status(source = source))
     }
 
     @Test
     fun differentOrUnknownCloudTimezoneCannotAuthorizeReplacement() {
         for (zone in listOf(null, 0)) {
-            assertEquals(MiOwnedSleepRevisionStatus.TIMEZONE_CHANGED,
+            assertEquals(MiSleepRevisionStatus.TIMEZONE_CHANGED,
                 status(actual = listOf(observed().copy(zoneOffsetSeconds = zone))))
         }
     }
 
     @Test
-    fun deletedOtherAndUnknownSourcesBlockEvenAlongsideOwnedMatch() {
+    fun deletedOtherAndUnknownSourcesStillBlockTheReplacement() {
         for ((extra, expected) in listOf(
-            observed().copy(deleted = true) to MiOwnedSleepRevisionStatus.TOMBSTONE_PRESENT,
-            observed().copy(sid = "watch") to MiOwnedSleepRevisionStatus.OTHER_SOURCE_PRESENT,
-            observed().copy(sid = null) to MiOwnedSleepRevisionStatus.AMBIGUOUS,
-            observed().copy(sid = "") to MiOwnedSleepRevisionStatus.AMBIGUOUS,
+            observed().copy(deleted = true) to MiSleepRevisionStatus.TOMBSTONE_PRESENT,
+            observed().copy(sid = "watch") to MiSleepRevisionStatus.OTHER_SOURCE_PRESENT,
+            observed().copy(sid = null) to MiSleepRevisionStatus.AMBIGUOUS,
+            observed().copy(sid = "") to MiSleepRevisionStatus.AMBIGUOUS,
         )) {
             val actual = listOf(observed(), extra)
             assertEquals(expected, status(actual = actual))
@@ -150,24 +168,22 @@ class MiOwnedSleepRevisionPolicyTest {
             JsonObject(old.value + ("bedtime" to JsonPrimitive(end + 1))),
             JsonObject(old.value + ("wake_up_time" to JsonPrimitive(end.toString()))),
         )) {
-            val actual = observed().copy(value = value)
-            assertEquals(MiOwnedSleepRevisionStatus.INVALID_SLEEP_BASELINE,
-                status(actual = listOf(actual), owned = fingerprint(actual)))
+            assertEquals(MiSleepRevisionStatus.INVALID_SLEEP_BASELINE, status(actual = listOf(observed().copy(value = value))))
         }
-        assertEquals(MiOwnedSleepRevisionStatus.INVALID_SLEEP_BASELINE,
+        assertEquals(MiSleepRevisionStatus.INVALID_SLEEP_BASELINE,
             status(source = revised.copy(value = JsonObject(revised.value - "items"))))
     }
 
     @Test
     fun identicalMatchesAreNotReplacedAndIdenticalDuplicatePagesAreSafe() {
-        assertEquals(MiOwnedSleepRevisionStatus.ALREADY_MATCHED, status(source = old))
+        assertEquals(MiSleepRevisionStatus.ALREADY_MATCHED, status(source = old))
         assertNull(prepare(source = old))
         assertNotNull(prepare(actual = listOf(observed(), observed())))
-        assertEquals(MiOwnedSleepRevisionStatus.AMBIGUOUS, status(actual = listOf(observed(), observed(revised))))
+        assertEquals(MiSleepRevisionStatus.AMBIGUOUS, status(actual = listOf(observed(), observed(revised))))
     }
 
     @Test
-    fun numericCloudNormalizationDoesNotInvalidateOwnedSleepBounds() {
+    fun numericCloudNormalizationDoesNotInvalidateSleepBounds() {
         val normalized = observed().copy(value = JsonObject(old.value + mapOf(
             "bedtime" to JsonPrimitive((end - 3_600).toDouble()),
             "bed_timestamp" to JsonPrimitive((end - 3_600).toDouble()),
@@ -180,7 +196,7 @@ class MiOwnedSleepRevisionPolicyTest {
 
     @Test
     fun changedTargetIdentityCannotCreateANewRecordThroughRevisionPath() {
-        assertEquals(MiOwnedSleepRevisionStatus.MISSING, status(source = revised.copy(identity = revised.identity.copy(time = end + 1))))
+        assertEquals(MiSleepRevisionStatus.MISSING, status(source = revised.copy(identity = revised.identity.copy(time = end + 1))))
         assertNull(prepare(actual = emptyList()))
     }
 
@@ -195,13 +211,19 @@ class MiOwnedSleepRevisionPolicyTest {
     }
 
     @Test
-    fun ownershipDiagnosticDoesNotImplySameSourceRevisionOrPermission() {
+    fun ownershipDiagnosticReportsTheHistoryOfTheCloudRow() {
+        val current = fingerprint(observed())
         assertEquals(MiSleepConflictOwnership.NO_HISTORY,
             describeSleepConflictOwnership(revised, listOf(observed()), null, null, null))
+        assertEquals(MiSleepConflictOwnership.OBSERVED_BASELINE_UNCHANGED,
+            describeSleepConflictOwnership(revised, listOf(observed()), current, null, null))
+        assertEquals(MiSleepConflictOwnership.LEGACY_BASELINE_UNCHANGED,
+            describeSleepConflictOwnership(revised, listOf(observed()), current, null, current))
         assertEquals(MiSleepConflictOwnership.OWNED_BASELINE_UNCHANGED,
-            describeSleepConflictOwnership(revised, listOf(observed()), fingerprint(observed()), fingerprint(observed()), null))
+            describeSleepConflictOwnership(revised, listOf(observed()), current, current, null))
+        assertEquals(MiSleepConflictOwnership.OWNED_BASELINE_CHANGED,
+            describeSleepConflictOwnership(revised, listOf(observed()), "other", "other", null))
         assertEquals(MiSleepConflictOwnership.CLOUD_TARGET_UNCERTAIN,
-            describeSleepConflictOwnership(
-                revised, listOf(observed().copy(deleted = true)), fingerprint(observed()), fingerprint(observed()), null))
+            describeSleepConflictOwnership(revised, listOf(observed().copy(deleted = true)), current, current, null))
     }
 }

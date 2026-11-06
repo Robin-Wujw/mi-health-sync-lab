@@ -165,8 +165,6 @@ class HealthRepository internal constructor(
     private var workoutCompletion: kotlinx.coroutines.Deferred<Unit>? = null
     private var verifiedImportFingerprints: Map<String, String> = emptyMap()
     private var inboundTestMode: Boolean = false
-    private var allowLegacySleepHrvEnrichment: Boolean = false
-    private var allowOwnedSleepRevision: Boolean = false
     private val liveTestMutex = Mutex()
 
     /** Explicit foreground action: verify existing data and recover eligible missing pending rows. */
@@ -250,7 +248,7 @@ class HealthRepository internal constructor(
                 val probe = MiPendingImportProbe(cloud, importLedger)
                     .inspect(accountKey(), plan)
                 val sleep = if (metric == HealthInboundMetric.SLEEP) MiSleepConflictInspector(cloud, importLedger)
-                    .inspect(accountKey(), plan, syncPreferences.allowOwnedSleepRevision.first()) else null
+                    .inspect(accountKey(), plan) else null
                 MiHealthLiveInspection(inspectMiHealthImportPreflight(accountKey(), plan, cloud, importLedger)
                     .copy(sleepConflict = sleep), probe)
             }
@@ -270,9 +268,7 @@ class HealthRepository internal constructor(
                 val plan = prepareInboundPlan(metric, from, to, liveTestWindow = true)
                 val cloud = MiDirectHealthImportCloud(apiProvider = { api })
                 val result = try {
-                    MiHealthImportRunner(cloud, importLedger).run(accountKey(), plan, testMode = true,
-                        allowLegacySleepHrvEnrichment = syncPreferences.allowLegacySleepHrvEnrichment.first(),
-                        allowOwnedSleepRevision = syncPreferences.allowOwnedSleepRevision.first()).diagnostic!!
+                    MiHealthImportRunner(cloud, importLedger).run(accountKey(), plan, testMode = true).diagnostic!!
                 } catch (e: MiHealthImportRunException) {
                     e.diagnostic ?: throw e
                 }
@@ -290,8 +286,6 @@ class HealthRepository internal constructor(
             check(ensureSession())
             sharedRefresh.reset()
             inboundTestMode = false
-            allowLegacySleepHrvEnrichment = syncPreferences.allowLegacySleepHrvEnrichment.first()
-            allowOwnedSleepRevision = syncPreferences.allowOwnedSleepRevision.first()
             syncInbound(metric, from, to)
             when (val state = syncProgress.value.stateForKey("${metric.metricKey}_import_experimental")) {
                 is SyncState.Success -> checkNotNull(state.diagnostic)
@@ -303,18 +297,18 @@ class HealthRepository internal constructor(
         }
     }
 
-    /** At most one still-owned correction, using the normal runner's fresh precheck and readback. */
-    suspend fun repairOneOwnedImportForLiveTest(
+    /** At most one correction from Zepp, using the normal runner's fresh precheck and readback. */
+    suspend fun repairOneImportForLiveTest(
         metric: HealthInboundMetric, from: String, to: String,
     ): MiHealthImportDiagnostic {
         check(LiveTestSessionGate.isActive)
-        require(metric in setOf(HealthInboundMetric.HEART_RATE, HealthInboundMetric.RESTING_HEART_RATE, HealthInboundMetric.HRV))
+        require(metric in setOf(HealthInboundMetric.HEART_RATE, HealthInboundMetric.RESTING_HEART_RATE,
+            HealthInboundMetric.HRV, HealthInboundMetric.SLEEP))
         return liveTestMutex.withLock {
             check(ensureSession())
             val plan = prepareInboundPlan(metric, from, to, liveTestWindow = true)
             check(plan.issues.none { it.severity == com.bettermifitness.sync.data.api.MiHealthImportIssueSeverity.REJECTED })
             val cloud = MiDirectHealthImportCloud(apiProvider = { api })
-            val owned = importLedger.ownedVerifiedFingerprints(accountKey())
             var candidate: com.bettermifitness.sync.data.api.MiHealthImportRow? = null
             candidateSearch@ for ((group, rows) in plan.rawRows.groupBy {
                 it.identity.key to it.identity.time.floorDiv(86_400)
@@ -323,9 +317,8 @@ class HealthRepository internal constructor(
                     (group.second * 86_400 - 86_400).coerceAtLeast(0), (group.second + 1) * 86_400 + 2)
                 val index = com.bettermifitness.sync.data.api.MiHealthImportObservationIndex(observed)
                 for (row in rows) {
-                    val fingerprint = owned[HealthImportLedger.identityDigest(row.identity.stableKey)]
-                    if (prepareOwnedHeartRateRevision(row, index.atTarget(row), fingerprint) != null ||
-                        prepareOwnedHrvSummaryRevision(row, index.atTarget(row), fingerprint) != null) {
+                    if (prepareHeartRateRevision(row, index.atTarget(row)) != null ||
+                        prepareSleepRevision(row, index.atTarget(row), sourceTimezoneReliable = true) != null) {
                         candidate = row
                         break@candidateSearch
                     }
@@ -379,8 +372,6 @@ class HealthRepository internal constructor(
         retryableFailures.clear()
         verifiedImportFingerprints = importLedger.verifiedFingerprints(accountKey())
         inboundTestMode = syncPreferences.inboundTestMode.first()
-        allowLegacySleepHrvEnrichment = syncPreferences.allowLegacySleepHrvEnrichment.first()
-        allowOwnedSleepRevision = syncPreferences.allowOwnedSleepRevision.first()
         correctWorkoutOverlap = "workouts" in enabled
         syncProgress.value = SyncProgress()
         // Reads are cached only after success, so an auth retry can really refetch.
@@ -443,10 +434,7 @@ class HealthRepository internal constructor(
             if (plan.inputRecordCount == 0) throw NoMetricDataException()
             val cloud = MiDirectHealthImportCloud(apiProvider = { api })
             val result = try {
-                MiHealthImportWorkflow(cloud, importLedger).run(
-                    accountKey(), plan, testMode = inboundTestMode,
-                    allowLegacySleepHrvEnrichment = allowLegacySleepHrvEnrichment,
-                    allowOwnedSleepRevision = allowOwnedSleepRevision)
+                MiHealthImportWorkflow(cloud, importLedger).run(accountKey(), plan, testMode = inboundTestMode)
             } catch (original: MiHealthImportRunException) {
                 val probeDiagnostic = original.diagnostic?.let { attachPendingProbe(it, plan, cloud) }
                 val e = if (probeDiagnostic == original.diagnostic) original else MiHealthImportRunException(
@@ -485,11 +473,11 @@ class HealthRepository internal constructor(
             result.diagnostic?.excludedHrvSamples?.takeIf { it > 0 }?.let {
                 detail += "\n" + L10n.textFmt(L10n.importHrvExcludedSamples, result.verifiedRawCount, it)
             }
-            result.diagnostic?.verifiedOwnedRevisionRows?.takeIf { it > 0 }?.let {
+            result.diagnostic?.verifiedRevisionRows?.takeIf { it > 0 && metric != HealthInboundMetric.SLEEP }?.let {
                 detail += "\n" + L10n.textFmt(when (metric) {
-                    HealthInboundMetric.HRV -> L10n.importOwnedHrvRevision
-                    HealthInboundMetric.RESTING_HEART_RATE -> L10n.importOwnedRhrRevision
-                    else -> L10n.importOwnedHeartRateRevision
+                    HealthInboundMetric.HRV -> L10n.importHrvRevision
+                    HealthInboundMetric.RESTING_HEART_RATE -> L10n.importRhrRevision
+                    else -> L10n.importHeartRateRevision
                 }, it)
             }
             if (metric == HealthInboundMetric.RESTING_HEART_RATE) {

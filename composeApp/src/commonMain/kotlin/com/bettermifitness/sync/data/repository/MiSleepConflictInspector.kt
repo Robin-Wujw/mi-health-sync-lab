@@ -10,7 +10,7 @@ import com.bettermifitness.sync.data.api.MiHealthImportRow
 import com.bettermifitness.sync.data.api.MiHealthImportVerification
 import com.bettermifitness.sync.data.api.MiHealthImportVerificationStatus
 import com.bettermifitness.sync.data.api.MiHealthImportVerifier
-import com.bettermifitness.sync.data.api.MiOwnedSleepRevisionStatus
+import com.bettermifitness.sync.data.api.MiSleepRevisionStatus
 import com.bettermifitness.sync.data.api.MiSleepConflictDiagnostic
 import com.bettermifitness.sync.data.api.MiSleepConflictOwnership
 import com.bettermifitness.sync.data.api.safeMiHealthImportMismatchField
@@ -23,9 +23,9 @@ import kotlinx.coroutines.CancellationException
 
 /** Reads every selected sleep target, including conflicts with no pending entry. Never writes a journal. */
 internal class MiSleepConflictInspector(private val cloud: MiHealthImportCloud, private val journal: HealthImportJournal) {
-    suspend fun inspect(account: String, plan: MiHealthImportPlan, revisionRequested: Boolean = false): MiSleepConflictDiagnostic {
+    suspend fun inspect(account: String, plan: MiHealthImportPlan): MiSleepConflictDiagnostic {
         require(plan.metric == HealthInboundMetric.SLEEP)
-        val report = MiSleepConflictAccumulator(revisionRequested)
+        val report = MiSleepConflictAccumulator()
         val groups = plan.rawRows.groupBy { it.identity }.values
         val identities = groups.map { it.first().identity.stableKey }.toSet()
         val pending = journal.pendingIdentities(account, identities)
@@ -35,14 +35,14 @@ internal class MiSleepConflictInspector(private val cloud: MiHealthImportCloud, 
         val rows = groups.mapNotNull { group ->
             val row = group.first()
             if (group.map { it.canonicalContent to it.zoneOffsetSeconds }.distinct().size > 1) {
-                report.unqueried(row, MiOwnedSleepRevisionStatus.SOURCE_COLLISION)
+                report.unqueried(row, MiSleepRevisionStatus.SOURCE_COLLISION)
                 null
             } else row
         }
         for ((index, group) in rows.groupBy { it.identity.key to it.identity.time.floorDiv(86_400L) }.values.withIndex()) {
             if (index >= 32) {
                 report.readLimitedGroups++
-                group.forEach { report.unqueried(it, MiOwnedSleepRevisionStatus.READ_LIMIT) }
+                group.forEach { report.unqueried(it, MiSleepRevisionStatus.READ_LIMIT) }
                 continue
             }
             val first = group.first()
@@ -56,7 +56,7 @@ internal class MiSleepConflictInspector(private val cloud: MiHealthImportCloud, 
                 throw expired // Safe to refresh and repeat this read-only operation.
             } catch (_: Exception) {
                 report.readFailureGroups++
-                group.forEach { report.unqueried(it, MiOwnedSleepRevisionStatus.READ_FAILED) }
+                group.forEach { report.unqueried(it, MiSleepRevisionStatus.READ_FAILED) }
                 continue
             }
             for (row in group) {
@@ -69,36 +69,36 @@ internal class MiSleepConflictInspector(private val cloud: MiHealthImportCloud, 
     }
 }
 
-internal fun sleepRevisionSourceBlocker(row: MiHealthImportRow, issues: List<MiHealthImportIssue>): MiOwnedSleepRevisionStatus? {
+internal fun sleepRevisionSourceBlocker(row: MiHealthImportRow, issues: List<MiHealthImportIssue>): MiSleepRevisionStatus? {
     val related = issues.filter { it.sourceRecordKeys.isEmpty() || it.sourceRecordKeys.any { key -> key in row.sourceRecordKeys } }
-    if (related.any { it.severity == MiHealthImportIssueSeverity.REJECTED }) return MiOwnedSleepRevisionStatus.SOURCE_REJECTED
+    if (related.any { it.severity == MiHealthImportIssueSeverity.REJECTED }) return MiSleepRevisionStatus.SOURCE_REJECTED
     if (related.any { it.code in setOf("SOURCE_TIMEZONE_UNAVAILABLE", "SOURCE_TIMEZONE_CHANGED") }) {
-        return MiOwnedSleepRevisionStatus.SOURCE_TIMEZONE_UNCERTAIN
+        return MiSleepRevisionStatus.SOURCE_TIMEZONE_UNCERTAIN
     }
     return null
 }
 
-internal class MiSleepConflictAccumulator(private val requested: Boolean) {
+internal class MiSleepConflictAccumulator {
     private data class Observation(val verification: MiHealthImportVerification?, val pending: Boolean,
-        val ownership: MiSleepConflictOwnership?, val eligibility: MiOwnedSleepRevisionStatus)
+        val ownership: MiSleepConflictOwnership?, val eligibility: MiSleepRevisionStatus)
     private val observations = linkedMapOf<String, Observation>()
     var attemptedRevisionRows = 0
     var verifiedRevisionRows = 0
     var readFailureGroups = 0
     var readLimitedGroups = 0
 
-    fun unqueried(row: MiHealthImportRow, reason: MiOwnedSleepRevisionStatus) {
+    fun unqueried(row: MiHealthImportRow, reason: MiSleepRevisionStatus) {
         observations[row.identity.stableKey] = Observation(null, false, null, reason)
     }
 
     fun observe(row: MiHealthImportRow, observed: List<MiHealthImportCloudRow>, verified: String?, owned: String?, legacy: String?,
-        pending: Boolean, sourceBlocker: MiOwnedSleepRevisionStatus?) {
+        pending: Boolean, sourceBlocker: MiSleepRevisionStatus?) {
         val verification = MiHealthImportVerifier.verify(row, observed)
         val eligibility = when {
-            verification.status == MiHealthImportVerificationStatus.VERIFIED -> MiOwnedSleepRevisionStatus.ALREADY_MATCHED
-            pending -> MiOwnedSleepRevisionStatus.PENDING
+            verification.status == MiHealthImportVerificationStatus.VERIFIED -> MiSleepRevisionStatus.ALREADY_MATCHED
+            pending -> MiSleepRevisionStatus.PENDING
             sourceBlocker != null -> sourceBlocker
-            else -> assessOwnedSleepRevision(row, observed, owned, sourceTimezoneReliable = true)
+            else -> assessSleepRevision(row, observed, sourceTimezoneReliable = true)
         }
         observations[row.identity.stableKey] = Observation(verification, pending,
             describeSleepConflictOwnership(row, observed, verified, owned, legacy), eligibility)
@@ -107,14 +107,14 @@ internal class MiSleepConflictAccumulator(private val requested: Boolean) {
     fun snapshot(): MiSleepConflictDiagnostic {
         val values = observations.values
         return MiSleepConflictDiagnostic(
-            revisionRequested = requested, inspectedRows = values.size,
+            inspectedRows = values.size,
             matchedRows = values.count { it.verification?.status == MiHealthImportVerificationStatus.VERIFIED },
             mismatchedRows = values.count { it.verification?.status == MiHealthImportVerificationStatus.MISMATCH },
             ambiguousRows = values.count { it.verification?.status == MiHealthImportVerificationStatus.AMBIGUOUS },
             missingRows = values.count { it.verification?.status == MiHealthImportVerificationStatus.MISSING },
             unqueriedRows = values.count { it.verification == null },
             pendingRows = values.count { it.pending },
-            eligibleRevisionRows = values.count { it.eligibility == MiOwnedSleepRevisionStatus.ELIGIBLE },
+            eligibleRevisionRows = values.count { it.eligibility == MiSleepRevisionStatus.ELIGIBLE },
             attemptedRevisionRows = attemptedRevisionRows, verifiedRevisionRows = verifiedRevisionRows,
             readFailureGroups = readFailureGroups, readLimitedGroups = readLimitedGroups,
             ownershipCounts = values.mapNotNull { it.ownership }.groupingBy { it }.eachCount(),
@@ -125,7 +125,6 @@ internal class MiSleepConflictAccumulator(private val requested: Boolean) {
 }
 
 fun MiSleepConflictDiagnostic.copyableText(): String = buildList {
-    add("sleep_conflict.revision_requested=$revisionRequested")
     add("sleep_conflict.inspected_rows=$inspectedRows")
     add("sleep_conflict.matched_rows=$matchedRows")
     add("sleep_conflict.mismatched_rows=$mismatchedRows")

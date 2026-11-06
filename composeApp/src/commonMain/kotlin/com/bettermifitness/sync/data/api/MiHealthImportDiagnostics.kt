@@ -5,7 +5,7 @@ import com.mifitness.miclient.api.MiApiException
 /** Protocol metadata only. Never put a request/response body, record ID or timestamp here. */
 enum class MiHealthImportStage { PREPARE, PRECHECK, UPLOAD, READBACK, COMPLETE }
 
-enum class MiOwnedRevisionMetadataIssue {
+enum class MiRevisionMetadataIssue {
     CLOUD_ZONE_ABSENT, CLOUD_TAG_BLANK, CLOUD_TAG_NONBLANK,
     CLOUD_BPM_NON_INTEGER_ENCODING, CLOUD_DATE_NON_INTEGER_ENCODING,
     SOURCE_SCHEMA_UNEXPECTED, SOURCE_DATE_UNALIGNED,
@@ -175,12 +175,10 @@ data class MiHealthImportDiagnostic(
     val pendingRecovery: MiPendingRecoveryDiagnostic? = null,
     val pendingReconcile: MiPendingReconcileDiagnostic? = null,
     val sleepConflict: MiSleepConflictDiagnostic? = null,
-    val attemptedOwnedRevisionRows: Int = 0,
-    val verifiedOwnedRevisionRows: Int = 0,
-    val eligibleOwnedRevisionRows: Int = 0,
-    val unownedConflictRows: Int = 0,
-    val changedOwnedBaselineRows: Int = 0,
-    val ownedRevisionMetadataIssues: Map<MiOwnedRevisionMetadataIssue, Int> = emptyMap(),
+    val attemptedRevisionRows: Int = 0,
+    val verifiedRevisionRows: Int = 0,
+    val eligibleRevisionRows: Int = 0,
+    val revisionMetadataIssues: Map<MiRevisionMetadataIssue, Int> = emptyMap(),
 ) {
     val hasVerifiedRows: Boolean get() = verifiedRawRows > 0 || verifiedDailyRows > 0
     /** Excluded destination seconds, never included in verified counts. */
@@ -228,8 +226,7 @@ private val SAFE_IMPORT_ISSUE_CODES = setOf(
     "HRV_AWAKE_SAMPLE_EXCLUDED", "HRV_SLEEP_RANGE_ASSUMPTION", "UNREPRESENTABLE_HRV_SUMMARY",
     "RMSSD_EXPERIMENTAL_MAPPING", "HRV_INTEGER_ROUNDING", "CONFLICTING_HRV_REVISIONS", "INVALID_HRV_SAMPLE",
     "HRV_TIME_COLLISION", "HRV_DUPLICATE_SAMPLE", "EXISTING_DAILY_REPORT_PRESERVED", "TEST_MODE_SINGLE_RECORD",
-    "LEGACY_SLEEP_HRV_ENRICHMENT", "HRV_ENRICHMENT_CHANGED", "RHR_DAILY_CHECK_FAILED",
-    "OWNED_SLEEP_REVISION", "SLEEP_REVISION_CHANGED",
+    "RHR_DAILY_CHECK_FAILED", "SLEEP_UPDATED_FROM_ZEPP", "SLEEP_REVISION_CHANGED",
     "source_target_collision", "remaining_batches_not_submitted", "UNKNOWN",
 )
 

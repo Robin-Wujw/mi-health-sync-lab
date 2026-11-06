@@ -49,11 +49,12 @@ fun MiHealthImportRunException.userMessage(): String = buildList {
 fun MiHealthImportDiagnostic.userFacingDetails(): String = buildList {
     if (excludedSourcePoints > 0) add(L10n.textFmt(L10n.importExcludedPoints, verifiedRawRows, excludedSourcePoints))
     if (excludedHrvSamples > 0) add(L10n.textFmt(L10n.importHrvExcludedSamples, verifiedRawRows, excludedHrvSamples))
-    if (verifiedOwnedRevisionRows > 0) add(L10n.textFmt(when (metricKey) {
-        "hrv" -> L10n.importOwnedHrvRevision
-        "resting_heart_rate" -> L10n.importOwnedRhrRevision
-        else -> L10n.importOwnedHeartRateRevision
-    }, verifiedOwnedRevisionRows))
+    // Sleep reports its updates below, with the attempted count.
+    if (verifiedRevisionRows > 0 && sleepConflict == null) add(L10n.textFmt(when (metricKey) {
+        "hrv" -> L10n.importHrvRevision
+        "resting_heart_rate" -> L10n.importRhrRevision
+        else -> L10n.importHeartRateRevision
+    }, verifiedRevisionRows))
     if (testMode && pendingRecovery == null && pendingReconcile == null) add(L10n.text(L10n.settingsInboundTestModeDetail))
     val stageLabel = L10n.text(when (stage) {
         MiHealthImportStage.PREPARE -> L10n.importStagePrepare
@@ -82,10 +83,7 @@ fun MiHealthImportDiagnostic.userFacingDetails(): String = buildList {
         add(L10n.textFmt(L10n.importBlockedVerifiedHistory, blockedVerifiedHistoryRows))
     }
     sleepConflict?.let {
-        if (it.eligibleRevisionRows > 0 && !it.revisionRequested) {
-            add(L10n.textFmt(L10n.importSleepRevisionAvailable, it.eligibleRevisionRows))
-        }
-        if (it.attemptedRevisionRows > 0) {
+        if (it.attemptedRevisionRows > 0 || it.verifiedRevisionRows > 0) {
             add(L10n.textFmt(L10n.importSleepRevisionResult, it.attemptedRevisionRows, it.verifiedRevisionRows))
         }
     }
@@ -162,7 +160,7 @@ fun MiHealthImportDiagnostic.userFacingDetails(): String = buildList {
 
 /** An explicit, stable allowlist for support. No exception text or arbitrary JSON is serialized. */
 fun MiHealthImportDiagnostic.copyableText(appVersion: String): String = buildList {
-    add("Mi Health Sync Lab import diagnostic v2")
+    add("Mi Health Sync Lab import diagnostic v3")
     add("app_version=" + appVersion.filter { it.isLetterOrDigit() || it in ".-_ ()" }.take(80))
     add("metric=" + metricKey.takeIf { it in DIAGNOSTIC_METRICS }.orEmpty().ifBlank { "unknown" })
     add("test_mode=$testMode")
@@ -201,12 +199,10 @@ fun MiHealthImportDiagnostic.copyableText(appVersion: String): String = buildLis
     add("preserved_daily_rows=$preservedDailyRows")
     add("source_rejected_records=$sourceRejectedRecords")
     add("excluded_hrv_samples=$excludedHrvSamples")
-    add("attempted_owned_revision_rows=$attemptedOwnedRevisionRows")
-    add("verified_owned_revision_rows=$verifiedOwnedRevisionRows")
-    add("eligible_owned_revision_rows=$eligibleOwnedRevisionRows")
-    add("unowned_conflict_rows=$unownedConflictRows")
-    add("changed_owned_baseline_rows=$changedOwnedBaselineRows")
-    for ((issue, count) in ownedRevisionMetadataIssues) add("owned_revision_metadata.${issue.name}=$count")
+    add("attempted_revision_rows=$attemptedRevisionRows")
+    add("verified_revision_rows=$verifiedRevisionRows")
+    add("eligible_revision_rows=$eligibleRevisionRows")
+    for ((issue, count) in revisionMetadataIssues) add("revision_metadata.${issue.name}=$count")
     for ((field, count) in safeMismatchCounts(precheckMismatchFields)) add("precheck_mismatch_field.$field=$count")
     for ((field, count) in safeMismatchCounts(readbackMismatchFields)) add("readback_mismatch_field.$field=$count")
     add("affected_rows=$affectedRows")

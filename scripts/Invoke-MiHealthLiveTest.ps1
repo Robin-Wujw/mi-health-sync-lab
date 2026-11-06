@@ -30,7 +30,7 @@ Reopen the normal app to resume normal foreground/background synchronization.
 param(
     [string]$AdbPath = ".\adb.exe",
     [string]$Serial,
-    [ValidateSet("inspect", "inspect-spo2-minute", "verify-existing-spo2", "inspect-heart-history", "inspect-heart-coverage", "preview-heart-recovery", "reconcile-heart", "verify-existing-heart", "inspect-hc-chain", "sync-one", "sync-one-day", "repair-one-owned", "recover-one-pending", "reconcile-pending")]
+    [ValidateSet("inspect", "inspect-spo2-minute", "verify-existing-spo2", "inspect-heart-history", "inspect-heart-coverage", "preview-heart-recovery", "reconcile-heart", "verify-existing-heart", "inspect-hc-chain", "sync-one", "sync-one-day", "repair-one", "recover-one-pending", "reconcile-pending")]
     [string]$Mode = "inspect",
     [ValidateSet("spo2", "resting_heart_rate", "heart_rate", "hrv", "sleep")]
     [string]$Metric = "spo2",
@@ -51,7 +51,7 @@ $ExpectedVersionCode = "1000025"
 $Mode = $Mode.ToLowerInvariant()
 $Metric = $Metric.ToLowerInvariant()
 
-$isWriteMode = $Mode -in @("sync-one", "sync-one-day", "repair-one-owned", "recover-one-pending")
+$isWriteMode = $Mode -in @("sync-one", "sync-one-day", "repair-one", "recover-one-pending")
 if ($Mode -eq "sync-one-day" -and $RangeDays -ne 1) { throw "sync-one-day requires -RangeDays 1." }
 if ($isWriteMode -and -not $AllowCloudWrite) {
     throw "$Mode requires -AllowCloudWrite. Omit it and use -Mode inspect for read-only health-data checks."

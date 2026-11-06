@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <!-- Default (English). SSOT for Android Compose + iOS SwiftUI. System locale picks translations. -->
 <resources>
-    <string name="import_owned_rhr_revision">Verified updates to %1$d daily resting-heart-rate values previously uploaded by this app.</string>
-    <string name="import_owned_hrv_revision">Verified updates to %1$d sleep HRV summaries previously uploaded by this app.</string>
+    <string name="import_rhr_revision">Updated %1$d daily resting-heart-rate values from Zepp and verified them.</string>
+    <string name="import_hrv_revision">Updated %1$d sleep HRV summaries from Zepp and verified them.</string>
     <string name="import_hrv_excluded_samples">Verified %1$d sleep HRV summaries. Skipped %2$d samples outside an unambiguous sleeping interval.</string>
-    <string name="import_owned_heart_rate_revision">Verified updates to %1$d heart-rate points previously uploaded by this app.</string>
+    <string name="import_heart_rate_revision">Updated %1$d heart-rate points from Zepp and verified them.</string>
     <string name="import_excluded_points">Verified %1$d heart-rate points. Skipped %2$d conflicting seconds.</string>
     <string name="sync_status_with_exclusions">Done with skips</string>
     <string name="import_heart_source_point_excluded">Different heart-rate values share one second. That second was skipped; other data syncs normally.</string>
@@ -278,10 +278,6 @@
     <string name="metric_import_spo2">Blood oxygen → Xiaomi</string>
     <string name="settings_inbound_test_mode">Single-record test mode</string>
     <string name="settings_inbound_test_mode_detail">Each enabled import checks at most one latest real record and creates no daily summary. This is a test, not a full sync. Pending uploads are not automatically resent.</string>
-    <string name="settings_legacy_hrv">Allow HRV enrichment of sleep verified by the earlier build</string>
-    <string name="settings_legacy_hrv_detail">Only unchanged sleep already verified by the earlier build can receive missing HRV fields. That build did not distinguish records it uploaded from records it only observed. Off by default. Existing HRV values are never replaced.</string>
-    <string name="settings_owned_sleep_revision">Allow updates to sleep uploaded by this app</string>
-    <string name="settings_owned_sleep_revision_detail">Off by default. When enabled, sleep sync may replace the start, duration and stages of a sleep record this app uploaded and verified, using the selected Zepp data. The cloud record must still be unchanged, with the same end time and timezone. Uncertain ownership, pending uploads and existing HRV remain protected. Earlier records do not prove that Zepp revised the same source record.</string>
     <string name="sync_status_test_verified">Test verified</string>
     <string name="sync_diagnostics_show">View results</string>
     <string name="sync_diagnostics_hide">Hide results</string>
@@ -307,7 +303,6 @@
     <string name="import_diagnostic_batch">Batch %1$d: %2$d records.</string>
     <string name="import_diagnostic_counts">Individual records: %1$d planned, %2$d submitted, %3$d verified. Daily summaries: %4$d planned, %5$d submitted, %6$d verified.</string>
     <string name="import_warning_test_mode">Single-record test only. The remaining source records and all daily summaries were not processed.</string>
-    <string name="import_warning_legacy_hrv">Missing HRV fields were added to unchanged sleep verified by the earlier build, under the explicit legacy permission. The earlier build did not establish upload ownership.</string>
     <string name="import_business_accepted">The business response accepted the submission.</string>
     <string name="import_business_rejected">The business response did not accept the submission.</string>
     <string name="rhr_display_check_detail">Resting-heart-rate daily display data: %1$d days match, %2$d days are missing, %3$d days differ. No daily report was modified.</string>
@@ -323,11 +318,9 @@
     <string name="import_issue_hrv_unrepresentable">The HRV summary cannot be represented by the supported Xiaomi sleep fields.</string>
     <string name="import_issue_hrv_revisions">Conflicting revisions of the same HRV record were not merged.</string>
     <string name="import_issue_hrv_collision">Different HRV values share the same instant. No value was chosen.</string>
-    <string name="import_issue_hrv_changed">The original sleep changed before the HRV update. No update was submitted.</string>
-    <string name="import_issue_sleep_revision_changed">The cloud sleep or its local ownership changed before the update. The affected update was not submitted.</string>
-    <string name="import_warning_owned_sleep_revision">With sleep updates enabled, verified records owned by this app were updated from the selected Zepp sleep data. Shared reports distinguish attempted updates from verified updates.</string>
-    <string name="import_sleep_revision_available">%d sleep records uploaded by this app can be updated from the selected Zepp data. To apply them, enable “Allow updates to sleep uploaded by this app” in Settings, then sync sleep again.</string>
-    <string name="import_sleep_revision_result">Owned sleep updates: %1$d attempted, %2$d verified by reading back.</string>
+    <string name="import_issue_sleep_revision_changed">The cloud sleep changed before the update. The affected update was not submitted.</string>
+    <string name="import_warning_sleep_updated">Sleep records in the Mi cloud were updated from Zepp. Shared reports distinguish attempted updates from verified updates.</string>
+    <string name="import_sleep_revision_result">Sleep updates from Zepp: %1$d attempted, %2$d verified by reading back.</string>
     <string name="import_issue_rhr_date_unknown">The source timezone is missing, so the resting-heart-rate date cannot be established.</string>
     <string name="import_issue_rhr_invalid_date">The resting-heart-rate date is not supported by the destination.</string>
     <string name="import_issue_rhr_collision">The same source instant has different resting-heart-rate values. This day remains unresolved.</string>

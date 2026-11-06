@@ -5,22 +5,23 @@ package com.bettermifitness.sync.data.repository
 import com.bettermifitness.sync.data.api.MI_HEALTH_CONNECT_IMPORT_SID
 import com.bettermifitness.sync.data.api.MiHealthImportChannel
 import com.bettermifitness.sync.data.api.MiHealthImportCloudRow
+import com.bettermifitness.sync.data.api.MiHealthImportEnrichment
 import com.bettermifitness.sync.data.api.MiHealthImportRow
 import com.bettermifitness.sync.data.api.MiHealthImportVerificationStatus
 import com.bettermifitness.sync.data.api.MiHealthImportVerifier
-import com.bettermifitness.sync.data.api.MiOwnedSleepRevisionStatus
 import com.bettermifitness.sync.data.api.MiSleepConflictOwnership
+import com.bettermifitness.sync.data.api.MiSleepRevisionStatus
 import com.bettermifitness.sync.data.api.canonicalMiHealthImportJson
 import com.bettermifitness.sync.health.HealthRecordIds
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
 /**
- * Explicit replacement of one still-owned sleep target, not proof that HC revised the same record.
- * Older ledgers did not retain verified source provenance. They must never silently authorize this
- * replacement. The caller must require the user's separate opt-in and repeat the read before POST.
+ * Replaces one differing sleep target with the selected Zepp data. Zepp is the source of truth for
+ * everything this app imports, so who last wrote the `default` row does not matter. The caller must
+ * repeat the read before POST, because the row may have changed since it was assessed.
  */
-internal data class PreparedOwnedSleepRevision(
+internal data class PreparedSleepRevision(
     val row: MiHealthImportRow,
     val previousFingerprint: String,
     val previousZoneOffsetSeconds: Int,
@@ -32,65 +33,60 @@ internal data class PreparedOwnedSleepRevision(
     }
 }
 
-internal fun prepareOwnedSleepRevision(
+internal fun prepareSleepRevision(
     row: MiHealthImportRow,
     observedRows: List<MiHealthImportCloudRow>,
-    ownedFingerprint: String?,
-    userRequested: Boolean,
     sourceTimezoneReliable: Boolean,
-): PreparedOwnedSleepRevision? {
-    if (!userRequested || assessOwnedSleepRevision(row, observedRows, ownedFingerprint,
-            sourceTimezoneReliable) != MiOwnedSleepRevisionStatus.ELIGIBLE) return null
+): PreparedSleepRevision? {
+    if (assessSleepRevision(row, observedRows, sourceTimezoneReliable) != MiSleepRevisionStatus.ELIGIBLE) return null
     val actual = uniqueUncontestedSleepTarget(row, observedRows) ?: return null
     // Remove obsolete optional mapped fields (especially is_uncomplete), then replace only this
-    // mapper's sleep fields. Cloud extensions remain byte-for-byte JSON values, never recreated.
-    val revisedValue = JsonObject(actual.value.filterKeys { it !in MAPPED_SLEEP_FIELDS } + row.value)
-    return PreparedOwnedSleepRevision(row.copy(value = revisedValue), sleepContentFingerprint(actual),
+    // mapper's fields. Cloud extensions remain byte-for-byte JSON values, never recreated. A sleep
+    // row keeps any HRV summary until the HRV import, which runs next, recomputes it from Zepp.
+    val revisedValue = JsonObject(actual.value.filterKeys { it !in replaceableFields(row) } + row.value)
+    return PreparedSleepRevision(row.copy(value = revisedValue), sleepContentFingerprint(actual),
         actual.zoneOffsetSeconds ?: return null)
 }
 
-/** A source-zone warning cannot be inferred from dayAggregationEligible, which also covers gaps. */
+/** What still blocks a replacement: anything that is not one clear `default` row at this exact target. */
 @Suppress("ComplexCondition", "ReturnCount") // One early return per refusal reason, in the order they are reported.
-internal fun assessOwnedSleepRevision(
+internal fun assessSleepRevision(
     row: MiHealthImportRow,
     observedRows: List<MiHealthImportCloudRow>,
-    ownedFingerprint: String?,
     sourceTimezoneReliable: Boolean,
-): MiOwnedSleepRevisionStatus {
+): MiSleepRevisionStatus {
     if (row.identity.channel != MiHealthImportChannel.RAW || row.identity.key != "sleep" ||
         row.identity.sid != MI_HEALTH_CONNECT_IMPORT_SID || row.identity.tag != null ||
-        row.enrichment != null || row.value.keys.any { it !in MAPPED_SLEEP_FIELDS }) {
-        return MiOwnedSleepRevisionStatus.UNSUPPORTED_TARGET
+        row.value.keys.any { it !in replaceableFields(row) }) {
+        return MiSleepRevisionStatus.UNSUPPORTED_TARGET
     }
-    if (row.sourceRecordKeys.size != 1 || row.sourceRecordKeys.single().isBlank()) {
-        return MiOwnedSleepRevisionStatus.SOURCE_NOT_UNIQUE
+    // A sleep row maps one source session. An HRV row also lists the samples behind its summary.
+    val sources = row.sourceRecordKeys
+    if (sources.isEmpty() || sources.any { it.isBlank() } || (row.enrichment == null && sources.size != 1)) {
+        return MiSleepRevisionStatus.SOURCE_NOT_UNIQUE
     }
     if (!sourceTimezoneReliable || row.zoneOffsetSeconds !in -64_800..64_800) {
-        return MiOwnedSleepRevisionStatus.SOURCE_TIMEZONE_UNCERTAIN
+        return MiSleepRevisionStatus.SOURCE_TIMEZONE_UNCERTAIN
     }
     val atTarget = sleepTargets(row, observedRows)
-    if (atTarget.isEmpty()) return MiOwnedSleepRevisionStatus.MISSING
-    if (atTarget.any { it.deleted }) return MiOwnedSleepRevisionStatus.TOMBSTONE_PRESENT
+    if (atTarget.isEmpty()) return MiSleepRevisionStatus.MISSING
+    if (atTarget.any { it.deleted }) return MiSleepRevisionStatus.TOMBSTONE_PRESENT
     if (atTarget.any { !it.sid.isNullOrBlank() && it.sid != row.identity.sid }) {
-        return MiOwnedSleepRevisionStatus.OTHER_SOURCE_PRESENT
+        return MiSleepRevisionStatus.OTHER_SOURCE_PRESENT
     }
-    val actual = uniqueUncontestedSleepTarget(row, observedRows) ?: return MiOwnedSleepRevisionStatus.AMBIGUOUS
-    if (ownedFingerprint == null) return MiOwnedSleepRevisionStatus.NOT_OWNED
-    if (ownedFingerprint != sleepContentFingerprint(actual)) return MiOwnedSleepRevisionStatus.CLOUD_BASELINE_CHANGED
-    if (actual.zoneOffsetSeconds != row.zoneOffsetSeconds) return MiOwnedSleepRevisionStatus.TIMEZONE_CHANGED
+    val actual = uniqueUncontestedSleepTarget(row, observedRows) ?: return MiSleepRevisionStatus.AMBIGUOUS
+    if (actual.zoneOffsetSeconds != row.zoneOffsetSeconds) return MiSleepRevisionStatus.TIMEZONE_CHANGED
     val oldStart = validSleepStart(actual.value, row.identity.time)
     val newStart = validSleepStart(row.value, row.identity.time)
     if (oldStart == null || newStart == null || maxOf(oldStart, newStart) >= row.identity.time ||
-        !REQUIRED_SLEEP_FIELDS.all { it in row.value }) return MiOwnedSleepRevisionStatus.INVALID_SLEEP_BASELINE
+        !REQUIRED_SLEEP_FIELDS.all { it in row.value }) return MiSleepRevisionStatus.INVALID_SLEEP_BASELINE
     if (MiHealthImportVerifier.verify(row, listOf(actual)).status == MiHealthImportVerificationStatus.VERIFIED) {
-        return MiOwnedSleepRevisionStatus.ALREADY_MATCHED
+        return MiSleepRevisionStatus.ALREADY_MATCHED
     }
-    // An existing summary belongs to the old sleep timeline. Keeping it on changed stages/bounds
-    // would imply a new unsupported association; deleting it would lose user data.
-    if (HRV_SUMMARY_FIELDS.any { it in actual.value }) return MiOwnedSleepRevisionStatus.HRV_PRESENT
-    return MiOwnedSleepRevisionStatus.ELIGIBLE
+    return MiSleepRevisionStatus.ELIGIBLE
 }
 
+/** For diagnostics only: this tells where a cloud row came from, and no longer decides anything. */
 internal fun describeSleepConflictOwnership(
     row: MiHealthImportRow,
     observedRows: List<MiHealthImportCloudRow>,
@@ -111,6 +107,9 @@ internal fun describeSleepConflictOwnership(
         else -> MiSleepConflictOwnership.NO_HISTORY
     }
 }
+
+private fun replaceableFields(row: MiHealthImportRow): Set<String> =
+    if (row.enrichment == MiHealthImportEnrichment.SLEEP_HRV) MAPPED_SLEEP_FIELDS + HRV_SUMMARY_FIELDS else MAPPED_SLEEP_FIELDS
 
 private fun sleepTargets(row: MiHealthImportRow, observedRows: List<MiHealthImportCloudRow>) = observedRows.filter {
     it.key == row.identity.key && it.time == row.identity.time

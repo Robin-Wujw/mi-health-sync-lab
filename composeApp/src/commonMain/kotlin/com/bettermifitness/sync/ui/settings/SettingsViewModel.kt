@@ -58,8 +58,6 @@ data class SettingsUiState(
     val inboundPermissionMessage: String? = null,
     val inboundPermissionNeedsAction: Boolean = false,
     val inboundTestMode: Boolean = false,
-    val allowLegacySleepHrvEnrichment: Boolean = false,
-    val allowOwnedSleepRevision: Boolean = false,
 )
 
 class SettingsViewModel(
@@ -117,8 +115,6 @@ class SettingsViewModel(
             rangeDays = config.syncRangeDays,
             autoSync = config.autoSync,
             inboundTestMode = config.inboundTestMode,
-            allowLegacySleepHrvEnrichment = config.allowLegacySleepHrvEnrichment,
-            allowOwnedSleepRevision = config.allowOwnedSleepRevision,
             lastBackgroundSyncLabel = RelativeTime.format(lastBg.first),
             lastBackgroundStatusTitle = SyncOutcomeLabels.title(lastBg.second),
             lastBackgroundDetail = SyncOutcomeLabels.detail(lastBg.second, lastBg.third),
@@ -253,14 +249,6 @@ class SettingsViewModel(
 
     fun setInboundTestMode(enabled: Boolean) {
         viewModelScope.launch { syncPreferences.setInboundTestMode(enabled) }
-    }
-
-    fun setAllowLegacySleepHrvEnrichment(enabled: Boolean) {
-        viewModelScope.launch { syncPreferences.setAllowLegacySleepHrvEnrichment(enabled) }
-    }
-
-    fun setAllowOwnedSleepRevision(enabled: Boolean) {
-        viewModelScope.launch { syncPreferences.setAllowOwnedSleepRevision(enabled) }
     }
 
     fun setAutoSync(enabled: Boolean) {

@@ -66,15 +66,6 @@ class SyncPreferences(
         it[INBOUND_TEST_MODE_KEY]?.toBooleanStrictOrNull() ?: false
     }
 
-    val allowLegacySleepHrvEnrichment: Flow<Boolean> = dataStore.data.map {
-        it[LEGACY_SLEEP_HRV_KEY]?.toBooleanStrictOrNull() ?: false
-    }
-
-    /** Separate opt-in to replace an unchanged, locally owned sleep target with selected HC data. */
-    val allowOwnedSleepRevision: Flow<Boolean> = dataStore.data.map {
-        it[OWNED_SLEEP_REVISION_KEY]?.toBooleanStrictOrNull() ?: false
-    }
-
     /**
      * Hot snapshot shared by all screens: single DataStore subscription for the
      * whole process. Started eagerly so the first emission lands before screens
@@ -96,9 +87,8 @@ class SyncPreferences(
             lastSyncTime = lastSync,
             lastBackgroundSyncTime = lastBg,
         )
-    }, inboundTestMode, allowLegacySleepHrvEnrichment, allowOwnedSleepRevision) { snapshot, testMode, allowLegacy, allowRevision ->
-        snapshot.copy(inboundTestMode = testMode, allowLegacySleepHrvEnrichment = allowLegacy,
-            allowOwnedSleepRevision = allowRevision)
+    }, inboundTestMode) { snapshot, testMode ->
+        snapshot.copy(inboundTestMode = testMode)
     }.stateIn(
         scope = prefsScope,
         started = SharingStarted.Eagerly,
@@ -159,14 +149,6 @@ class SyncPreferences(
         dataStore.edit { it[INBOUND_TEST_MODE_KEY] = enabled.toString() }
     }
 
-    suspend fun setAllowLegacySleepHrvEnrichment(enabled: Boolean) {
-        dataStore.edit { it[LEGACY_SLEEP_HRV_KEY] = enabled.toString() }
-    }
-
-    suspend fun setAllowOwnedSleepRevision(enabled: Boolean) {
-        dataStore.edit { it[OWNED_SLEEP_REVISION_KEY] = enabled.toString() }
-    }
-
     companion object {
         /** Explicit opt-in, intentionally absent from ALL_METRIC_KEYS. */
         const val BODY_COMPOSITION_IMPORT_KEY = "body_composition_import_experimental"
@@ -216,7 +198,5 @@ class SyncPreferences(
         private val ENABLED_METRICS_KEY = stringSetPreferencesKey("enabled_metrics")
         private val SYNC_RANGE_DAYS_KEY = intPreferencesKey("sync_range_days")
         private val INBOUND_TEST_MODE_KEY = stringPreferencesKey("inbound_single_record_test_mode")
-        private val LEGACY_SLEEP_HRV_KEY = stringPreferencesKey("allow_legacy_sleep_hrv_enrichment")
-        private val OWNED_SLEEP_REVISION_KEY = stringPreferencesKey("allow_owned_sleep_revision")
     }
 }

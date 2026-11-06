@@ -60,8 +60,6 @@ data class UserPrefsSnapshot(
     val lastSyncTime: String? = null,
     val lastBackgroundSyncTime: String? = null,
     val inboundTestMode: Boolean = false,
-    val allowLegacySleepHrvEnrichment: Boolean = false,
-    val allowOwnedSleepRevision: Boolean = false,
 )
 
 /** ISP: ensure Mi API session is usable. */

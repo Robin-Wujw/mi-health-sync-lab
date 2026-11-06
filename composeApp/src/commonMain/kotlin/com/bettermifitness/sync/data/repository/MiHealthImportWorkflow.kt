@@ -19,9 +19,7 @@ internal class MiHealthImportWorkflow(
 ) {
     private val cloud = MiHistoryObservingCloud(cloud)
 
-    suspend fun run(account: String, plan: MiHealthImportPlan, testMode: Boolean = false,
-        allowLegacySleepHrvEnrichment: Boolean = false,
-        allowOwnedSleepRevision: Boolean = false): MiHealthImportRunResult {
+    suspend fun run(account: String, plan: MiHealthImportPlan, testMode: Boolean = false): MiHealthImportRunResult {
         var recovery: MiHealthImportDiagnostic? = null
         val reconciliation = if (!testMode && plan.metric in setOf(
                 HealthInboundMetric.HEART_RATE, HealthInboundMetric.OXYGEN_SATURATION)) {
@@ -54,8 +52,7 @@ internal class MiHealthImportWorkflow(
         } else plan.rawRows
         cloud.beginImportPrecheck(guarded)
         val result = try {
-            MiHealthImportRunner(cloud, journal, readbackPause).run(account, plan, testMode,
-                allowLegacySleepHrvEnrichment, allowOwnedSleepRevision)
+            MiHealthImportRunner(cloud, journal, readbackPause).run(account, plan, testMode)
         } catch (e: MiHealthImportRunException) {
             throw MiHealthImportRunException(e.reason, e.verifiedRawCount, e.affectedCount, e.details,
                 e, e.diagnostic?.let(::attach))

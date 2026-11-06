@@ -10,8 +10,11 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.longOrNull
 
-/** Correct an owned heart-rate point or calendar-date resting-heart-rate value. */
-internal data class PreparedOwnedHeartRateRevision(
+/**
+ * Corrects a heart-rate point or calendar-date resting-heart-rate value from Zepp. Zepp is the source
+ * of truth for everything this app imports, so who last wrote the `default` row does not matter.
+ */
+internal data class PreparedHeartRateRevision(
     val row: MiHealthImportRow,
     val previousFingerprint: String,
     val previousZoneOffsetSeconds: Int?,
@@ -22,11 +25,10 @@ internal data class PreparedOwnedHeartRateRevision(
     }
 }
 
-internal fun prepareOwnedHeartRateRevision(
+internal fun prepareHeartRateRevision(
     row: MiHealthImportRow,
     observed: List<MiHealthImportCloudRow>,
-    ownedFingerprint: String?,
-): PreparedOwnedHeartRateRevision? {
+): PreparedHeartRateRevision? {
     if (row.identity.channel != MiHealthImportChannel.RAW || row.identity.key !in setOf("heart_rate", "resting_heart_rate") ||
         row.identity.sid != MI_HEALTH_CONNECT_IMPORT_SID || row.identity.tag != null || row.enrichment != null) return null
     val resting = row.identity.key == "resting_heart_rate"
@@ -40,13 +42,12 @@ internal fun prepareOwnedHeartRateRevision(
     // offset; date_time still must equal the same aligned destination date.
     // Instantaneous heart-rate points do not receive this exception.
     val sameZone = actual.zoneOffsetSeconds == row.zoneOffsetSeconds || (resting && actual.zoneOffsetSeconds == null)
-    if (!sameZone || ownedFingerprint == null ||
-        heartRateFingerprint(actual) != ownedFingerprint) return null
+    if (!sameZone) return null
     val previousBpm = heartRateBpm(actual.value, row.identity.time, timeField) ?: return null
     if (previousBpm == newBpm) return null
     // Preserve server extensions. Neither timestamp nor source identity changes.
-    return PreparedOwnedHeartRateRevision(row.copy(value = JsonObject(actual.value + row.value)),
-        ownedFingerprint, actual.zoneOffsetSeconds)
+    return PreparedHeartRateRevision(row.copy(value = JsonObject(actual.value + row.value)),
+        heartRateFingerprint(actual), actual.zoneOffsetSeconds)
 }
 
 private fun heartRateBpm(value: JsonObject, expectedTime: Long, timeField: String): Long? {

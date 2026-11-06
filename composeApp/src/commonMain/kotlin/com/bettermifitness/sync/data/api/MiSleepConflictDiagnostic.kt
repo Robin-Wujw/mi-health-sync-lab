@@ -1,11 +1,11 @@
 package com.bettermifitness.sync.data.api
 
 /** Fixed classifications only: no source IDs, times, values or fingerprints in diagnostic text. */
-enum class MiOwnedSleepRevisionStatus {
+enum class MiSleepRevisionStatus {
     ELIGIBLE, UNSUPPORTED_TARGET, SOURCE_NOT_UNIQUE, SOURCE_TIMEZONE_UNCERTAIN,
     MISSING, TOMBSTONE_PRESENT, OTHER_SOURCE_PRESENT, AMBIGUOUS,
-    NOT_OWNED, CLOUD_BASELINE_CHANGED, TIMEZONE_CHANGED, INVALID_SLEEP_BASELINE,
-    HRV_PRESENT, ALREADY_MATCHED, PENDING, SOURCE_REJECTED, SOURCE_COLLISION, READ_FAILED, READ_LIMIT,
+    TIMEZONE_CHANGED, INVALID_SLEEP_BASELINE,
+    ALREADY_MATCHED, PENDING, SOURCE_REJECTED, SOURCE_COLLISION, READ_FAILED, READ_LIMIT,
 }
 
 enum class MiSleepConflictOwnership {
@@ -16,7 +16,6 @@ enum class MiSleepConflictOwnership {
 }
 
 data class MiSleepConflictDiagnostic(
-    val revisionRequested: Boolean = false,
     val inspectedRows: Int = 0,
     val matchedRows: Int = 0,
     val mismatchedRows: Int = 0,
@@ -31,6 +30,6 @@ data class MiSleepConflictDiagnostic(
     val readFailureGroups: Int = 0,
     val readLimitedGroups: Int = 0,
     val ownershipCounts: Map<MiSleepConflictOwnership, Int> = emptyMap(),
-    val eligibilityCounts: Map<MiOwnedSleepRevisionStatus, Int> = emptyMap(),
+    val eligibilityCounts: Map<MiSleepRevisionStatus, Int> = emptyMap(),
     val mismatchFields: Map<String, Int> = emptyMap(),
 )

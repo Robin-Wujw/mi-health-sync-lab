@@ -16,9 +16,9 @@ import dev.icerock.moko.resources.compose.stringResource
 object L10n {
     val importExcludedPoints = MR.strings.import_excluded_points
     val importHrvExcludedSamples = MR.strings.import_hrv_excluded_samples
-    val importOwnedHeartRateRevision = MR.strings.import_owned_heart_rate_revision
-    val importOwnedHrvRevision = MR.strings.import_owned_hrv_revision
-    val importOwnedRhrRevision = MR.strings.import_owned_rhr_revision
+    val importHeartRateRevision = MR.strings.import_heart_rate_revision
+    val importHrvRevision = MR.strings.import_hrv_revision
+    val importRhrRevision = MR.strings.import_rhr_revision
     val syncStatusWithExclusions = MR.strings.sync_status_with_exclusions
     val inboundHistoryUnavailable = MR.strings.inbound_history_unavailable
     val inboundHistoryRequired = MR.strings.inbound_history_required
@@ -85,8 +85,7 @@ object L10n {
             "OVERLAPPING_SLEEP_SESSIONS" -> MR.strings.import_warning_overlapping_sleep
             "EXISTING_DAILY_REPORT_PRESERVED" -> MR.strings.import_warning_existing_daily_report
             "TEST_MODE_SINGLE_RECORD" -> MR.strings.import_warning_test_mode
-            "LEGACY_SLEEP_HRV_ENRICHMENT" -> MR.strings.import_warning_legacy_hrv
-            "OWNED_SLEEP_REVISION" -> MR.strings.import_warning_owned_sleep_revision
+            "SLEEP_UPDATED_FROM_ZEPP" -> MR.strings.import_warning_sleep_updated
             "RHR_DAILY_CHECK_FAILED" -> MR.strings.import_warning_rhr_daily_check_failed
             "RMSSD_EXPERIMENTAL_MAPPING" -> MR.strings.import_warning_rmssd_experimental
             "HRV_INTEGER_ROUNDING" -> MR.strings.import_warning_hrv_rounding
@@ -99,7 +98,6 @@ object L10n {
             "UNREPRESENTABLE_HRV_SUMMARY" -> MR.strings.import_issue_hrv_unrepresentable
             "CONFLICTING_HRV_REVISIONS" -> MR.strings.import_issue_hrv_revisions
             "HRV_TIME_COLLISION" -> MR.strings.import_issue_hrv_collision
-            "HRV_ENRICHMENT_CHANGED" -> MR.strings.import_issue_hrv_changed
             "SLEEP_REVISION_CHANGED" -> MR.strings.import_issue_sleep_revision_changed
             "RESTING_HEART_RATE_DATE_UNKNOWN" -> MR.strings.import_issue_rhr_date_unknown
             "INVALID_RESTING_HEART_RATE_DATE" -> MR.strings.import_issue_rhr_invalid_date
@@ -383,10 +381,6 @@ object L10n {
     val healthPartialWrite get() = MR.strings.health_partial_write
     val settingsInboundTestMode get() = MR.strings.settings_inbound_test_mode
     val settingsInboundTestModeDetail get() = MR.strings.settings_inbound_test_mode_detail
-    val settingsLegacyHrv get() = MR.strings.settings_legacy_hrv
-    val settingsLegacyHrvDetail get() = MR.strings.settings_legacy_hrv_detail
-    val settingsOwnedSleepRevision get() = MR.strings.settings_owned_sleep_revision
-    val settingsOwnedSleepRevisionDetail get() = MR.strings.settings_owned_sleep_revision_detail
     val recoveryHistoryUnavailable get() = MR.strings.recovery_history_unavailable
     val spo2ComparisonSummary get() = MR.strings.spo2_comparison_summary
     val spo2ComparisonHints get() = MR.strings.spo2_comparison_hints
@@ -403,7 +397,6 @@ object L10n {
     val recoveryHistoryReadbackAmbiguous get() = MR.strings.recovery_history_readback_ambiguous
     val recoveryHistoryReadbackUnqueried get() = MR.strings.recovery_history_readback_unqueried
     val recoveryHistoryReadbackUnknown get() = MR.strings.recovery_history_readback_unknown
-    val importSleepRevisionAvailable get() = MR.strings.import_sleep_revision_available
     val importSleepRevisionResult get() = MR.strings.import_sleep_revision_result
     val syncStatusTestVerified get() = MR.strings.sync_status_test_verified
     val syncDiagnosticsShow get() = MR.strings.sync_diagnostics_show

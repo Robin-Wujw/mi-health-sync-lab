@@ -57,8 +57,8 @@ data class MiHealthImportRunResult(
  * Every upload has a preceding durable journal entry and a subsequent semantic
  * cloud readback. The journal is row-based, so changing the selected HC time
  * window or batch boundaries does not turn an uncertain write into a new one.
- * Daily reports and unowned differing values are preserved. Owned sleep replacement
- * requires a separate opt-in, unchanged baseline and a final cloud/journal recheck.
+ * Zepp is the source of truth: a differing raw sleep, HRV or heart-rate row at a clear `default`
+ * target is replaced, after a final cloud and pending recheck. Daily reports are preserved.
  */
 class MiHealthImportRunner(
     private val cloud: MiHealthImportCloud,
@@ -67,9 +67,7 @@ class MiHealthImportRunner(
 ) {
     // One ordered state machine, kept whole so no safety step can be skipped. Its behavior was verified on a device.
     @Suppress("CyclomaticComplexMethod", "LongMethod", "NestedBlockDepth", "ThrowsCount")
-    suspend fun run(account: String, plan: MiHealthImportPlan, testMode: Boolean = false,
-        allowLegacySleepHrvEnrichment: Boolean = false,
-        allowOwnedSleepRevision: Boolean = false): MiHealthImportRunResult {
+    suspend fun run(account: String, plan: MiHealthImportPlan, testMode: Boolean = false): MiHealthImportRunResult {
         require(account.isNotBlank())
         // A test uses one real source row and creates no daily report. It does
         // not clear the journal, bypass preflight or resend an uncertain write.
@@ -109,11 +107,9 @@ class MiHealthImportRunner(
         var preservedDaily = 0
         var attemptedRaw = 0
         var attemptedDaily = 0
-        var attemptedOwnedRevisions = 0
-        var verifiedOwnedRevisions = 0
-        var eligibleOwnedRevisions = 0
-        var unownedConflicts = 0
-        var changedOwnedBaselines = 0
+        var attemptedRevisions = 0
+        var verifiedRevisions = 0
+        var eligibleRevisions = 0
         var blockedPending = 0
         var blockedConflict = 0
         var blockedAmbiguous = 0
@@ -122,7 +118,9 @@ class MiHealthImportRunner(
         // Null means no successful readback classified this attempted target.
         val unresolvedReadbacks = linkedMapOf<String, MiHealthImportVerification?>()
         val blockedVerifications = linkedMapOf<String, MiHealthImportVerification>()
-        val sleepConflicts = if (plan.metric == HealthInboundMetric.SLEEP) MiSleepConflictAccumulator(allowOwnedSleepRevision) else null
+        val sleepConflicts = if (plan.metric == HealthInboundMetric.SLEEP) MiSleepConflictAccumulator() else null
+        val replacesSleepRows = plan.metric in setOf(HealthInboundMetric.SLEEP, HealthInboundMetric.HRV)
+        val replacesHeartRows = plan.metric in setOf(HealthInboundMetric.HEART_RATE, HealthInboundMetric.RESTING_HEART_RATE)
         var stage = MiHealthImportStage.PREPARE
         var currentChannel: MiHealthImportChannel? = null
         var batchIndex: Int? = null
@@ -185,11 +183,9 @@ class MiHealthImportRunner(
             precheckMismatchFields = summarizeMiHealthImportMismatchFields(blockedVerifications.values),
             readbackMismatchFields = summarizeMiHealthImportMismatchFields(unresolvedReadbacks.values.filterNotNull()),
             sleepConflict = sleepConflicts?.snapshot(),
-            attemptedOwnedRevisionRows = attemptedOwnedRevisions,
-            verifiedOwnedRevisionRows = verifiedOwnedRevisions,
-            eligibleOwnedRevisionRows = eligibleOwnedRevisions,
-            unownedConflictRows = unownedConflicts,
-            changedOwnedBaselineRows = changedOwnedBaselines,
+            attemptedRevisionRows = attemptedRevisions,
+            verifiedRevisionRows = verifiedRevisions,
+            eligibleRevisionRows = eligibleRevisions,
         )
 
         fun failure(reason: MiHealthImportFailureReason, affected: Int, details: String = "", cause: Throwable? = null) =
@@ -239,15 +235,13 @@ class MiHealthImportRunner(
                 val pending = journal.pendingIdentities(account,
                     dayRows.map { it.identity.stableKey }.toSet() + minuteIdentities.values)
                 val verifiedFingerprints = journal.verifiedFingerprints(account)
-                val ownedFingerprints = journal.ownedVerifiedFingerprints(account)
-                val legacyFingerprints = if (allowLegacySleepHrvEnrichment || sleepConflicts != null)
-                    journal.legacyVerifiedFingerprints(account) else emptyMap()
+                val ownedFingerprints = if (sleepConflicts != null) journal.ownedVerifiedFingerprints(account) else emptyMap()
+                val legacyFingerprints = if (sleepConflicts != null) journal.legacyVerifiedFingerprints(account) else emptyMap()
                 val existing = mutableListOf<MiHealthImportRow>()
                 val aliasExisting = mutableListOf<MiHealthImportRow>()
                 val toUpload = mutableListOf<MiHealthImportRow>()
-                val enrichments = mutableMapOf<String, PreparedSleepHrvEnrichment>()
-                val sleepRevisions = mutableMapOf<String, PreparedOwnedSleepRevision>()
-                val heartRevisions = mutableMapOf<String, PreparedOwnedHeartRateRevision>()
+                val sleepRevisions = mutableMapOf<String, PreparedSleepRevision>()
+                val heartRevisions = mutableMapOf<String, PreparedHeartRateRevision>()
                 for (row in dayRows.sortedBy { it.identity.time }) {
                     val status = beforeIndex.verify(row)
                     val digest = HealthImportLedger.identityDigest(row.identity.stableKey)
@@ -296,43 +290,24 @@ class MiHealthImportRunner(
                         blockedVerifications[row.identity.stableKey] = status
                         blockedFields += status.mismatchedFields
                     } else if (status.status != MiHealthImportVerificationStatus.MISSING) {
-                        val enrichment = prepareSleepHrvEnrichment(row, before, ownedFingerprints[digest],
-                            legacyFingerprints[digest], allowLegacySleepHrvEnrichment)
-                        val revision = if (plan.metric == HealthInboundMetric.SLEEP && sourceBlocker == null)
-                            prepareOwnedSleepRevision(row, before, ownedFingerprints[digest],
-                                userRequested = allowOwnedSleepRevision, sourceTimezoneReliable = true) else null
-                        val heartRevision = if (plan.metric in setOf(HealthInboundMetric.HEART_RATE,
-                                HealthInboundMetric.RESTING_HEART_RATE) && rejected.isEmpty())
-                            prepareOwnedHeartRateRevision(row, beforeIndex.atTarget(row), ownedFingerprints[digest]) else null
-                        val hrvRevision = if (plan.metric == HealthInboundMetric.HRV && rejected.isEmpty())
-                            prepareOwnedHrvSummaryRevision(row, beforeIndex.atTarget(row), ownedFingerprints[digest]) else null
-                        if (enrichment != null) {
-                            toUpload += enrichment.row
-                            enrichments[row.identity.stableKey] = enrichment
-                        } else if (revision != null) {
-                            toUpload += revision.row
-                            sleepRevisions[row.identity.stableKey] = revision
+                        val sleepRevision = if (replacesSleepRows && sourceBlocker == null)
+                            prepareSleepRevision(row, before, sourceTimezoneReliable = true) else null
+                        val heartRevision = if (replacesHeartRows && rejected.isEmpty())
+                            prepareHeartRateRevision(row, beforeIndex.atTarget(row)) else null
+                        if (sleepRevision != null) {
+                            toUpload += sleepRevision.row
+                            sleepRevisions[row.identity.stableKey] = sleepRevision
+                            eligibleRevisions++
                         } else if (heartRevision != null) {
                             toUpload += heartRevision.row
                             heartRevisions[row.identity.stableKey] = heartRevision
-                            eligibleOwnedRevisions++
-                        } else if (hrvRevision != null) {
-                            toUpload += hrvRevision.row
-                            enrichments[row.identity.stableKey] = hrvRevision
-                            eligibleOwnedRevisions++
+                            eligibleRevisions++
                         } else {
                             blockedReason = blockedReason ?: MiHealthImportFailureReason.CONFLICT
                             blockedCount++
                             if (status.status == MiHealthImportVerificationStatus.AMBIGUOUS) blockedAmbiguous++ else blockedConflict++
                             blockedVerifications[row.identity.stableKey] = status
                             blockedFields += status.mismatchedFields
-                            if (plan.metric in setOf(HealthInboundMetric.HEART_RATE, HealthInboundMetric.RESTING_HEART_RATE,
-                                    HealthInboundMetric.HRV)) {
-                                if (ownedFingerprints[digest] == null) unownedConflicts++
-                                else if (beforeIndex.atTarget(row).none {
-                                    HealthRecordIds.version(canonicalMiHealthImportJson(it.value)).toString() == ownedFingerprints[digest]
-                                }) changedOwnedBaselines++
-                            }
                         }
                     } else if (channel == MiHealthImportChannel.RAW &&
                         HealthImportLedger.identityDigest(row.identity.stableKey) in verifiedFingerprints) {
@@ -379,15 +354,13 @@ class MiHealthImportRunner(
                 var stoppedPreflightReason: MiHealthImportFailureReason? = null
                 var stoppedPreflightCause: Throwable? = null
                 var stoppedPreflightResponse: MiHealthImportResponseSummary? = null
-                var stoppedPreflightDetail = "HRV_ENRICHMENT_CHANGED"
+                var stoppedPreflightDetail = "SLEEP_REVISION_CHANGED"
                 val batchSize = if (channel == MiHealthImportChannel.RAW) rawBatchLimit else MI_HEALTH_IMPORT_AGGREGATE_BATCH_SIZE
                 for ((index, batch) in toUpload.chunked(batchSize).withIndex()) {
-                    val batchEnrichments = batch.mapNotNull { enrichments[it.identity.stableKey] }
-                    val batchRevisions = batch.mapNotNull { sleepRevisions[it.identity.stableKey] }
+                    val batchSleepRevisions = batch.mapNotNull { sleepRevisions[it.identity.stableKey] }
                     val batchHeartRevisions = batch.mapNotNull { heartRevisions[it.identity.stableKey] }
-                    val batchHrvRevisions = batchEnrichments.filter { it.replacesOwnedSummary }
-                    if (batchEnrichments.isNotEmpty() || batchRevisions.isNotEmpty() || batchHeartRevisions.isNotEmpty()) {
-                        val updateCount = batchEnrichments.size + batchRevisions.size + batchHeartRevisions.size
+                    if (batchSleepRevisions.isNotEmpty() || batchHeartRevisions.isNotEmpty()) {
+                        val updateCount = batchSleepRevisions.size + batchHeartRevisions.size
                         stage = MiHealthImportStage.PRECHECK
                         val justBeforeWrite = try { read() } catch (e: CancellationException) {
                             throw e
@@ -399,75 +372,36 @@ class MiHealthImportRunner(
                             stoppedPreflightResponse = readResponse
                             break // First verify any preceding batches that were already submitted.
                         }
-                        if (batchEnrichments.any { !it.stillMatches(justBeforeWrite) }) {
-                            blockedConflict += batchEnrichments.size
+                        // The row may have changed since the precheck, or another operation may
+                        // have an uncertain write in flight. Neither can inherit the earlier plan.
+                        val currentPending = journal.pendingIdentities(account, batch.map { it.identity.stableKey }.toSet())
+                        if (batchSleepRevisions.any { !it.stillMatches(justBeforeWrite) || it.row.identity.stableKey in currentPending }) {
+                            blockedConflict += batchSleepRevisions.size
+                            stoppedPreflightDetail = "SLEEP_REVISION_CHANGED"
                             if (attempted.isEmpty())
-                                throw failure(MiHealthImportFailureReason.CONFLICT, batchEnrichments.size, "HRV_ENRICHMENT_CHANGED")
+                                throw failure(MiHealthImportFailureReason.CONFLICT, batchSleepRevisions.size, stoppedPreflightDetail)
                             stoppedPreflightReason = MiHealthImportFailureReason.CONFLICT
                             break
                         }
-                        if (batchHrvRevisions.isNotEmpty()) {
-                            val currentOwned = journal.ownedVerifiedFingerprints(account)
-                            val currentPending = journal.pendingIdentities(account,
-                                batchHrvRevisions.map { it.row.identity.stableKey }.toSet())
-                            if (batchHrvRevisions.any { it.row.identity.stableKey in currentPending ||
-                                    currentOwned[HealthImportLedger.identityDigest(it.row.identity.stableKey)] !=
-                                    it.previousFingerprint }) {
-                                blockedConflict += batchHrvRevisions.size
-                                if (attempted.isEmpty()) throw failure(MiHealthImportFailureReason.CONFLICT,
-                                    batchHrvRevisions.size, "HRV_ENRICHMENT_CHANGED")
-                                stoppedPreflightReason = MiHealthImportFailureReason.CONFLICT
-                                break
-                            }
-                        }
-                        if (batchEnrichments.any { it.usedLegacyPermission }) warnings += "LEGACY_SLEEP_HRV_ENRICHMENT"
-                        if (batchRevisions.isNotEmpty()) {
-                            // Check durable provenance again after the last GET. A newly pending or
-                            // downgraded target cannot inherit the earlier preparation's permission.
-                            val currentOwned = journal.ownedVerifiedFingerprints(account)
-                            val currentPending = journal.pendingIdentities(account,
-                                batchRevisions.map { it.row.identity.stableKey }.toSet())
-                            val changed = batchRevisions.any {
-                                !it.stillMatches(justBeforeWrite) || it.row.identity.stableKey in currentPending ||
-                                    currentOwned[HealthImportLedger.identityDigest(it.row.identity.stableKey)] != it.previousFingerprint
-                            }
-                            if (changed) {
-                                blockedConflict += batchRevisions.size
-                                stoppedPreflightDetail = "SLEEP_REVISION_CHANGED"
-                                if (attempted.isEmpty())
-                                    throw failure(MiHealthImportFailureReason.CONFLICT, batchRevisions.size, stoppedPreflightDetail)
-                                stoppedPreflightReason = MiHealthImportFailureReason.CONFLICT
-                                break
-                            }
-                        }
-                        if (batchHeartRevisions.isNotEmpty()) {
-                            val currentOwned = journal.ownedVerifiedFingerprints(account)
-                            val currentPending = journal.pendingIdentities(account,
-                                batchHeartRevisions.map { it.row.identity.stableKey }.toSet())
-                            val currentIndex = MiHealthImportObservationIndex(justBeforeWrite)
-                            val changed = batchHeartRevisions.any { revision ->
-                                !revision.stillMatches(currentIndex.atTarget(revision.row)) ||
-                                    revision.row.identity.stableKey in currentPending ||
-                                    currentOwned[HealthImportLedger.identityDigest(revision.row.identity.stableKey)] !=
-                                    revision.previousFingerprint
-                            }
-                            if (changed) {
-                                blockedConflict += batchHeartRevisions.size
-                                stoppedPreflightDetail = "HEART_RATE_REVISION_CHANGED"
-                                if (attempted.isEmpty()) throw failure(MiHealthImportFailureReason.CONFLICT,
-                                    batchHeartRevisions.size, stoppedPreflightDetail)
-                                stoppedPreflightReason = MiHealthImportFailureReason.CONFLICT
-                                break
-                            }
+                        val currentIndex = MiHealthImportObservationIndex(justBeforeWrite)
+                        if (batchHeartRevisions.any {
+                                !it.stillMatches(currentIndex.atTarget(it.row)) || it.row.identity.stableKey in currentPending
+                            }) {
+                            blockedConflict += batchHeartRevisions.size
+                            stoppedPreflightDetail = "HEART_RATE_REVISION_CHANGED"
+                            if (attempted.isEmpty()) throw failure(MiHealthImportFailureReason.CONFLICT,
+                                batchHeartRevisions.size, stoppedPreflightDetail)
+                            stoppedPreflightReason = MiHealthImportFailureReason.CONFLICT
+                            break
                         }
                     }
                     journal.markPending(account, batch.map(::journalEntry))
                     submittedPending += journal.pendingSnapshots(account, batch.map { it.identity.stableKey }.toSet())
                     attempted += batch
-                    attemptedOwnedRevisions += batchHeartRevisions.size + batchHrvRevisions.size
-                    if (batchRevisions.isNotEmpty()) {
-                        sleepConflicts?.let { it.attemptedRevisionRows += batchRevisions.size }
-                        warnings += "OWNED_SLEEP_REVISION"
+                    attemptedRevisions += batchHeartRevisions.size + batchSleepRevisions.size
+                    if (batchSleepRevisions.isNotEmpty() && sleepConflicts != null) {
+                        sleepConflicts.attemptedRevisionRows += batchSleepRevisions.size
+                        warnings += "SLEEP_UPDATED_FROM_ZEPP"
                     }
                     batch.forEach { unresolvedReadbacks[it.identity.stableKey] = null }
                     if (channel == MiHealthImportChannel.RAW) attemptedRaw += batch.size else attemptedDaily += batch.size
@@ -543,8 +477,9 @@ class MiHealthImportRunner(
                             sleepConflicts?.let { report ->
                                 report.verifiedRevisionRows += confirmed.count { it.identity.stableKey in sleepRevisions }
                             }
-                            verifiedOwnedRevisions += confirmed.count { it.identity.stableKey in heartRevisions }
-                            verifiedOwnedRevisions += confirmed.count { enrichments[it.identity.stableKey]?.replacesOwnedSummary == true }
+                            verifiedRevisions += confirmed.count {
+                                it.identity.stableKey in heartRevisions || it.identity.stableKey in sleepRevisions
+                            }
                             if (channel == MiHealthImportChannel.RAW) {
                                 verifiedRawIdentities += (confirmed + minuteConfirmed).map { it.identity }
                                 verifiedRaw += confirmed.size + minuteConfirmed.size

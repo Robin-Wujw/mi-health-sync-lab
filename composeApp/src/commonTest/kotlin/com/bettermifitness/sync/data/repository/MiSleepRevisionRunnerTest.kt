@@ -5,7 +5,6 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
 import com.bettermifitness.sync.data.api.*
 import com.bettermifitness.sync.data.preferences.HealthImportLedger
-import com.bettermifitness.sync.data.preferences.SyncPreferences
 import com.bettermifitness.sync.health.HealthInboundMetric
 import com.mifitness.miclient.api.MiApiException
 import kotlinx.coroutines.CancellationException
@@ -23,8 +22,8 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/** Real ledger with fake cloud: verifies writes, pending persistence and owned-update preflight. */
-class MiOwnedSleepRevisionRunnerTest {
+/** Real ledger with fake cloud: verifies writes, pending persistence and the last check before an update. */
+class MiSleepRevisionRunnerTest {
     private val account = "account"
     private val end = 1_700_000_000L
     private val old = sleep(end - 3_600, 2)
@@ -39,51 +38,116 @@ class MiOwnedSleepRevisionRunnerTest {
         28_800, setOf("com.huami.watch.hmwatchmanager:private-source-id"))
     private fun plan(row: MiHealthImportRow = revised, issues: List<MiHealthImportIssue> = emptyList()) =
         MiHealthImportPlan(HealthInboundMetric.SLEEP, listOf(row), issues, 1)
+    private fun hrvRow(base: MiHealthImportRow, average: Int) = base.copy(
+        value = JsonObject(base.value + mapOf("avg_hrv" to JsonPrimitive(average),
+            "min_hrv" to JsonPrimitive(average - 10), "max_hrv" to JsonPrimitive(average + 10))),
+        sourceRecordKeys = base.sourceRecordKeys + "com.huami.watch.hmwatchmanager:private-sample-id",
+        enrichment = MiHealthImportEnrichment.SLEEP_HRV,
+    )
+    private fun hrvPlan(row: MiHealthImportRow) = MiHealthImportPlan(HealthInboundMetric.HRV, listOf(row), emptyList(), 1)
 
     @Test
-    fun optInUpdatesOwnedSleepThenRepeatedSyncMakesNoSecondWrite() = runTest {
+    fun differingSleepIsUpdatedThenRepeatedSyncMakesNoSecondWrite() = runTest {
         val f = fixture()
-        val blocked = assertFailsWith<MiHealthImportRunException> { f.runner.run(account, plan()) }
-        assertEquals(1, blocked.diagnostic!!.sleepConflict!!.eligibleRevisionRows)
-        assertEquals(1, f.cloud.uploads.size)
-        val result = f.runner.run(account, plan(), allowOwnedSleepRevision = true)
+        val result = f.runner.run(account, plan())
         assertEquals(1, result.diagnostic!!.sleepConflict!!.attemptedRevisionRows)
         assertEquals(1, result.diagnostic!!.sleepConflict!!.verifiedRevisionRows)
+        assertEquals(1, result.diagnostic!!.verifiedRevisionRows)
+        assertTrue("SLEEP_UPDATED_FROM_ZEPP" in result.warnings)
         assertEquals(revised, f.cloud.uploads.last().single())
-        f.runner.run(account, plan(), allowOwnedSleepRevision = true)
+        f.runner.run(account, plan())
         assertEquals(2, f.cloud.uploads.size)
         assertTrue(f.ledger.pendingIdentities(account, setOf(revised.identity.stableKey)).isEmpty())
     }
 
+    /** The reported case: a night Zepp revised, whose upload history a logout had erased. */
     @Test
-    fun pendingAndSourceTimezoneWarningsCannotBeBypassedByOptIn() = runTest {
+    fun sleepWithoutAnyUploadHistoryIsUpdatedFromZeppAndBecomesOwned() = runTest {
+        val f = Fixture()
+        f.cloud.stored = listOf(old.asCloud())
+        val result = f.runner.run(account, plan())
+        val report = result.diagnostic!!.sleepConflict!!
+        assertEquals(1, report.ownershipCounts[MiSleepConflictOwnership.NO_HISTORY])
+        assertEquals(1, report.verifiedRevisionRows)
+        assertEquals(0, result.diagnostic!!.blockedConflictRows)
+        assertEquals(revised.value, f.cloud.stored.single().value)
+        assertEquals(1, f.ledger.ownedVerifiedFingerprints(account).size)
+    }
+
+    @Test
+    fun hrvOnASleepWithoutUploadHistoryRepairsTheSleepAndAddsItsSummary() = runTest {
+        val f = Fixture()
+        f.cloud.stored = listOf(old.asCloud())
+        val result = f.runner.run(account, hrvPlan(hrvRow(revised, 60)))
+        assertEquals(1, result.diagnostic!!.verifiedRevisionRows)
+        assertEquals(hrvRow(revised, 60).value, f.cloud.stored.single().value)
+    }
+
+    @Test
+    fun sleepThenHrvLeaveTheNightMatchingZeppAndARepeatWritesNothing() = runTest {
+        val f = Fixture()
+        f.cloud.stored = listOf(hrvRow(old, 40).asCloud())
+
+        f.runner.run(account, plan())
+        assertEquals(revised.value["bedtime"], f.cloud.stored.single().value["bedtime"])
+        assertEquals(JsonPrimitive(40), f.cloud.stored.single().value["avg_hrv"])
+
+        f.runner.run(account, hrvPlan(hrvRow(revised, 60)))
+        assertEquals(hrvRow(revised, 60).value, f.cloud.stored.single().value)
+        assertEquals(2, f.cloud.uploads.size)
+
+        f.runner.run(account, plan())
+        f.runner.run(account, hrvPlan(hrvRow(revised, 60)))
+        assertEquals(2, f.cloud.uploads.size)
+    }
+
+    @Test
+    fun cloudExtensionsSurviveTheUpdate() = runTest {
+        val f = Fixture()
+        f.cloud.stored = listOf(old.asCloud().copy(value = JsonObject(old.value + ("server_extension" to JsonPrimitive("kept")))))
+        f.runner.run(account, plan())
+        assertEquals(JsonPrimitive("kept"), f.cloud.stored.single().value["server_extension"])
+        assertEquals(revised.value["items"], f.cloud.stored.single().value["items"])
+    }
+
+    @Test
+    fun otherNightsStillSyncWhenOneNightCannotBeUpdated() = runTest {
+        val f = Fixture()
+        val blocked = revised
+        val fresh = revised.copy(identity = revised.identity.copy(time = end + 86_400))
+        f.cloud.stored = listOf(old.asCloud(), old.asCloud().copy(sid = "watch"))
+        val error = assertFailsWith<MiHealthImportRunException> {
+            f.runner.run(account, MiHealthImportPlan(HealthInboundMetric.SLEEP, listOf(blocked, fresh), emptyList(), 2))
+        }
+        assertEquals(MiHealthImportFailureReason.CONFLICT, error.reason)
+        assertEquals(listOf(fresh), f.cloud.uploads.flatten())
+    }
+
+    @Test
+    fun pendingAndSourceTimezoneWarningsStillBlockTheUpdate() = runTest {
         val pending = fixture()
         pending.ledger.markPending(account, listOf(MiHealthImportRunner.journalEntry(revised)))
-        val blocked = assertFailsWith<MiHealthImportRunException> { pending.runner.run(account, plan(), allowOwnedSleepRevision = true) }
+        val blocked = assertFailsWith<MiHealthImportRunException> { pending.runner.run(account, plan()) }
         assertEquals(MiHealthImportFailureReason.PENDING, blocked.reason)
         assertEquals(1, pending.cloud.uploads.size)
         val uncertain = fixture()
         val issue = MiHealthImportIssue("SOURCE_TIMEZONE_UNAVAILABLE", revised.sourceRecordKeys,
             "warning", MiHealthImportIssueSeverity.WARNING)
         val zoneBlocked = assertFailsWith<MiHealthImportRunException> {
-            uncertain.runner.run(account, plan(issues = listOf(issue)), allowOwnedSleepRevision = true)
+            uncertain.runner.run(account, plan(issues = listOf(issue)))
         }
         assertEquals(0, zoneBlocked.diagnostic!!.sleepConflict!!.eligibleRevisionRows)
         assertEquals(1, uncertain.cloud.uploads.size)
     }
 
     @Test
-    fun observedSleepAndHrvPlanRemainProtectedEvenWhenEnabled() = runTest {
-        val f = Fixture()
-        f.cloud.stored = listOf(old.asCloud())
-        f.runner.run(account, plan(old))
-        assertFailsWith<MiHealthImportRunException> { f.runner.run(account, plan(), allowOwnedSleepRevision = true) }
-        assertTrue(f.cloud.uploads.isEmpty())
-        val owned = fixture()
-        assertFailsWith<MiHealthImportRunException> {
-            owned.runner.run(account, plan().copy(metric = HealthInboundMetric.HRV), allowOwnedSleepRevision = true)
+    fun rowsFromOtherSourcesAndDeletedRowsAreNeverOverwritten() = runTest {
+        for (extra in listOf(old.asCloud().copy(sid = "watch"), old.asCloud().copy(deleted = true))) {
+            val f = Fixture()
+            f.cloud.stored = listOf(old.asCloud(), extra)
+            assertFailsWith<MiHealthImportRunException> { f.runner.run(account, plan()) }
+            assertTrue(f.cloud.uploads.isEmpty())
         }
-        assertEquals(1, owned.cloud.uploads.size)
     }
 
     @Test
@@ -92,31 +156,30 @@ class MiOwnedSleepRevisionRunnerTest {
         f.cloud.beforeRead = { count ->
             if (count == 2) f.cloud.stored = listOf(old.asCloud().copy(value = JsonObject(old.value + ("extension" to JsonPrimitive(1)))))
         }
-        val error = assertFailsWith<MiHealthImportRunException> { f.runner.run(account, plan(), allowOwnedSleepRevision = true) }
+        val error = assertFailsWith<MiHealthImportRunException> { f.runner.run(account, plan()) }
         assertEquals("SLEEP_REVISION_CHANGED", error.details)
         assertEquals(1, f.cloud.uploads.size)
         assertTrue(f.ledger.pendingIdentities(account, setOf(revised.identity.stableKey)).isEmpty())
     }
 
     @Test
-    fun finalJournalReadChangeStopsReplacementDespiteUnchangedCloud() = runTest {
+    fun uncertainWriteAppearingBeforeTheLastCheckStopsTheUpdate() = runTest {
         val f = fixture()
         f.cloud.beforeRead = { count ->
-            if (count == 2) f.ledger.markVerified(account,
-                listOf(MiHealthImportRunner.journalEntry(old).copy(contentFingerprint = "changed-by-another-operation")))
+            if (count == 2) f.ledger.markPending(account, listOf(MiHealthImportRunner.journalEntry(revised)))
         }
-        assertFailsWith<MiHealthImportRunException> { f.runner.run(account, plan(), allowOwnedSleepRevision = true) }
+        val error = assertFailsWith<MiHealthImportRunException> { f.runner.run(account, plan()) }
+        assertEquals("SLEEP_REVISION_CHANGED", error.details)
         assertEquals(1, f.cloud.uploads.size)
-        assertTrue(f.ledger.pendingIdentities(account, setOf(revised.identity.stableKey)).isEmpty())
     }
 
     @Test
     fun cancellationAfterRequestLeavesPendingAndNeverReplays() = runTest {
         val f = fixture()
         f.cloud.onUpload = { throw CancellationException("cancelled") }
-        assertFailsWith<CancellationException> { f.runner.run(account, plan(), allowOwnedSleepRevision = true) }
+        assertFailsWith<CancellationException> { f.runner.run(account, plan()) }
         assertEquals(setOf(revised.identity.stableKey), f.ledger.pendingIdentities(account, setOf(revised.identity.stableKey)))
-        assertFailsWith<MiHealthImportRunException> { f.runner.run(account, plan(), allowOwnedSleepRevision = true) }
+        assertFailsWith<MiHealthImportRunException> { f.runner.run(account, plan()) }
         assertEquals(2, f.cloud.uploads.size)
     }
 
@@ -125,10 +188,10 @@ class MiOwnedSleepRevisionRunnerTest {
         for (rejected in listOf(true, false)) {
             val f = fixture()
             f.cloud.onUpload = { if (rejected) MiHealthImportUploadResult(false, 100) else throw MiApiException.AuthExpired() }
-            val error = assertFailsWith<MiHealthImportRunException> { f.runner.run(account, plan(), allowOwnedSleepRevision = true) }
+            val error = assertFailsWith<MiHealthImportRunException> { f.runner.run(account, plan()) }
             assertEquals(if (rejected) MiHealthImportFailureReason.REJECTED else MiHealthImportFailureReason.UNVERIFIED, error.reason)
             assertEquals(0, error.diagnostic!!.sleepConflict!!.verifiedRevisionRows)
-            assertFailsWith<MiHealthImportRunException> { f.runner.run(account, plan(), allowOwnedSleepRevision = true) }
+            assertFailsWith<MiHealthImportRunException> { f.runner.run(account, plan()) }
             assertEquals(2, f.cloud.uploads.size)
         }
     }
@@ -176,18 +239,6 @@ class MiOwnedSleepRevisionRunnerTest {
         assertFalse("private-health-data" in report.copyableText())
         f.cloud.beforeRead = { throw CancellationException() }
         assertFailsWith<CancellationException> { MiSleepConflictInspector(f.cloud, f.ledger).inspect(account, plan()) }
-    }
-
-    @Test
-    fun newSleepUpdatePreferenceDefaultsOffAndPersistsWithoutEnablingOtherModes() = runTest {
-        val store = MemoryStore()
-        val prefs = SyncPreferences(store)
-        assertFalse(prefs.allowOwnedSleepRevision.first())
-        prefs.setAllowOwnedSleepRevision(true)
-        val reopened = SyncPreferences(store)
-        assertTrue(reopened.allowOwnedSleepRevision.first())
-        assertFalse(reopened.allowLegacySleepHrvEnrichment.first())
-        assertFalse(reopened.inboundTestMode.first())
     }
 
     private suspend fun fixture(): Fixture = Fixture().also {
