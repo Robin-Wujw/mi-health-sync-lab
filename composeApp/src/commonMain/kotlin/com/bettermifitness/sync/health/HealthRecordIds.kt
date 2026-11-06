@@ -6,9 +6,9 @@ package com.bettermifitness.sync.health
  * Same logical Mi sample → same id on every sync so platforms **upsert** instead of duplicating.
  * Prefix `mifit-` is kept for backward compatibility with records already written.
  *
- * [version] is a legacy content fingerprint, not a monotonically increasing revision.
- * Health Connect requires a strictly larger revision for updates. The Android writer
- * therefore uses its persisted revision clock; hashes are used only for equality checks.
+ * [version] is a content fingerprint, not a monotonically increasing revision. Health
+ * Connect requires a strictly larger version for updates, so the Android writer combines
+ * its persisted revision clock with this fingerprint (see [stampedHealthRecordVersion]).
  * Legacy iOS version handling is separate and has not been migrated by this Android build.
  */
 object HealthRecordIds {

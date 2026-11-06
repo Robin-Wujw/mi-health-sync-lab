@@ -62,8 +62,16 @@ import java.time.Instant
 import java.time.temporal.ChronoUnit
 import kotlin.reflect.KClass
 
-actual class HealthWriter(private val context: Context) : HealthStore {
-    private val client by lazy { HealthConnectClient.getOrCreate(context) }
+actual class HealthWriter internal constructor(
+    private val context: Context,
+    clientProvider: () -> HealthConnectClient,
+) : HealthStore {
+    constructor(context: Context) : this(context, { HealthConnectClient.getOrCreate(context) })
+
+    private val client by lazy(clientProvider)
+    private val changeFilter = HealthRecordChangeFilter { type, range ->
+        readRecordsPaged(type, range, setOf(DataOrigin(context.packageName)))
+    }
 
     /**
      * Write permissions for types this HC install supports.
@@ -159,7 +167,7 @@ actual class HealthWriter(private val context: Context) : HealthStore {
     actual override suspend fun writeHeartRate(samples: List<HeartRateSample>) {
         val sortedSamples = HealthDataNormalizer.normalizeHeartRate(samples)
         if (sortedSamples.isEmpty()) return
-        val revision = nextRecordVersion()
+        val revision = nextRecordRevision()
 
         // Group into fixed windows so clientRecordId stays stable across re-syncs.
         val groups = sortedSamples.groupBy { HealthRecordIds.heartRateWindowStart(it.timestamp) }
@@ -185,7 +193,10 @@ actual class HealthWriter(private val context: Context) : HealthStore {
                         beatsPerMinute = sample.bpm.toLong(),
                     )
                 },
-                metadata = recordMetadata(HealthRecordIds.heartRateWindow(windowStart), revision),
+                metadata = stampedMetadata(
+                    HealthRecordIds.heartRateWindow(windowStart), revision,
+                    zo, ordered.map { "${it.timestamp}:${it.bpm}" },
+                ),
             )
         }
 
@@ -195,14 +206,15 @@ actual class HealthWriter(private val context: Context) : HealthStore {
     actual override suspend fun writeRestingHeartRate(samples: List<HeartRateSample>) {
         val clean = HealthDataNormalizer.normalizeHeartRate(samples)
         if (clean.isEmpty()) return
-        val revision = nextRecordVersion()
+        val revision = nextRecordRevision()
         val records = clean.map { sample ->
             val time = Instant.ofEpochSecond(sample.timestamp)
+            val zo = ZoneOffsetResolver.fromMiOrSystem(sample.tzIn15Min, time)
             RestingHeartRateRecord(
                 time = time,
-                zoneOffset = ZoneOffsetResolver.fromMiOrSystem(sample.tzIn15Min, time),
+                zoneOffset = zo,
                 beatsPerMinute = sample.bpm.toLong(),
-                metadata = recordMetadata(HealthRecordIds.restingHeartRate(sample.timestamp), revision),
+                metadata = stampedMetadata(HealthRecordIds.restingHeartRate(sample.timestamp), revision, zo, sample.bpm),
             )
         }
         insertChunked(records)
@@ -211,29 +223,33 @@ actual class HealthWriter(private val context: Context) : HealthStore {
     actual override suspend fun writeSleep(sessions: List<SleepSession>) {
         val clean = HealthDataNormalizer.normalizeSleep(sessions)
         if (clean.isEmpty()) return
-        val revision = nextRecordVersion()
+        val revision = nextRecordRevision()
         val records = clean.mapNotNull { session ->
             val start = Instant.ofEpochSecond(session.startTime)
             val end = Instant.ofEpochSecond(session.endTime)
             if (!end.isAfter(start)) return@mapNotNull null
             val zo = ZoneOffsetResolver.fromMiOrSystem(session.tzIn15Min, start)
+            val stages = session.stages.mapNotNull { stage ->
+                val s = Instant.ofEpochSecond(stage.startTime)
+                val e = Instant.ofEpochSecond(stage.endTime)
+                if (!e.isAfter(s)) return@mapNotNull null
+                SleepSessionRecord.Stage(
+                    startTime = s,
+                    endTime = e,
+                    stage = mapSleepStage(stage.stage),
+                )
+            }
 
             SleepSessionRecord(
                 startTime = start,
                 endTime = end,
                 startZoneOffset = zo,
                 endZoneOffset = zo,
-                stages = session.stages.mapNotNull { stage ->
-                    val s = Instant.ofEpochSecond(stage.startTime)
-                    val e = Instant.ofEpochSecond(stage.endTime)
-                    if (!e.isAfter(s)) return@mapNotNull null
-                    SleepSessionRecord.Stage(
-                        startTime = s,
-                        endTime = e,
-                        stage = mapSleepStage(stage.stage),
-                    )
-                },
-                metadata = recordMetadata(HealthRecordIds.sleepSession(session.startTime), revision),
+                stages = stages,
+                metadata = stampedMetadata(
+                    HealthRecordIds.sleepSession(session.startTime), revision,
+                    session.endTime, zo, stages.map { "${it.startTime.epochSecond}:${it.endTime.epochSecond}:${it.stage}" },
+                ),
             )
         }
         insertChunked(records)
@@ -242,7 +258,7 @@ actual class HealthWriter(private val context: Context) : HealthStore {
     actual override suspend fun writeSteps(records: List<StepsRecord>) {
         val clean = HealthDataNormalizer.normalizeSteps(records)
         if (clean.isEmpty()) return
-        val revision = nextRecordVersion()
+        val revision = nextRecordRevision()
         val hcRecords = clean.mapNotNull { record ->
             val ts = record.date.toLong()
             val start = Instant.ofEpochSecond(ts)
@@ -257,7 +273,8 @@ actual class HealthWriter(private val context: Context) : HealthStore {
                 startZoneOffset = zo,
                 endZoneOffset = zo,
                 count = record.steps.toLong(),
-                metadata = recordMetadata(HealthRecordIds.steps(ts), revision),
+                // The end of the open hour follows the clock, so it does not count as a change.
+                metadata = stampedMetadata(HealthRecordIds.steps(ts), revision, zo, record.steps),
             )
         }
         insertChunked(hcRecords)
@@ -266,7 +283,7 @@ actual class HealthWriter(private val context: Context) : HealthStore {
     actual override suspend fun writeDistance(samples: List<DistanceSample>) {
         val clean = HealthDataNormalizer.normalizeDistance(samples)
         if (clean.isEmpty()) return
-        val revision = nextRecordVersion()
+        val revision = nextRecordRevision()
         val records = clean.map { s ->
             val start = Instant.ofEpochSecond(s.startTime)
             val zo = ZoneOffsetResolver.fromMiOrSystem(s.tzIn15Min, start)
@@ -276,7 +293,7 @@ actual class HealthWriter(private val context: Context) : HealthStore {
                 startZoneOffset = zo,
                 endZoneOffset = zo,
                 distance = Length.meters(s.meters),
-                metadata = recordMetadata(HealthRecordIds.distance(s.startTime), revision),
+                metadata = stampedMetadata(HealthRecordIds.distance(s.startTime), revision, zo, s.endTime, s.meters),
             )
         }
         insertChunked(records)
@@ -285,7 +302,7 @@ actual class HealthWriter(private val context: Context) : HealthStore {
     actual override suspend fun writeActiveCalories(samples: List<ActiveCaloriesSample>) {
         val clean = HealthDataNormalizer.normalizeActiveCalories(samples)
         if (clean.isEmpty()) return
-        val revision = nextRecordVersion()
+        val revision = nextRecordRevision()
         val records = clean.map { s ->
             val start = Instant.ofEpochSecond(s.startTime)
             val zo = ZoneOffsetResolver.fromMiOrSystem(s.tzIn15Min, start)
@@ -295,7 +312,7 @@ actual class HealthWriter(private val context: Context) : HealthStore {
                 startZoneOffset = zo,
                 endZoneOffset = zo,
                 energy = Energy.kilocalories(s.kilocalories),
-                metadata = recordMetadata(HealthRecordIds.activeCalories(s.startTime), revision),
+                metadata = stampedMetadata(HealthRecordIds.activeCalories(s.startTime), revision, zo, s.endTime, s.kilocalories),
             )
         }
         insertChunked(records)
@@ -304,7 +321,7 @@ actual class HealthWriter(private val context: Context) : HealthStore {
     actual override suspend fun writeWeight(measurements: List<WeightMeasurement>) {
         val clean = HealthDataNormalizer.normalizeWeight(measurements)
         if (clean.isEmpty()) return
-        val revision = nextRecordVersion()
+        val revision = nextRecordRevision()
         val records = mutableListOf<Record>()
         for (m in clean) {
             val time = Instant.ofEpochSecond(m.timestamp)
@@ -313,14 +330,14 @@ actual class HealthWriter(private val context: Context) : HealthStore {
                 time = time,
                 zoneOffset = zoneOffset,
                 weight = Mass.kilograms(m.weightKg),
-                metadata = recordMetadata(HealthRecordIds.weight(m.timestamp), revision),
+                metadata = stampedMetadata(HealthRecordIds.weight(m.timestamp), revision, zoneOffset, m.weightKg),
             )
             m.bodyFatPercent?.let { fat ->
                 records += BodyFatRecord(
                     time = time,
                     zoneOffset = zoneOffset,
                     percentage = Percentage(fat),
-                    metadata = recordMetadata(HealthRecordIds.bodyFat(m.timestamp), revision),
+                    metadata = stampedMetadata(HealthRecordIds.bodyFat(m.timestamp), revision, zoneOffset, fat),
                 )
             }
             m.boneMassKg?.let { bone ->
@@ -328,7 +345,7 @@ actual class HealthWriter(private val context: Context) : HealthStore {
                     time = time,
                     zoneOffset = zoneOffset,
                     mass = Mass.kilograms(bone),
-                    metadata = recordMetadata("mifit-bonemass-${m.timestamp}", revision),
+                    metadata = stampedMetadata("mifit-bonemass-${m.timestamp}", revision, zoneOffset, bone),
                 )
             }
             // HC stores mass; only convert a percentage against this same
@@ -340,7 +357,7 @@ actual class HealthWriter(private val context: Context) : HealthStore {
                     time = time,
                     zoneOffset = zoneOffset,
                     mass = Mass.kilograms(water),
-                    metadata = recordMetadata("mifit-bodywater-${m.timestamp}", revision),
+                    metadata = stampedMetadata("mifit-bodywater-${m.timestamp}", revision, zoneOffset, water),
                 )
             }
             // Lean mass is distinct from muscle mass; do not substitute it.
@@ -349,7 +366,7 @@ actual class HealthWriter(private val context: Context) : HealthStore {
                     time = time,
                     zoneOffset = zoneOffset,
                     mass = Mass.kilograms(lean),
-                    metadata = recordMetadata("mifit-leanmass-${m.timestamp}", revision),
+                    metadata = stampedMetadata("mifit-leanmass-${m.timestamp}", revision, zoneOffset, lean),
                 )
             }
             m.basalMetabolismKcal?.let { bmr ->
@@ -357,7 +374,7 @@ actual class HealthWriter(private val context: Context) : HealthStore {
                     time = time,
                     zoneOffset = zoneOffset,
                     basalMetabolicRate = Power.kilocaloriesPerDay(bmr),
-                    metadata = recordMetadata("mifit-bmr-${m.timestamp}", revision),
+                    metadata = stampedMetadata("mifit-bmr-${m.timestamp}", revision, zoneOffset, bmr),
                 )
             }
         }
@@ -369,7 +386,7 @@ actual class HealthWriter(private val context: Context) : HealthStore {
     actual override suspend fun writeWorkouts(sessions: List<WorkoutSession>) {
         val clean = HealthDataNormalizer.normalizeWorkouts(sessions)
         if (clean.isEmpty()) return
-        val revision = nextRecordVersion()
+        val revision = nextRecordRevision()
         val granted = client.permissionController.getGrantedPermissions()
         val includeRoute = HealthPermission.PERMISSION_WRITE_EXERCISE_ROUTE in granted
         val factory = AndroidWorkoutRecordFactory()
@@ -385,14 +402,15 @@ actual class HealthWriter(private val context: Context) : HealthStore {
     actual override suspend fun writeSpO2(samples: List<SpO2Sample>) {
         val clean = HealthDataNormalizer.normalizeSpO2(samples)
         if (clean.isEmpty()) return
-        val revision = nextRecordVersion()
+        val revision = nextRecordRevision()
         val records = clean.map { sample ->
             val time = Instant.ofEpochSecond(sample.timestamp)
+            val zo = ZoneOffsetResolver.fromMiOrSystem(sample.tzIn15Min, time)
             OxygenSaturationRecord(
                 time = time,
-                zoneOffset = ZoneOffsetResolver.fromMiOrSystem(sample.tzIn15Min, time),
+                zoneOffset = zo,
                 percentage = Percentage(sample.percentage.toDouble()),
-                metadata = recordMetadata(HealthRecordIds.spo2(sample.timestamp), revision),
+                metadata = stampedMetadata(HealthRecordIds.spo2(sample.timestamp), revision, zo, sample.percentage),
             )
         }
         insertChunked(records)
@@ -401,15 +419,18 @@ actual class HealthWriter(private val context: Context) : HealthStore {
     actual override suspend fun writeBloodPressure(samples: List<BloodPressureSample>) {
         val clean = HealthDataNormalizer.normalizeBloodPressure(samples)
         if (clean.isEmpty()) return
-        val revision = nextRecordVersion()
+        val revision = nextRecordRevision()
         val records = clean.map { s ->
             val time = Instant.ofEpochSecond(s.timestamp)
+            val zo = ZoneOffsetResolver.fromMiOrSystem(s.tzIn15Min, time)
             BloodPressureRecord(
                 time = time,
-                zoneOffset = ZoneOffsetResolver.fromMiOrSystem(s.tzIn15Min, time),
+                zoneOffset = zo,
                 systolic = Pressure.millimetersOfMercury(s.systolicMmhg.toDouble()),
                 diastolic = Pressure.millimetersOfMercury(s.diastolicMmhg.toDouble()),
-                metadata = recordMetadata(HealthRecordIds.bloodPressure(s.timestamp), revision),
+                metadata = stampedMetadata(
+                    HealthRecordIds.bloodPressure(s.timestamp), revision, zo, s.systolicMmhg, s.diastolicMmhg,
+                ),
             )
         }
         insertChunked(records)
@@ -418,15 +439,16 @@ actual class HealthWriter(private val context: Context) : HealthStore {
     actual override suspend fun writeTemperature(samples: List<TemperatureSample>) {
         val clean = HealthDataNormalizer.normalizeTemperature(samples)
         if (clean.isEmpty()) return
-        val revision = nextRecordVersion()
+        val revision = nextRecordRevision()
         val bodyRecords = clean.mapNotNull { s ->
             val body = s.bodyCelsius ?: return@mapNotNull null
             val time = Instant.ofEpochSecond(s.timestamp)
+            val zo = ZoneOffsetResolver.fromMiOrSystem(s.tzIn15Min, time)
             BodyTemperatureRecord(
                 time = time,
-                zoneOffset = ZoneOffsetResolver.fromMiOrSystem(s.tzIn15Min, time),
+                zoneOffset = zo,
                 temperature = Temperature.celsius(body),
-                metadata = recordMetadata(HealthRecordIds.bodyTemperature(s.timestamp), revision),
+                metadata = stampedMetadata(HealthRecordIds.bodyTemperature(s.timestamp), revision, zo, body),
             )
         }
 
@@ -449,7 +471,7 @@ actual class HealthWriter(private val context: Context) : HealthStore {
                     ),
                 ),
                 baseline = Temperature.celsius(skin),
-                metadata = recordMetadata(HealthRecordIds.skinTemperature(s.timestamp), revision),
+                metadata = stampedMetadata(HealthRecordIds.skinTemperature(s.timestamp), revision, zo, skin),
             )
         }
         val omittedSkin = if (supportsSkin) 0 else clean.count { it.skinCelsius != null }
@@ -463,15 +485,16 @@ actual class HealthWriter(private val context: Context) : HealthStore {
     actual override suspend fun writeVo2Max(samples: List<Vo2MaxSample>) {
         val clean = HealthDataNormalizer.normalizeVo2Max(samples)
         if (clean.isEmpty()) return
-        val revision = nextRecordVersion()
+        val revision = nextRecordRevision()
         val records = clean.map { s ->
             val time = Instant.ofEpochSecond(s.timestamp)
+            val zo = ZoneOffsetResolver.fromMiOrSystem(s.tzIn15Min, time)
             Vo2MaxRecord(
                 time = time,
-                zoneOffset = ZoneOffsetResolver.fromMiOrSystem(s.tzIn15Min, time),
+                zoneOffset = zo,
                 vo2MillilitersPerMinuteKilogram = s.mlPerKgMin,
                 measurementMethod = Vo2MaxRecord.MEASUREMENT_METHOD_OTHER,
-                metadata = recordMetadata(HealthRecordIds.vo2Max(s.timestamp), revision),
+                metadata = stampedMetadata(HealthRecordIds.vo2Max(s.timestamp), revision, zo, s.mlPerKgMin),
             )
         }
         insertChunked(records)
@@ -493,16 +516,17 @@ actual class HealthWriter(private val context: Context) : HealthStore {
                 ),
             )
         }
-        val revision = nextRecordVersion()
+        val revision = nextRecordRevision()
         // A millisecond unit alone does not identify the HRV algorithm. Generic
         // Mi avg_hrv and SDNN must never be relabeled as Health Connect RMSSD.
         val records = clean.map { s ->
             val time = Instant.ofEpochSecond(s.timestamp)
+            val zo = ZoneOffsetResolver.fromMiOrSystem(s.tzIn15Min, time)
             HeartRateVariabilityRmssdRecord(
                 time = time,
-                zoneOffset = ZoneOffsetResolver.fromMiOrSystem(s.tzIn15Min, time),
+                zoneOffset = zo,
                 heartRateVariabilityMillis = s.hrvMs,
-                metadata = recordMetadata(HealthRecordIds.hrv(s.timestamp), revision),
+                metadata = stampedMetadata(HealthRecordIds.hrv(s.timestamp), revision, zo, s.hrvMs),
             )
         }
         insertChunked(records)
@@ -951,9 +975,9 @@ actual class HealthWriter(private val context: Context) : HealthStore {
         }
 
     /**
-     * Write only the types whose permissions were granted, but report partial
-     * completion explicitly. A caller must never checkpoint a filtered batch as
-     * complete. IDs and revisions stay unchanged across transport chunks.
+     * Write only new or changed records of the types whose permissions were granted,
+     * but report partial completion explicitly. A caller must never checkpoint a
+     * filtered batch as complete. IDs and revisions stay unchanged across transport chunks.
      */
     private suspend fun insertChunked(
         records: List<Record>,
@@ -961,9 +985,10 @@ actual class HealthWriter(private val context: Context) : HealthStore {
         additionalSkippedReasons: List<String> = emptyList(),
     ) {
         if (records.isEmpty() && additionalSkippedReasons.isEmpty()) return
+        val changed = changeFilter.changedOnly(records)
         val granted = client.permissionController.getGrantedPermissions()
         val plan = planHealthWrites(
-            candidates = records.map { record ->
+            candidates = changed.map { record ->
                 HealthWriteCandidate(
                     record = record,
                     label = recordLabel(record),
@@ -1023,17 +1048,12 @@ actual class HealthWriter(private val context: Context) : HealthStore {
         else -> record::class.simpleName ?: "Health record"
     }
 
-    private fun recordMetadata(id: String, revision: Long): Metadata =
-        // These are imported cloud records. Their original recording method is
-        // not known; importing them does not make them manual user entries.
-        Metadata.unknownRecordingMethod(clientRecordId = id, clientRecordVersion = revision)
-
-    private fun nextRecordVersion(): Long = synchronized(RECORD_VERSION_LOCK) {
+    private fun nextRecordRevision(): Long = synchronized(RECORD_VERSION_LOCK) {
         // Keep the previous body-only preference name so its revision survives
         // upgrades, and now allocate every Android record type from this clock.
         val prefs = context.getSharedPreferences("hc_body_record_versions", Context.MODE_PRIVATE)
         val last = prefs.getLong("last_version", 0L)
-        val next = nextHealthRecordVersion(last, System.currentTimeMillis())
+        val next = nextHealthRecordRevision(last, System.currentTimeMillis())
         check(prefs.edit().putLong("last_version", next).commit()) {
             "Could not persist the Health Connect record revision."
         }
