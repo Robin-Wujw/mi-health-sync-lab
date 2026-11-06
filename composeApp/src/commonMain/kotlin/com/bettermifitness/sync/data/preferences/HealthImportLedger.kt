@@ -371,7 +371,13 @@ class HealthImportLedger(private val dataStore: DataStore<Preferences>) : Health
         private const val RECOVERY_PREFIX = "hc_import_single_recovery_v1:"
         /** Retains one original target per observed minute across calls, windows and restarts. */
         private const val ALIAS_SOURCE_PREFIX = "hc_import_spo2_alias_source_v1:"
+        private val PREFERENCE_PREFIXES =
+            listOf(PENDING_PREFIX, VERIFIED_PREFIX, OWNERSHIP_PREFIX, RECOVERY_PREFIX, ALIAS_SOURCE_PREFIX)
         private const val OWNED = "uploaded_and_verified"
+
+        /** Whether a preference belongs to this journal. */
+        fun ownsPreference(name: String): Boolean = PREFERENCE_PREFIXES.any { name.startsWith(it) }
+
         private const val OBSERVED = "observed_only"
         fun identityDigest(identity: String): String = HealthRecordIds.version("hc-import-target", identity).toString()
         fun sourceDigest(sourceKeys: Set<String>): String = HealthRecordIds.version(*sourceKeys.sorted().toTypedArray()).toString()

@@ -43,12 +43,21 @@ class TokenStore(
     /**
      * Logout wipe. Keeps the stable device identity so the next sign-in is
      * recognized as the same trusted install instead of a brand-new device.
+     *
+     * Also keeps the upload journals, which share this preferences file. They hold no
+     * tokens or health values and are namespaced by account. Losing them would turn this
+     * app's own uploads into records of unknown origin, which can never be corrected, and
+     * would lift the lock that stops an uncertain upload from being repeated.
      */
     suspend fun clear() {
         // Logout wipes tokens but keeps the trusted device id, so the next
         // sign-in presents the same install instead of a new device (no repeat OTP).
         val deviceId = credentials.loadDeviceId()
-        dataStore.edit { it.clear() }
+        dataStore.edit { prefs ->
+            prefs.asMap().keys
+                .filterNot { HealthImportLedger.ownsPreference(it.name) || BodySyncLedger.ownsPreference(it.name) }
+                .forEach { prefs.remove(it) }
+        }
         credentials.restoreDeviceId(deviceId.ifBlank { credentials.ensureDeviceId() })
     }
 

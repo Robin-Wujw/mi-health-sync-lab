@@ -58,5 +58,8 @@ class BodySyncLedger(private val dataStore: DataStore<Preferences>) {
     companion object {
         private const val ATTEMPT_PREFIX = "body_import_attempt:"
         private const val EXPORT_PREFIX = "body_export:"
+
+        /** Whether a preference belongs to this journal. */
+        fun ownsPreference(name: String): Boolean = name.startsWith(ATTEMPT_PREFIX) || name.startsWith(EXPORT_PREFIX)
     }
 }
