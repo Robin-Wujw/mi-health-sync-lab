@@ -153,6 +153,7 @@ class HealthRepository internal constructor(
     private var sawAuthFailure = false
     private var lastRefreshUserMessage: String? = null
     private var lastRefreshRetryable: Boolean = false
+    private var sessionRejected: Boolean = false
     private val retryableFailures = mutableListOf<Boolean>()
     private val stateMutex = Mutex()
     private val sharedRefresh = SharedAuthRefresh(refreshSession)
@@ -374,6 +375,7 @@ class HealthRepository internal constructor(
         sawAuthFailure = false
         lastRefreshUserMessage = null
         lastRefreshRetryable = false
+        sessionRejected = false
         retryableFailures.clear()
         verifiedImportFingerprints = importLedger.verifiedFingerprints(accountKey())
         inboundTestMode = syncPreferences.inboundTestMode.first()
@@ -908,7 +910,7 @@ class HealthRepository internal constructor(
                 SessionRefreshResult.Success -> {
                     stateMutex.withLock {
                         lastRefreshUserMessage = null
-                        lastRefreshRetryable = false
+                        lastRefreshRetryable = true
                     }
                     return block()
                 }
@@ -933,6 +935,7 @@ class HealthRepository internal constructor(
         stateMutex.withLock {
             lastRefreshUserMessage = message
             lastRefreshRetryable = retryable
+            sessionRejected = !retryable
         }
     }
 
@@ -940,7 +943,9 @@ class HealthRepository internal constructor(
         stateMutex.withLock {
             when (e) {
                 is MiApiException.AuthExpired -> {
-                    sawAuthFailure = true
+                    // Only a refused refresh means the user must sign in again. A network problem
+                    // during refresh, or a cloud error after a working refresh, is worth retrying.
+                    sawAuthFailure = sawAuthFailure || sessionRejected
                     retryableFailures += lastRefreshRetryable
                 }
                 is MiApiException -> retryableFailures += e.isRetryable

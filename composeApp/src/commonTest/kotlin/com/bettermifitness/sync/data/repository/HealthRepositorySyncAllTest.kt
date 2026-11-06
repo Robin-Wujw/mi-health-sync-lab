@@ -34,6 +34,7 @@ import io.ktor.http.parseQueryString
 import kotlin.io.encoding.Base64
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -149,6 +150,49 @@ class HealthRepositorySyncAllTest : LocalizedTest() {
     }
 
     @Test
+    fun refreshFailingOnTheNetwork_doesNotAskTheUserToSignIn() = runBlocking<Unit> {
+        val cloud = FakeMiCloud().withSampleData()
+        cloud.sessionValid = false
+        cloud.refreshResult = SessionRefreshResult.TransientFailure("network unreachable")
+
+        val result = cloud.repository(RecordingHealthStore()).syncAll(FROM, TO, setOf("heart_rate"))
+
+        assertEquals(1, result.failed)
+        assertFalse(result.hadAuthFailure)
+        assertTrue(result.hadRetryableFailure)
+    }
+
+    @Test
+    fun cloudStillRejectingAfterARefreshThatWorked_doesNotAskTheUserToSignIn() = runBlocking<Unit> {
+        val cloud = FakeMiCloud().withSampleData()
+        cloud.alwaysRejectedRoutes += "time:heart_rate"
+
+        val result = cloud.repository(RecordingHealthStore()).syncAll(FROM, TO, setOf("heart_rate"))
+
+        assertEquals(1, cloud.refreshCalls)
+        assertEquals(1, result.failed)
+        assertFalse(result.hadAuthFailure)
+        assertTrue(result.hadRetryableFailure)
+    }
+
+    @Test
+    fun sessionRejectedByXiaomi_asksTheUserToSignIn() = runBlocking<Unit> {
+        for (rejection in listOf(
+            SessionRefreshResult.NeedsReLogin("code 70016"),
+            SessionRefreshResult.NeedsVerification("securityStatus"),
+        )) {
+            val cloud = FakeMiCloud().withSampleData()
+            cloud.sessionValid = false
+            cloud.refreshResult = rejection
+
+            val result = cloud.repository(RecordingHealthStore()).syncAll(FROM, TO, setOf("heart_rate"))
+
+            assertTrue(result.hadAuthFailure)
+            assertFalse(result.hadRetryableFailure)
+        }
+    }
+
+    @Test
     fun failedWorkouts_blockTheCountersThatSubtractThem() = runBlocking<Unit> {
         val cloud = FakeMiCloud().withSampleData()
         cloud.failingRoutes["sport"] = HttpStatusCode.InternalServerError
@@ -204,6 +248,8 @@ class HealthRepositorySyncAllTest : LocalizedTest() {
             private set
         val failingRoutes = mutableMapOf<String, HttpStatusCode>()
         val expiredRoutesUntilRefresh = mutableSetOf<String>()
+        val alwaysRejectedRoutes = mutableSetOf<String>()
+        var refreshResult: SessionRefreshResult = SessionRefreshResult.Success
 
         private val api = MiDirectApi(
             MiDataClient(
@@ -219,7 +265,8 @@ class HealthRepositorySyncAllTest : LocalizedTest() {
                         lock.withLock { requests += route }
                         val failure = failingRoutes[route]
                         when {
-                            !sessionValid || route in expiredRoutesUntilRefresh -> respond("", HttpStatusCode.Unauthorized)
+                            !sessionValid || route in expiredRoutesUntilRefresh || route in alwaysRejectedRoutes ->
+                                respond("", HttpStatusCode.Unauthorized)
                             failure != null -> respond("", failure)
                             else -> respond(encrypt(signedNonce, responseFor(route)), HttpStatusCode.OK)
                         }
@@ -234,9 +281,11 @@ class HealthRepositorySyncAllTest : LocalizedTest() {
             ensureSession = { true },
             refreshSession = {
                 refreshCalls++
-                sessionValid = true
-                expiredRoutesUntilRefresh.clear()
-                SessionRefreshResult.Success
+                if (refreshResult.isSuccess) {
+                    sessionValid = true
+                    expiredRoutesUntilRefresh.clear()
+                }
+                refreshResult
             },
             healthWriter = store,
             bodyLedger = BodySyncLedger(dataStore),
