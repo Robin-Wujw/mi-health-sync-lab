@@ -223,9 +223,12 @@ jobs:
       - name: Detekt
         run: ./gradlew detekt --stacktrace --build-cache --configuration-cache
 
-      # commonTest in composeApp runs on K/N iOS sim (macOS job); miclient has a JVM target.
+      # commonTest in composeApp also runs on K/N iOS sim (macOS job); miclient has a JVM target.
       - name: Unit tests (miclient JVM)
         run: ./gradlew :miclient:androidTest --stacktrace --build-cache --configuration-cache
+
+      - name: Unit tests (composeApp Android host)
+        run: ./gradlew :composeApp:testAndroidHostTest --stacktrace --build-cache --configuration-cache
 
       # PR/manual/dispatch builds stay on debug (fast, debuggable);
       # v* tag builds ship assembleRelease (non-debuggable, debug-signed).
