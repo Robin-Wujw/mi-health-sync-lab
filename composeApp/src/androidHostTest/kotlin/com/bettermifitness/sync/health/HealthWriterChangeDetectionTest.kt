@@ -304,9 +304,32 @@ class HealthWriterChangeDetectionTest : LocalizedTest() {
     }
 
     @Test
+    fun workoutWithoutARoute_keepsItsFullerNotes() = runBlocking<Unit> {
+        val detailed = summaryWorkout().copy(trainLoad = 40.0, recoverMinutes = 60)
+        writer.writeWorkouts(listOf(detailed))
+
+        writer.writeWorkouts(listOf(detailed.copy(recoverMinutes = null)))
+
+        assertEquals(WorkoutNotes.build(detailed), store.single<ExerciseSessionRecord>().notes)
+    }
+
+    @Test
     fun sleepWithoutStages_neverReplacesOneWithStages() = runBlocking<Unit> {
         writer.writeSleep(listOf(sleep()))
         writer.writeSleep(listOf(SleepSession(T0, T0 + 7_200, tzIn15Min = 32)))
+        assertEquals(1, store.single<SleepSessionRecord>().stages.size)
+    }
+
+    @Test
+    fun sleepRevisedToFewerStages_isACorrection() = runBlocking<Unit> {
+        val deepThenLight = sleep().copy(
+            stages = listOf(SleepStage(T0, T0 + 3_600, 2), SleepStage(T0 + 3_600, T0 + 7_200, 3)),
+        )
+        writer.writeSleep(listOf(deepThenLight))
+        assertEquals(2, store.single<SleepSessionRecord>().stages.size)
+
+        writer.writeSleep(listOf(sleep()))
+
         assertEquals(1, store.single<SleepSessionRecord>().stages.size)
     }
 

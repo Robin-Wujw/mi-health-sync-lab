@@ -1,8 +1,8 @@
-# Mi Health Sync Lab · 当前版本 .13
+# Mi Health Sync Lab · 当前版本 .19
 
-当前版本为 **1.0.6-healthlab.13 / 1000019**。单条源记录在相同毫秒提供矛盾心率时，明确跳过该时间点并继续有效数据，不再将它作为整个心率导入的阻断错误；跳过数量保持可见，不宣称全部源点成功。说明与验收见 [Healthlab 13 说明](docs/healthlab/HEALTHLAB-13.zh-CN.md) 和 `docs/healthlab/validation-healthlab13.json`。675 项测试通过，ADB 暂未检测到手机，尚未完成本版实机执行；没有补传真实健康数据。
+当前版本为 **1.0.6-healthlab.19 / 1000025**，以 `androidApp/build.gradle.kts` 为准。写入 Health Connect 时只写新增或变化的记录，缺细节的副本不再覆盖完整记录。说明与验证见 [Healthlab 19 说明](docs/healthlab/HEALTHLAB-19.zh-CN.md)。每个版本的说明都在 `docs/healthlab/HEALTHLAB-<版本>.zh-CN.md`。
 
-以下保留为 .7 制作时的历史说明，其“最新用户反馈”和验证状态不代表当前 .13。
+以下保留为 .7 制作时的历史说明，其“最新用户反馈”和验证状态不代表当前版本。
 
 # Mi Health Sync Lab · Healthlab 7 历史使用与验证说明
 
