@@ -250,8 +250,8 @@ class HealthLabInstrumentation : Instrumentation() {
         const val REPORT_BEGIN = "MI_HEALTH_LIVE_REPORT_BEGIN"
         const val REPORT_END = "MI_HEALTH_LIVE_REPORT_END"
         private const val TARGET_PACKAGE = "com.bettermifitness.sync.healthlab"
-        private const val EXPECTED_VERSION_NAME = "1.0.6-healthlab.19"
-        private const val EXPECTED_VERSION_CODE = 1000025L
+        private const val EXPECTED_VERSION_NAME = "1.0.6-healthlab.20"
+        private const val EXPECTED_VERSION_CODE = 1000026L
         private const val MODE_INSPECT = "inspect"
         private const val MODE_INSPECT_MINUTE = "inspect-spo2-minute"
         private const val MODE_VERIFY_EXISTING = "verify-existing-spo2"

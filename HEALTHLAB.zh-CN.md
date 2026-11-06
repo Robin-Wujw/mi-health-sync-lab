@@ -1,6 +1,6 @@
-# Mi Health Sync Lab · 当前版本 .19
+# Mi Health Sync Lab · 当前版本 .20
 
-当前版本为 **1.0.6-healthlab.19 / 1000025**，以 `androidApp/build.gradle.kts` 为准。写入 Health Connect 时只写新增或变化的记录，缺细节的副本不再覆盖完整记录。说明与验证见 [Healthlab 19 说明](docs/healthlab/HEALTHLAB-19.zh-CN.md)。每个版本的说明都在 `docs/healthlab/HEALTHLAB-<版本>.zh-CN.md`。
+当前版本为 **1.0.6-healthlab.20 / 1000026**，以 `androidApp/build.gradle.kts` 为准。Zepp → 小米方向以 Zepp 为准，云端不一致的记录会被更新；登录刷新不再丢失新 token。说明与验证见 [Healthlab 20 说明](docs/healthlab/HEALTHLAB-20.zh-CN.md)。每个版本的说明都在 `docs/healthlab/HEALTHLAB-<版本>.zh-CN.md`。
 
 以下保留为 .7 制作时的历史说明，其“最新用户反馈”和验证状态不代表当前版本。
 

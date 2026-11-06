@@ -46,8 +46,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $TargetPackage = "com.bettermifitness.sync.healthlab"
 $TestComponent = "com.bettermifitness.sync.healthlab.test/com.bettermifitness.sync.lab.HealthLabInstrumentation"
-$ExpectedVersionName = "1.0.6-healthlab.19"
-$ExpectedVersionCode = "1000025"
+$ExpectedVersionName = "1.0.6-healthlab.20"
+$ExpectedVersionCode = "1000026"
 $Mode = $Mode.ToLowerInvariant()
 $Metric = $Metric.ToLowerInvariant()
 
