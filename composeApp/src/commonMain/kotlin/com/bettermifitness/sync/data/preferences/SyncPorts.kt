@@ -10,6 +10,12 @@ interface CredentialsPort {
     suspend fun saveCredentials(credentials: MiCredentials)
 
     /**
+     * Saves a rotated passToken the moment Xiaomi issues it, before the rest of the refresh
+     * has finished. Does not count as a completed refresh, so a stale session stays stale.
+     */
+    suspend fun savePassToken(passToken: String) = Unit
+
+    /**
      * Epoch seconds of the last successful login or passport refresh, or null when unknown
      * (never signed in, or credentials stored by a build that predates this key).
      *

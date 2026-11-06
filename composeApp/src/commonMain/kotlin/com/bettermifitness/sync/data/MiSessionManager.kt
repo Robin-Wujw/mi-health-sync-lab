@@ -95,7 +95,7 @@ class MiSessionManager(
         }
 
         return@withLock try {
-            val refreshed = miAuth.refreshWithPassToken(current)
+            val refreshed = miAuth.refreshWithPassToken(current, onPassTokenRotated = credentialsStore::savePassToken)
             credentialsStore.saveCredentials(refreshed)
             val effective = credentialsStore.loadCredentials() ?: refreshed
             activate(effective)

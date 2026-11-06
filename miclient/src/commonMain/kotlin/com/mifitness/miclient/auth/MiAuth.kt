@@ -14,6 +14,8 @@ import io.ktor.http.Parameters
 import io.ktor.http.Url
 import io.ktor.http.encodeURLParameter
 import io.ktor.http.parseQueryString
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
@@ -38,6 +40,7 @@ data class MetaLoginData(
 @Suppress("LargeClass")
 class MiAuth(
     private val userAgent: String = PassportAuthUtils.DEFAULT_USER_AGENT,
+    private val httpClientFactory: (AcceptAllCookiesStorage) -> HttpClient = PassportHttpSession::buildClient,
 ) : MiAuthHost {
     private val json = PassportAuthUtils.json
 
@@ -50,7 +53,7 @@ class MiAuth(
     ): LoginResult {
         val effectiveDeviceId = deviceId.ifEmpty { PassportAuthUtils.generateDeviceId() }
         val cookieStorage = AcceptAllCookiesStorage()
-        val client = PassportHttpSession.buildClient(cookieStorage)
+        val client = httpClientFactory(cookieStorage)
         PassportHttpSession.seedDeviceIdCookie(cookieStorage, effectiveDeviceId)
 
         return try {
@@ -92,7 +95,7 @@ class MiAuth(
         val regionFromUrl = params["p_ur"] ?: ""
 
         val cookieStorage = AcceptAllCookiesStorage()
-        val client = PassportHttpSession.buildClient(cookieStorage)
+        val client = httpClientFactory(cookieStorage)
         PassportHttpSession.seedDeviceIdCookie(cookieStorage, deviceId)
 
         try {
@@ -246,11 +249,16 @@ class MiAuth(
     /**
      * Re-mint serviceToken (and ssecurity when needed) using a stored [passToken].
      * Mirrors APK force-refresh via [XMPassport.loginByPassToken] + signed STS.
+     *
+     * [onPassTokenRotated] receives each new passToken as soon as Xiaomi issues it. The caller
+     * must store it right away: the old token is retired whether or not the remaining steps
+     * succeed, so a failure after this point would otherwise end the session.
      */
     suspend fun refreshWithPassToken(
         credentials: MiCredentials,
         sid: String = PassportAuthUtils.DEFAULT_SID,
         callback: String = PassportAuthUtils.DEFAULT_STS_CALLBACK,
+        onPassTokenRotated: suspend (String) -> Unit = {},
     ): MiCredentials {
         if (credentials.passToken.isBlank()) {
             throw MiAuthException(
@@ -273,7 +281,7 @@ class MiAuth(
 
         val deviceId = credentials.deviceId
         val cookieStorage = AcceptAllCookiesStorage()
-        val client = PassportHttpSession.buildClient(cookieStorage)
+        val client = httpClientFactory(cookieStorage)
         PassportHttpSession.seedDeviceIdCookie(cookieStorage, deviceId)
         cookieStorage.addCookie(
             Url("https://account.xiaomi.com/"),
@@ -293,6 +301,7 @@ class MiAuth(
                 callback = callback,
                 previousPassToken = credentials.passToken,
                 previousCUserId = credentials.cUserId,
+                onPassTokenRotated = onPassTokenRotated,
             )
 
             val region = refreshed.region.takeIf { it.isNotBlank() }
@@ -618,6 +627,7 @@ class MiAuth(
         callback: String,
         previousPassToken: String?,
         previousCUserId: String,
+        onPassTokenRotated: suspend (String) -> Unit = {},
     ): MiCredentials {
         val accountCookies = cookieStorage.get(Url("https://account.xiaomi.com/"))
         val userId = accountCookies.firstOrNull { it.name == "userId" }?.value?.takeIf { it.isNotBlank() }
@@ -705,6 +715,7 @@ class MiAuth(
             )
         if (effectivePass != oldPass) {
             updatePassTokenCookie(cookieStorage, effectivePass)
+            withContext(NonCancellable) { onPassTokenRotated(effectivePass) }
         }
 
         var ssecurity = obj["ssecurity"]?.jsonPrimitive?.content.orEmpty()
@@ -714,6 +725,7 @@ class MiAuth(
             harvested.rotatedPassToken?.takeIf { it != effectivePass }?.let {
                 effectivePass = it
                 updatePassTokenCookie(cookieStorage, it)
+                withContext(NonCancellable) { onPassTokenRotated(it) }
             }
         }
         if (ssecurity.isEmpty()) {

@@ -67,6 +67,10 @@ class CredentialsStore(
         }
     }
 
+    override suspend fun savePassToken(passToken: String) {
+        dataStore.edit { it[PASS_TOKEN_KEY] = passToken }
+    }
+
     override suspend fun loadCredentials(): MiCredentials? {
         val prefs = dataStore.data.first()
         val serviceToken = prefs[TOKEN_KEY] ?: return null
