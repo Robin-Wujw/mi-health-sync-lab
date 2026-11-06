@@ -12,6 +12,7 @@ import com.bettermifitness.sync.data.parse.toRaw
 import com.bettermifitness.sync.data.preferences.SyncPreferences
 import com.bettermifitness.sync.data.preferences.BodySyncLedger
 import com.bettermifitness.sync.data.preferences.HealthImportLedger
+import com.bettermifitness.sync.data.api.MiDirectApi
 import com.bettermifitness.sync.data.api.MiDirectHealthImportCloud
 import com.bettermifitness.sync.data.api.MiHealthImportChannel
 import com.bettermifitness.sync.data.api.MiHealthImportIdentity
@@ -118,23 +119,43 @@ private fun SyncProgress.withMetric(metric: String, state: SyncState): SyncProgr
  * with optional verified body-composition import. Other metrics use the selected
  * time window and report unavailable data or failed conversions explicitly.
  */
-class HealthRepository(
-    private val session: MiSessionManager,
+class HealthRepository internal constructor(
+    private val apiProvider: () -> MiDirectApi,
+    private val currentUserId: () -> String?,
+    private val ensureSession: suspend () -> Boolean,
+    refreshSession: suspend () -> SessionRefreshResult,
     private val healthWriter: HealthStore,
     private val bodyLedger: BodySyncLedger,
     private val importLedger: HealthImportLedger,
     private val syncPreferences: SyncPreferences,
 ) : HealthSyncRunner {
+    constructor(
+        session: MiSessionManager,
+        healthWriter: HealthStore,
+        bodyLedger: BodySyncLedger,
+        importLedger: HealthImportLedger,
+        syncPreferences: SyncPreferences,
+    ) : this(
+        apiProvider = { session.api },
+        currentUserId = { session.currentUserId },
+        ensureSession = { session.ensureActive() },
+        refreshSession = { session.refreshSessionDetailed() },
+        healthWriter = healthWriter,
+        bodyLedger = bodyLedger,
+        importLedger = importLedger,
+        syncPreferences = syncPreferences,
+    )
+
     override val syncProgress: StateFlow<SyncProgress>
         field = MutableStateFlow(SyncProgress())
-    private val api get() = session.api
+    private val api get() = apiProvider()
 
     private var sawAuthFailure = false
     private var lastRefreshUserMessage: String? = null
     private var lastRefreshRetryable: Boolean = false
     private val retryableFailures = mutableListOf<Boolean>()
     private val stateMutex = Mutex()
-    private val sharedRefresh = SharedAuthRefresh { session.refreshSessionDetailed() }
+    private val sharedRefresh = SharedAuthRefresh(refreshSession)
     // Bound concurrent Mi requests so parallel metrics cannot trigger rate limits.
     private val fetchSemaphore = Semaphore(MAX_CONCURRENT_FETCHES)
     private val rowCache = SyncReadCache<List<HeartRateEntry>>()
@@ -154,7 +175,7 @@ class HealthRepository(
         require(metric in setOf(HealthInboundMetric.HEART_RATE, HealthInboundMetric.OXYGEN_SATURATION))
         return withContext(Dispatchers.Default) {
             liveTestMutex.withLock {
-                check(session.ensureActive())
+                check(ensureSession())
                 val window = SyncWindow.parse(from, to)
                 require(window.to - window.from <= 30 * 86_400L)
                 val plan = prepareInboundPlan(metric, from, to)
@@ -180,7 +201,7 @@ class HealthRepository(
     private suspend fun reconcilePendingSpO2Internal(
         from: String, to: String, userRequested: Boolean,
     ): MiHealthImportDiagnostic = liveTestMutex.withLock {
-        check(session.ensureActive()) { "Sign in on the phone before reconciling imports." }
+        check(ensureSession()) { "Sign in on the phone before reconciling imports." }
         sharedRefresh.reset()
         executeWithAuthRetry {
             val plan = prepareInboundPlan(HealthInboundMetric.OXYGEN_SATURATION, from, to, liveTestWindow = true)
@@ -205,7 +226,7 @@ class HealthRepository(
     private suspend fun recoverPendingSpO2(
         from: String, to: String, userRequested: Boolean,
     ): MiHealthImportDiagnostic = liveTestMutex.withLock {
-        check(session.ensureActive()) { "Sign in on the phone before recovering imports." }
+        check(ensureSession()) { "Sign in on the phone before recovering imports." }
         sharedRefresh.reset()
         executeWithAuthRetry {
             val plan = prepareInboundPlan(HealthInboundMetric.OXYGEN_SATURATION, from, to, liveTestWindow = true)
@@ -220,7 +241,7 @@ class HealthRepository(
     ): MiHealthLiveInspection {
         check(LiveTestSessionGate.isActive) { "Live testing requires the dedicated instrumentation runner." }
         return liveTestMutex.withLock {
-            check(session.ensureActive()) { "Sign in on the phone before running live tests." }
+            check(ensureSession()) { "Sign in on the phone before running live tests." }
             sharedRefresh.reset()
             executeWithAuthRetry {
                 val plan = prepareInboundPlan(metric, from, to, liveTestWindow = true)
@@ -242,7 +263,7 @@ class HealthRepository(
         check(LiveTestSessionGate.isActive) { "Live testing requires the dedicated instrumentation runner." }
         require(singleRecord) { "Live write tests support one selected raw target and no daily uploads." }
         return liveTestMutex.withLock {
-            check(session.ensureActive()) { "Sign in on the phone before running live tests." }
+            check(ensureSession()) { "Sign in on the phone before running live tests." }
             sharedRefresh.reset()
             executeWithAuthRetry {
                 val plan = prepareInboundPlan(metric, from, to, liveTestWindow = true)
@@ -265,7 +286,7 @@ class HealthRepository(
         val window = SyncWindow.parse(from, to)
         require(window.to - window.from in 1..86_400L)
         return liveTestMutex.withLock {
-            check(session.ensureActive())
+            check(ensureSession())
             sharedRefresh.reset()
             inboundTestMode = false
             allowLegacySleepHrvEnrichment = syncPreferences.allowLegacySleepHrvEnrichment.first()
@@ -288,7 +309,7 @@ class HealthRepository(
         check(LiveTestSessionGate.isActive)
         require(metric in setOf(HealthInboundMetric.HEART_RATE, HealthInboundMetric.RESTING_HEART_RATE, HealthInboundMetric.HRV))
         return liveTestMutex.withLock {
-            check(session.ensureActive())
+            check(ensureSession())
             val plan = prepareInboundPlan(metric, from, to, liveTestWindow = true)
             check(plan.issues.none { it.severity == com.bettermifitness.sync.data.api.MiHealthImportIssueSeverity.REJECTED })
             val cloud = MiDirectHealthImportCloud(apiProvider = { api })
@@ -638,7 +659,7 @@ class HealthRepository(
 
     suspend fun syncWeight(from: String, to: String) { syncWeightBidirectional() }
 
-    private fun accountKey(): String = session.currentUserId
+    private fun accountKey(): String = currentUserId()
         ?: throw IllegalStateException("No active Xiaomi account")
 
     private suspend fun writeBodyToHealth(measurement: WeightMeasurement): Int {
@@ -715,10 +736,29 @@ class HealthRepository(
 
     suspend fun syncWorkouts(from: String, to: String) {
         runMetric("workouts") {
-            val sessions = enrichWorkouts(parsedWorkouts(from, to), heartRateSamples(from, to))
+            val sessions = enrichWorkouts(parsedWorkouts(from, to), enrichmentHeartRateSamples(from, to))
             if (sessions.isNotEmpty()) healthWriter.writeWorkouts(sessions)
             sessions.size
         }
+    }
+
+    /**
+     * Cloud heart rate only enriches workouts, so a failed read stays with the heart-rate metric
+     * instead of also failing workouts and the step, distance and calorie metrics that wait for
+     * them. Health Connect keeps a fuller stored series. An expired session still surfaces, so
+     * the auth retry can heal this metric too.
+     */
+    private suspend fun enrichmentHeartRateSamples(
+        from: String,
+        to: String,
+    ): List<com.bettermifitness.sync.data.api.HeartRateSample> = try {
+        heartRateSamples(from, to)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: MiApiException.AuthExpired) {
+        throw e
+    } catch (_: Exception) {
+        emptyList()
     }
 
     /**

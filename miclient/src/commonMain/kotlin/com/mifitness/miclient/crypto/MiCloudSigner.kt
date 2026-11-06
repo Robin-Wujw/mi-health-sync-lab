@@ -86,7 +86,7 @@ object MiCloudSigner {
         return base64Encode(buffer)
     }
 
-    internal fun computeSignedNonce(ssecurityBase64: String, nonceBase64: String): String {
+    fun computeSignedNonce(ssecurityBase64: String, nonceBase64: String): String {
         val ssecurity = base64Decode(ssecurityBase64)
         val nonce = base64Decode(nonceBase64)
         return base64Encode(Hash.sha256(ssecurity + nonce))
