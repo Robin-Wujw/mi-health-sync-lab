@@ -119,7 +119,7 @@
     <string name="sync_last_one_day">Last 1 day</string>
     <string name="sync_last_n_days">Last %d days</string>
     <string name="sync_active_range">Current sync: last %d days</string>
-    <string name="sync_draft_range">Selected for the next manual sync: %s</string>
+    <string name="sync_draft_range">Manual sync range: %s</string>
     <string name="sync_replace_range">Switch range and sync (%d days)</string>
     <string name="sync_stopping">Stopping safely…</string>
     <string name="sync_history_title">Recent sync tasks</string>

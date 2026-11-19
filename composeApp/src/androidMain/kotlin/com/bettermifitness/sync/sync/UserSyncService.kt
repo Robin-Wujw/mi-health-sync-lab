@@ -11,6 +11,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.util.Log
 import com.bettermifitness.sync.i18n.L10n
 import java.util.UUID
 import java.util.concurrent.TimeUnit
@@ -115,7 +116,8 @@ class UserSyncService : Service() {
                 outcome = SyncOutcome.Cancelled
             } catch (cancelled: CancellationException) {
                 throw cancelled
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                Log.e(TAG, "user sync failed: ${e::class.simpleName}")
                 outcome = SyncOutcome.Failed(L10n.text(L10n.syncFailed), retryable = true)
             } finally {
                 withContext(NonCancellable) {
@@ -175,6 +177,7 @@ class UserSyncService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
+        private const val TAG = "UserSyncService"
         private const val CHANNEL = "active_user_sync"
         private const val NOTIFICATION_ID = 101
         private val requestLock = Any()
