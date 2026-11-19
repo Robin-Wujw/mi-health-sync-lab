@@ -2,6 +2,7 @@ package com.bettermifitness.sync.data.preferences
 
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.bettermifitness.sync.health.HealthRecordIds
@@ -12,7 +13,10 @@ import kotlin.time.Clock
  * Small, persistent attempt journal. A timed-out POST is never automatically
  * repeated; subsequent runs verify the same measurement first.
  */
-class BodySyncLedger(private val dataStore: DataStore<Preferences>) {
+class BodySyncLedger(
+    private val dataStore: DataStore<Preferences>,
+    private val now: () -> Long = { Clock.System.now().epochSeconds },
+) {
     private fun accountKey(account: String) =
         HealthRecordIds.version("body-account", account).toString()
 
@@ -25,27 +29,48 @@ class BodySyncLedger(private val dataStore: DataStore<Preferences>) {
     suspend fun noteAttempt(account: String, fingerprint: String, status: String) {
         dataStore.edit { prefs ->
             val name = attemptKey(account, fingerprint)
-            prefs[name] = Clock.System.now().epochSeconds.toString() + "|" + status
-            val entries = prefs.asMap().entries
-                .filter { it.key.name.startsWith(ATTEMPT_PREFIX) }
-                .sortedBy { it.value.toString().substringBefore('|').toLongOrNull() ?: 0L }
-            entries.take((entries.size - 128).coerceAtLeast(0)).forEach {
-                prefs.remove(stringPreferencesKey(it.key.name))
+            prefs[name] = "${now()}|$status"
+        }
+    }
+
+    internal suspend fun beginUpload(account: String, fingerprint: String): BodyUploadDecision {
+        val key = attemptKey(account, fingerprint)
+        var decision: BodyUploadDecision = BodyUploadDecision.VerifyOnly
+        dataStore.edit { prefs ->
+            val previous = prefs[key]?.substringAfter('|')
+            val rejection = previous?.split(':')?.takeIf { it.size == 3 && it[0] == RATE_LIMITED }
+            val attempts = rejection?.get(1)?.toIntOrNull()
+            val retryAt = rejection?.get(2)?.toLongOrNull()
+            val timestamp = now()
+            decision = when {
+                previous != null && (attempts == null || retryAt == null) -> BodyUploadDecision.VerifyOnly
+                attempts != null && attempts >= MAX_ATTEMPTS -> BodyUploadDecision.RetryLimit
+                retryAt != null && timestamp < retryAt -> BodyUploadDecision.CoolingDown
+                previous == null && !makeRoom(prefs) -> BodyUploadDecision.AtCapacity
+                else -> BodyUploadDecision.Send((attempts ?: 0) + 1).also { prefs[key] = "$timestamp|pending" }
             }
         }
+        return decision
+    }
+
+    private fun makeRoom(prefs: MutablePreferences): Boolean {
+        val entries = prefs.asMap().entries.filter { it.key.name.startsWith(ATTEMPT_PREFIX) }
+        val slotsNeeded = entries.size - MAX_ENTRIES + 1
+        if (slotsNeeded <= 0) return true
+        val safeToPrune = entries.filter { it.value.toString().substringAfter('|') == "verified" }
+            .sortedBy { it.value.toString().substringBefore('|').toLongOrNull() ?: 0L }
+        if (safeToPrune.size < slotsNeeded) return false
+        safeToPrune.take(slotsNeeded).forEach { prefs.remove(stringPreferencesKey(it.key.name)) }
+        return true
+    }
+
+    internal suspend fun noteRateLimit(account: String, fingerprint: String, sendCount: Int) {
+        val retryAt = now() + RATE_LIMIT_DELAY_SECONDS * sendCount
+        noteAttempt(account, fingerprint, "$RATE_LIMITED:$sendCount:$retryAt")
     }
 
     suspend fun forgetAttempt(account: String, fingerprint: String) {
         dataStore.edit { it.remove(attemptKey(account, fingerprint)) }
-    }
-
-    suspend fun resetPendingImports() {
-        dataStore.edit { prefs ->
-            prefs.asMap().entries.filter {
-                it.key.name.startsWith(EXPORT_PREFIX) ||
-                    (it.key.name.startsWith(ATTEMPT_PREFIX) && it.value.toString().substringAfter('|') != "verified")
-            }.map { it.key.name }.forEach { prefs.remove(stringPreferencesKey(it)) }
-        }
     }
 
     suspend fun lastExport(account: String): String? =
@@ -58,8 +83,20 @@ class BodySyncLedger(private val dataStore: DataStore<Preferences>) {
     companion object {
         private const val ATTEMPT_PREFIX = "body_import_attempt:"
         private const val EXPORT_PREFIX = "body_export:"
+        private const val RATE_LIMITED = "rejected429"
+        private const val RATE_LIMIT_DELAY_SECONDS = 900L
+        private const val MAX_ATTEMPTS = 3
+        private const val MAX_ENTRIES = 128
 
         /** Whether a preference belongs to this journal. */
         fun ownsPreference(name: String): Boolean = name.startsWith(ATTEMPT_PREFIX) || name.startsWith(EXPORT_PREFIX)
     }
+}
+
+internal sealed interface BodyUploadDecision {
+    data class Send(val attempt: Int) : BodyUploadDecision
+    data object VerifyOnly : BodyUploadDecision
+    data object CoolingDown : BodyUploadDecision
+    data object RetryLimit : BodyUploadDecision
+    data object AtCapacity : BodyUploadDecision
 }

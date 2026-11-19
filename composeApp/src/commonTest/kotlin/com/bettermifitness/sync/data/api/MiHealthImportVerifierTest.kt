@@ -37,13 +37,62 @@ class MiHealthImportVerifierTest {
 
     @Test fun rawReadsKeepNativePageSizeAndDailyReadsKeepTheirOwnContract() {
         val raw = buildMiHealthImportReadPayload(MiHealthImportChannel.RAW, "heart_rate", 100, 200, "cursor")
-        assertEquals(mapOf("key" to "heart_rate", "start_time" to 100L, "end_time" to 200L,
+        assertEquals(mapOf("key" to "heart_rate", "start_time" to 99L, "end_time" to 200L,
             "reverse" to true, "next_key" to "cursor"), raw)
         assertFalse("limit" in raw)
         val daily = buildMiHealthImportReadPayload(MiHealthImportChannel.DAILY_AGGREGATE, "heart_rate", 100, 200, null)
         assertEquals(100, daily["limit"])
         assertEquals("daily_report", daily["tag"])
+        assertEquals(100L, daily["start_time"])
         assertFalse("next_key" in daily)
+    }
+
+    @Test fun identicalDailyRowsAndCompetingSameDayReportsAreNotVerification() {
+        val report = row.copy(identity = row.identity.copy(channel = MiHealthImportChannel.DAILY_AGGREGATE,
+            time = 1_728_000_000, tag = "daily_report"), zoneOffsetSeconds = 0)
+        val stored = MiHealthImportCloudRow("default", "heart_rate", report.identity.time, "daily_report", report.value,
+            zoneOffsetSeconds = 0)
+        val adjacentAnchor = stored.copy(sid = "watch", time = stored.time + 3_600)
+        assertEquals(MiHealthImportVerificationStatus.VERIFIED, MiHealthImportObservationIndex(listOf(stored)).verify(report).status)
+        for (other in listOf(stored, adjacentAnchor, stored.copy(deleted = true))) {
+            val result = MiHealthImportObservationIndex(listOf(stored, other)).verify(report)
+            assertEquals(MiHealthImportVerificationStatus.AMBIGUOUS, result.status)
+            assertEquals(setOf("duplicate_daily_report"), result.mismatchedFields)
+        }
+    }
+
+    @Test fun scopedDailyReadDistinguishesExplicitTagFromRequestInferredTag() {
+        val response = json("""{"code":0,"result":{"data_list":[
+            {"sid":"default","time":1728000000,"value":{},"tag":"daily_report"},
+            {"sid":"default","time":1728000000,"value":{}}
+        ],"has_more":false}}""")
+        val rows = parseMiHealthImportReadPage(response, MiHealthImportChannel.DAILY_AGGREGATE, "heart_rate").rows
+        assertEquals(listOf("daily_report", "daily_report"), rows.map { it.tag })
+        assertEquals(listOf(false, true), rows.map { it.tagInferred })
+    }
+
+    @Test fun exclusiveRawStartIncludesTheFirstTargetWithoutNegativeEpochs() {
+        for (key in listOf("pai", "stress", "training_load")) {
+            val request = buildMiHealthImportReadPayload(MiHealthImportChannel.RAW, key, 100, 101, null)
+            val serverRows = listOf(99L, 100L, 101L).filter {
+                it > request["start_time"] as Long && it < request["end_time"] as Long
+            }
+            assertEquals(listOf(100L), serverRows.filter { it >= 100 && it < 101 })
+        }
+        assertEquals(0L, buildMiHealthImportReadPayload(MiHealthImportChannel.RAW, "stress", 0, 1, null)["start_time"])
+    }
+
+    @Test fun onlyUtcDailyTrainingLoadCanRecoverAnOmittedZeroOffset() {
+        fun read(key: String, time: Long = 1_728_000_000, date: Long = time, offset: String = "") =
+            parseMiHealthImportReadPage(json("""{"code":0,"result":{"data_list":[
+                {"sid":"default","time":$time,"value":{"date_time":$date,"wtl_sum":1}$offset}
+                ],"has_more":false}}"""), MiHealthImportChannel.RAW, key).rows.single()
+        assertEquals(0, read("training_load").zoneOffsetSeconds)
+        assertEquals(null, read("training_load", offset = ",\"zone_offset\":null").zoneOffsetSeconds)
+        assertEquals(28_800, read("training_load", offset = ",\"zone_offset\":28800").zoneOffsetSeconds)
+        assertEquals(null, read("training_load", time = 1_728_000_001).zoneOffsetSeconds)
+        assertEquals(null, read("training_load", date = 1_728_086_400).zoneOffsetSeconds)
+        for (key in listOf("stress", "pai", "heart_rate")) assertEquals(null, read(key).zoneOffsetSeconds)
     }
 
     private fun json(value: String) = Json.parseToJsonElement(value).jsonObject

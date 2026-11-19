@@ -12,6 +12,8 @@ import kotlinx.serialization.json.JsonObject
  * only and treats it as the source of truth.
  */
 const val MI_HEALTH_CONNECT_IMPORT_SID = "default"
+/** Native FDS requires an existing application source; `default` has no device namespace. */
+const val MI_SLEEP_FILE_IMPORT_SID = "xiaomiwear_app_manually"
 // Mi Fitness 3.59.2 IncrementalSyncController bounds pending raw uploads to 50 rows.
 // Follow that native batch shape; business acceptance still requires readback.
 const val MI_HEALTH_IMPORT_RAW_BATCH_SIZE = 50
@@ -21,7 +23,7 @@ const val MI_HEALTH_IMPORT_AGGREGATE_BATCH_SIZE = 30
 enum class MiHealthImportChannel { RAW, DAILY_AGGREGATE }
 
 @Serializable
-enum class MiHealthImportEnrichment { SLEEP_HRV }
+enum class MiHealthImportEnrichment { SLEEP_HRV, SLEEP_VITALS }
 
 @Serializable
 data class MiHealthImportIdentity(
@@ -44,6 +46,7 @@ data class MiHealthImportRow(
     /** Missing source zone or a DST transition prevents a trustworthy day summary. */
     val dayAggregationEligible: Boolean = true,
     val enrichment: MiHealthImportEnrichment? = null,
+    val completeSourceDay: Boolean = false,
 ) {
     val canonicalContent: String get() = canonicalMiHealthImportJson(value)
 }
@@ -66,6 +69,8 @@ data class MiHealthImportPlan(
     val rows: List<MiHealthImportRow>,
     val issues: List<MiHealthImportIssue>,
     val inputRecordCount: Int,
+    val sleepFiles: List<MiSleepVitalsFile> = emptyList(),
+    val sleepSourceMigration: MiSleepSourceMigrationDiagnostic? = null,
 ) {
     val rawRows: List<MiHealthImportRow> get() = rows.filter { it.identity.channel == MiHealthImportChannel.RAW }
     val aggregateRows: List<MiHealthImportRow> get() = rows.filter { it.identity.channel == MiHealthImportChannel.DAILY_AGGREGATE }
@@ -79,6 +84,7 @@ data class MiHealthImportCloudRow(
     val value: JsonObject,
     val deleted: Boolean = false,
     val zoneOffsetSeconds: Int? = null,
+    val tagInferred: Boolean = false,
 )
 
 /** An accepted POST still requires a separate content readback. */
@@ -97,6 +103,10 @@ data class MiHealthImportUploadResult(
 
 /** Fakeable, single-attempt transport. It must never retry a possibly applied write. */
 interface MiHealthImportCloud {
+    /** Retires only a previously verified imported legacy sleep after its replacement is verified. */
+    suspend fun retireLegacySleep(identity: MiHealthImportIdentity): MiHealthImportUploadResult =
+        throw UnsupportedOperationException("Sleep source migration retirement is unavailable")
+
     suspend fun readRows(
         channel: MiHealthImportChannel,
         key: String,
@@ -138,3 +148,7 @@ data class MiHealthImportVerification(
     val status: MiHealthImportVerificationStatus,
     val mismatchedFields: Set<String> = emptySet(),
 )
+
+/** Counts for the preparatory native-source migration, separate from the subsequent ordinary runner. */
+data class MiSleepSourceMigrationDiagnostic(val candidateRows: Int, val submittedReplacementRows: Int,
+    val attemptedRetirementRows: Int, val verifiedMigrationRows: Int)

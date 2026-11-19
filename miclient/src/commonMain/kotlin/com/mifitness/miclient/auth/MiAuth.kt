@@ -6,10 +6,12 @@ import io.ktor.client.plugins.cookies.AcceptAllCookiesStorage
 import io.ktor.client.request.forms.submitForm
 import io.ktor.client.request.get
 import io.ktor.client.request.header
+import io.ktor.client.request.prepareGet
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.client.statement.readRawBytes
 import io.ktor.http.Cookie
+import io.ktor.http.Headers
 import io.ktor.http.Parameters
 import io.ktor.http.Url
 import io.ktor.http.encodeURLParameter
@@ -287,10 +289,7 @@ class MiAuth(
             Url("https://account.xiaomi.com/"),
             Cookie(name = "userId", value = credentials.userId, domain = ".xiaomi.com", path = "/"),
         )
-        cookieStorage.addCookie(
-            Url("https://account.xiaomi.com/"),
-            Cookie(name = "passToken", value = credentials.passToken, domain = ".xiaomi.com", path = "/"),
-        )
+        PassportHttpSession.seedPassTokenCookie(cookieStorage, credentials.passToken)
 
         return try {
             val refreshed = loginWithPassTokenCookies(
@@ -644,19 +643,14 @@ class MiAuth(
             Url("https://account.xiaomi.com/"),
             Cookie(name = "userId", value = userId, domain = ".xiaomi.com", path = "/"),
         )
-        cookieStorage.addCookie(
-            Url("https://account.xiaomi.com/"),
-            Cookie(name = "passToken", value = passToken, domain = ".xiaomi.com", path = "/"),
-        )
+        PassportHttpSession.seedPassTokenCookie(cookieStorage, passToken)
 
         val loginUrl =
             "https://account.xiaomi.com/pass/serviceLogin?sid=${sid.encodeURLParameter()}" +
                 "&_json=true&callback=${callback.encodeURLParameter()}" +
                 "&d=${deviceId.encodeURLParameter()}"
-        val response = client.get(loginUrl) {
-            header("User-Agent", userAgent)
-        }
-        val body = PassportAuthUtils.stripJsonPrefix(response.bodyAsText())
+        val response = readPassportLogin(client, loginUrl, onPassTokenRotated)
+        val body = PassportAuthUtils.stripJsonPrefix(response.body)
         val obj = try {
             json.parseToJsonElement(body).jsonObject
         } catch (_: Exception) {
@@ -706,7 +700,8 @@ class MiAuth(
         // Resolved before any further passport call so follow-up requests never present the
         // superseded token (which would rotate it again and orphan the value we just read).
         val oldPass = previousPassToken ?: passToken
-        var effectivePass = responseCredential(response, "passToken")
+        val headerPassToken = responseCredential(response.headers, "passToken")
+        var effectivePass = headerPassToken
             ?: PassportSts.preferRotatedPassToken(
                 oldPassToken = oldPass,
                 newPassToken = obj["passToken"]?.jsonPrimitive?.content,
@@ -714,18 +709,22 @@ class MiAuth(
                     ?: response.headers["Re-Pass-Token"],
             )
         if (effectivePass != oldPass) {
-            updatePassTokenCookie(cookieStorage, effectivePass)
-            withContext(NonCancellable) { onPassTokenRotated(effectivePass) }
+            withContext(NonCancellable) {
+                // Header tokens were already committed before the body was read.
+                if (headerPassToken == null) onPassTokenRotated(effectivePass)
+                updatePassTokenCookie(cookieStorage, effectivePass)
+            }
         }
 
         var ssecurity = obj["ssecurity"]?.jsonPrimitive?.content.orEmpty()
         if (ssecurity.isEmpty()) {
-            val harvested = harvestSsecurity(client, userId, effectivePass, deviceId, sid)
+            val harvested = harvestSsecurity(client, userId, effectivePass, deviceId, sid, onPassTokenRotated)
             ssecurity = harvested.ssecurity
             harvested.rotatedPassToken?.takeIf { it != effectivePass }?.let {
                 effectivePass = it
-                updatePassTokenCookie(cookieStorage, it)
-                withContext(NonCancellable) { onPassTokenRotated(it) }
+                withContext(NonCancellable) {
+                    updatePassTokenCookie(cookieStorage, it)
+                }
             }
         }
         if (ssecurity.isEmpty()) {
@@ -745,9 +744,9 @@ class MiAuth(
         }.orEmpty()
 
         val uid = PassportAuthUtils.jsonUserId(obj)
-            .ifEmpty { responseCredential(response, "userId").orEmpty() }
+            .ifEmpty { responseCredential(response.headers, "userId").orEmpty() }
             .ifEmpty { userId }
-        val cUserId = responseCredential(response, "cUserId")
+        val cUserId = responseCredential(response.headers, "cUserId")
             ?: obj["cUserId"]?.jsonPrimitive?.content
             ?: obj["encryptedUserId"]?.jsonPrimitive?.content
             ?: previousCUserId
@@ -1060,19 +1059,41 @@ class MiAuth(
      * (`SimpleRequest.parseCookies` → `HeaderContent.putCookies`) and then reads them with
      * `StringContent.getHeader(name)`; this reproduces that lookup.
      */
-    private fun responseCredential(response: HttpResponse, name: String): String? {
-        val setCookies = (response.headers.getAll("Set-Cookie") ?: emptyList()) +
-            (response.headers.getAll("set-cookie") ?: emptyList())
+    private fun responseCredential(response: HttpResponse, name: String): String? =
+        responseCredential(response.headers, name)
+
+    private fun responseCredential(headers: Headers, name: String): String? {
+        val setCookies = headers.getAll("Set-Cookie") ?: emptyList()
         return PassportAuthUtils.setCookieValue(setCookies, name)
-            ?: response.headers[name]?.takeIf { it.isNotBlank() }
+            ?: headers[name]?.takeIf { it.isNotBlank() }
+    }
+
+    private data class PassportLoginResponse(val headers: Headers, val body: String)
+
+    /**
+     * A regular get() buffers the body before returning. Passport may already have
+     * rotated the token in the headers when that download fails. Use a streaming
+     * response and commit the new token before reading or parsing any body bytes.
+     * Only copied headers and text escape the response's execute scope.
+     */
+    private suspend fun readPassportLogin(
+        client: HttpClient,
+        url: String,
+        onPassTokenRotated: suspend (String) -> Unit,
+        cookieHeader: String? = null,
+    ): PassportLoginResponse = client.prepareGet(url) {
+        header("User-Agent", userAgent)
+        cookieHeader?.let { header("Cookie", it) }
+    }.execute { response ->
+        responseCredential(response, "passToken")?.let { token ->
+            withContext(NonCancellable) { onPassTokenRotated(token) }
+        }
+        PassportLoginResponse(response.headers, response.bodyAsText())
     }
 
     /** Keeps the cookie jar on the freshly rotated passToken so later legs don't reuse a dead one. */
     private suspend fun updatePassTokenCookie(cookieStorage: AcceptAllCookiesStorage, passToken: String) {
-        cookieStorage.addCookie(
-            Url("https://account.xiaomi.com/"),
-            Cookie(name = "passToken", value = passToken, domain = ".xiaomi.com", path = "/"),
-        )
+        PassportHttpSession.seedPassTokenCookie(cookieStorage, passToken)
     }
 
     private data class SsecurityHarvest(
@@ -1087,14 +1108,16 @@ class MiAuth(
         passToken: String,
         deviceId: String,
         sid: String,
+        onPassTokenRotated: suspend (String) -> Unit = {},
     ): SsecurityHarvest {
         val url = "https://account.xiaomi.com/pass/serviceLogin" +
             "?sid=${sid.encodeURLParameter()}&_json=true&d=${deviceId.encodeURLParameter()}"
-        val response = client.get(url) {
-            header("User-Agent", userAgent)
-            header("Cookie", "userId=$userId; passToken=$passToken; deviceId=$deviceId")
-        }
-        val rotated = responseCredential(response, "passToken")
+        val response = readPassportLogin(
+            client, url, onPassTokenRotated,
+            cookieHeader = "userId=$userId; passToken=$passToken; deviceId=$deviceId",
+        )
+        val body = PassportAuthUtils.stripJsonPrefix(response.body)
+        val rotated = responseCredential(response.headers, "passToken")
         val pragma = response.headers["Extension-Pragma"] ?: response.headers["extension-pragma"]
         if (pragma != null) {
             val ssec = PassportAuthUtils.parseJsonField(pragma, "ssecurity")
@@ -1102,7 +1125,7 @@ class MiAuth(
         }
         return SsecurityHarvest(
             PassportAuthUtils.parseJsonField(
-                PassportAuthUtils.stripJsonPrefix(response.bodyAsText()),
+                body,
                 "ssecurity",
             ),
             rotated,

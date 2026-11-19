@@ -1,5 +1,11 @@
 package com.bettermifitness.sync.data.api
 
+import com.bettermifitness.sync.data.time.SOURCE_DAY_SECONDS
+import com.bettermifitness.sync.data.time.SourceCalendarDay
+import com.bettermifitness.sync.data.time.sourceCalendarDay
+import kotlin.time.Instant
+import kotlinx.datetime.offsetAt
+
 import com.bettermifitness.sync.health.HealthInboundHeartRateRecord
 import com.bettermifitness.sync.health.HealthInboundMetric
 import com.bettermifitness.sync.health.HealthInboundOxygenSaturationRecord
@@ -387,32 +393,40 @@ object MiHealthImportMapper {
 
     private fun aggregateGroups(rows: List<MiHealthImportRow>, coverage: HealthInboundReadRequest?,
         issues: MutableList<MiHealthImportIssue>, localizeRejections: Boolean = false): List<List<MiHealthImportRow>> {
+        val sourceZone = coverage?.sourceCalendarZone
         val rejected = issues.filter { it.severity == MiHealthImportIssueSeverity.REJECTED ||
             it.code == "HEART_RATE_SOURCE_POINT_EXCLUDED" }
-        if (rejected.isNotEmpty() && (!localizeRejections || rejected.any { it.affectedLocalDays.isNullOrEmpty() })) {
+        if (rejected.isNotEmpty() && (sourceZone != null || !localizeRejections || rejected.any { it.affectedLocalDays.isNullOrEmpty() })) {
             if (rows.isNotEmpty()) issues += MiHealthImportIssue("REJECTED_SOURCE_PREVENTS_DAILY_REPORT",
                 rows.flatMap { it.sourceRecordKeys }.toSet(),
                 "Some source values were rejected. Raw valid values remain importable, but a complete daily summary cannot be asserted.",
                 MiHealthImportIssueSeverity.WARNING)
             return emptyList()
         }
-        // Group by local calendar date plus the observed fixed offset. Mixed
-        // offsets on one local date are a DST/travel ambiguity, not two days.
-        val byLocalDay = rows.groupBy { (it.identity.time + it.zoneOffsetSeconds).floorDiv(86_400L) }
+        val byLocalDay = rows.groupBy { row ->
+            val offset = sourceZone?.offsetAt(Instant.fromEpochSeconds(row.identity.time))?.totalSeconds ?: row.zoneOffsetSeconds
+            (row.identity.time + offset).floorDiv(SOURCE_DAY_SECONDS)
+        }
         val blockedDays = rejected.flatMap { it.affectedLocalDays.orEmpty() }.toSet()
-        return byLocalDay.filterKeys { it !in blockedDays }.values.filter { day ->
+        return byLocalDay.filterKeys { it !in blockedDays }.filter { (epochDay, day) ->
             val sources = day.flatMap { it.sourceRecordKeys }.toSet()
             val first = day.first()
-            val start = localDayStart(first.identity.time, first.zoneOffsetSeconds)
-            val valid = coverage != null && day.all { it.dayAggregationEligible } &&
-                day.map { it.zoneOffsetSeconds }.distinct().size == 1 &&
-                coverage.fromEpochSeconds <= start && coverage.untilEpochSeconds >= start + 86_400L
+            val range = if (sourceZone != null) sourceZone.sourceCalendarDay(epochDay) else {
+                val start = epochDay * SOURCE_DAY_SECONDS - first.zoneOffsetSeconds
+                SourceCalendarDay(start, start + SOURCE_DAY_SECONDS)
+            }
+            val offsetsAgree = if (sourceZone == null) day.all { it.zoneOffsetSeconds == first.zoneOffsetSeconds } else day.all {
+                it.identity.time in range.from until range.until &&
+                    sourceZone.offsetAt(Instant.fromEpochSeconds(it.identity.time)).totalSeconds == it.zoneOffsetSeconds
+            }
+            val valid = coverage != null && day.all { it.dayAggregationEligible } && offsetsAgree &&
+                range.coveredBy(coverage.fromEpochSeconds, coverage.untilEpochSeconds)
             if (!valid) issues += MiHealthImportIssue("INCOMPLETE_LOCAL_DAY", sources,
                 "Raw data is retained; no daily report is generated for a partial query day, incomplete sleep stages, or an uncertain " +
                     "source timezone.",
                 MiHealthImportIssueSeverity.WARNING)
             valid
-        }
+        }.values.toList()
     }
 
     private fun heartRateDays(rows: List<MiHealthImportRow>, coverage: HealthInboundReadRequest?,
@@ -476,6 +490,7 @@ object MiHealthImportMapper {
             MiHealthImportIdentity(MiHealthImportChannel.DAILY_AGGREGATE, MI_HEALTH_CONNECT_IMPORT_SID,
                 key, cloudDayAnchor(first.identity.time, first.zoneOffsetSeconds), "daily_report"),
             value, 0, day.flatMap { it.sourceRecordKeys }.toSet(),
+            completeSourceDay = true,
         )
     }
 
@@ -487,8 +502,6 @@ object MiHealthImportMapper {
      * offset to zero. Raw sample times and full-day coverage remain real instants.
      */
     private fun cloudDayAnchor(time: Long, offset: Int): Long = (time + offset).floorDiv(86_400L) * 86_400L
-
-    private fun localDayStart(time: Long, offset: Int): Long = (time + offset).floorDiv(86_400L) * 86_400L - offset
 
     private fun MutableList<MiHealthImportIssue>.warn(code: String, origin: HealthRecordOrigin, message: String) {
         add(MiHealthImportIssue(code, setOf(origin.stableRecordKey), message, MiHealthImportIssueSeverity.WARNING))

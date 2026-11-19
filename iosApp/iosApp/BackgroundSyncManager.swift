@@ -4,14 +4,8 @@ import UIKit
 
 /// Schedules and runs opportunistic background auto-sync.
 ///
-/// Two scheduler contracts cover days one slot is skipped (both OS-gated):
-/// - BGAppRefreshTask: short (~30s) refresh.
-/// - BGProcessingTask: longer (minutes) deferred work, network-required.
-/// The Kotlin side only syncs the **last 1 day** so the work fits either budget.
-/// Full-range sync is for:
-/// - Manual "Sync Now"
-/// - Foreground auto-sync when the app is opened
-/// - Shortcuts / App Intent (`SyncBetterMiFitnessIntent`)
+/// BGAppRefresh keeps the session alive. A single network-required BGProcessing
+/// request runs incrementally and observes the persisted periodic or retry deadline.
 ///
 /// Simulator: tasks won't fire alone — use:
 ///   e -l objc -- (void)[[BGTaskScheduler sharedScheduler] _simulateLaunchForTaskWithIdentifier:@"com.bettermifitness.sync.refresh"]
@@ -23,27 +17,28 @@ enum BackgroundSyncManager {
     /// Finishing assertion so an in-flight foreground sync gets ~30s grace
     /// when the app backgrounds instead of stopping mid-write.
     private static var finishingTask: UIBackgroundTaskIdentifier = .invalid
+    private static var scheduleTicket = UUID()
 
     /// Registers the task handlers and wires Kotlin → Swift scheduling bridges.
     /// Must be called during app launch.
     static func register() {
         BGTaskScheduler.shared.register(
             forTaskWithIdentifier: taskIdentifier,
-            using: nil
+            using: DispatchQueue.main
         ) { task in
             handle(task: task as! BGAppRefreshTask)
         }
         BGTaskScheduler.shared.register(
             forTaskWithIdentifier: processingIdentifier,
-            using: nil
+            using: DispatchQueue.main
         ) { task in
             handleProcessing(task: task as! BGProcessingTask)
         }
 
         AutoSyncBridge.shared.setHandlers(
-            onSchedule: { schedule() },
-            onScheduleRefresh: { scheduleRefresh() },
-            onCancel: { cancel() },
+            onSchedule: { DispatchQueue.main.async { schedule() } },
+            onScheduleRefresh: { DispatchQueue.main.async { scheduleRefresh() } },
+            onCancel: { DispatchQueue.main.async { cancel() } },
             statusProvider: { backgroundRefreshStatusLabel() },
             supportsDebugTest: { KotlinBoolean(bool: isDebugRefreshEnabled) }
         )
@@ -60,41 +55,30 @@ enum BackgroundSyncManager {
         #endif
     }
 
-    /// Asks iOS to schedule the next opportunistic refresh (earliest ~15 min)
-    /// plus a deferred processing run (network-required, no charger needed).
-    /// iOS treats earliestBeginDate as a floor, not a guarantee.
-    static func schedule() {
-        BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: taskIdentifier)
-        BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: processingIdentifier)
-        let refresh = BGAppRefreshTaskRequest(identifier: taskIdentifier)
-        refresh.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
-        do {
-            try BGTaskScheduler.shared.submit(refresh)
-            print("[BGSync] scheduled \(taskIdentifier)")
-        } catch {
-            print("[BGSync] schedule failed: \(error)")
+    static func schedule(minimumDelay: TimeInterval = 0, completion: (() -> Void)? = nil) {
+        let ticket = UUID()
+        scheduleTicket = ticket
+        BackgroundSync.shared.automaticScheduleDelay { delay in
+            defer { completion?() }
+            guard scheduleTicket == ticket else { return }
+            BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: processingIdentifier)
+            guard delay.doubleValue >= 0 else { return }
+            let processing = BGProcessingTaskRequest(identifier: processingIdentifier)
+            processing.requiresNetworkConnectivity = true
+            processing.requiresExternalPower = false
+            processing.earliestBeginDate = Date(timeIntervalSinceNow: max(minimumDelay, delay.doubleValue))
+            do {
+                try BGTaskScheduler.shared.submit(processing)
+            } catch {
+                print("[BGSync] schedule processing failed: \(error)")
+            }
         }
-        let processing = BGProcessingTaskRequest(identifier: processingIdentifier)
-        processing.requiresNetworkConnectivity = true
-        processing.requiresExternalPower = false
-        do {
-            try BGTaskScheduler.shared.submit(processing)
-            print("[BGSync] scheduled \(processingIdentifier)")
-        } catch {
-            print("[BGSync] schedule processing failed: \(error)")
-        }
-        #if DEBUG
-        BGTaskScheduler.shared.getPendingTaskRequests { requests in
-            print("[BGSync] pending: \(requests.map(\.identifier))")
-        }
-        #endif
     }
 
     /// Cancels pending requests (e.g. auto-sync turned off).
     static func cancel() {
-        BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: taskIdentifier)
+        scheduleTicket = UUID()
         BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: processingIdentifier)
-        print("[BGSync] cancelled \(taskIdentifier) + \(processingIdentifier)")
     }
 
     /// Keeps a lightweight keepalive tick scheduled even when data sync is off.
@@ -165,9 +149,7 @@ enum BackgroundSyncManager {
     }
 
     private static func handle(task: BGAppRefreshTask) {
-        // Keepalive chain always continues; the data-sync chain only when enabled.
         scheduleRefresh()
-        AutoSyncSchedule.shared.rescheduleIfEnabled()
 
         var finished = false
         func finish(success: Bool) {
@@ -177,30 +159,16 @@ enum BackgroundSyncManager {
         }
 
         task.expirationHandler = {
-            print("[BGSync] task expired — cancelling in-flight sync")
-            BackgroundSync.shared.cancel()
-            finish(success: false)
+            DispatchQueue.main.async { finish(success: false) }
         }
 
-        // Session first (cheap, keeps the login alive), then data when enabled.
-        BackgroundSync.shared.runSessionRefresh { _ in
-            // Last 1 day only — see BackgroundSync.runOpportunisticBackgroundSync
-            BackgroundSync.shared.runOpportunisticBackgroundSync { status in
-                let code = (status as? String) ?? BackgroundSync.shared.STATUS_FAILED
-                // success or quiet skip both count as a completed task for the OS
-                let ok = code == BackgroundSync.shared.STATUS_SUCCESS
-                    || code == BackgroundSync.shared.STATUS_COMPLETED_WITH_SKIPS
-                    || code == BackgroundSync.shared.STATUS_SKIPPED
-                print("[BGSync] opportunistic sync finished status=\(code)")
-                finish(success: ok)
-            }
+        BackgroundSync.shared.runSessionRefresh { status in
+            finish(success: (status as? String) == BackgroundSync.shared.STATUS_SUCCESS)
         }
     }
 
     private static func handleProcessing(task: BGProcessingTask) {
-        // Keepalive chain always continues; the data-sync chain only when enabled.
-        scheduleRefresh()
-        AutoSyncSchedule.shared.rescheduleIfEnabled()
+        schedule(minimumDelay: 15 * 60)
 
         var finished = false
         func finish(success: Bool) {
@@ -210,22 +178,21 @@ enum BackgroundSyncManager {
         }
 
         task.expirationHandler = {
-            print("[BGSync] processing task expired — cancelling in-flight sync")
-            BackgroundSync.shared.cancel()
-            finish(success: false)
+            DispatchQueue.main.async {
+                guard !finished else { return }
+                BackgroundSync.shared.cancel()
+                finish(success: false)
+            }
         }
 
-        // Session first (cheap, keeps the login alive), then data when enabled.
-        // Same 1-day path as BGAppRefresh; processing just gets minutes of budget.
-        BackgroundSync.shared.runSessionRefresh { _ in
-            BackgroundSync.shared.runOpportunisticBackgroundSync { status in
-                let code = (status as? String) ?? BackgroundSync.shared.STATUS_FAILED
-                let ok = code == BackgroundSync.shared.STATUS_SUCCESS
-                    || code == BackgroundSync.shared.STATUS_COMPLETED_WITH_SKIPS
-                    || code == BackgroundSync.shared.STATUS_SKIPPED
-                print("[BGSync] processing sync finished status=\(code)")
-                finish(success: ok)
-            }
+        BackgroundSync.shared.runOpportunisticBackgroundSync { status in
+            guard !finished else { return }
+            let code = (status as? String) ?? BackgroundSync.shared.STATUS_FAILED
+            let ok = code == BackgroundSync.shared.STATUS_SUCCESS
+                || code == BackgroundSync.shared.STATUS_COMPLETED_WITH_SKIPS
+                || code == BackgroundSync.shared.STATUS_SKIPPED
+            print("[BGSync] processing sync finished status=\(code)")
+            schedule(minimumDelay: 5 * 60) { finish(success: ok) }
         }
     }
 }

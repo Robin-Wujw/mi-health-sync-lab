@@ -21,6 +21,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -36,8 +37,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
@@ -55,6 +56,7 @@ import com.bettermifitness.sync.ui.components.StatusBanner
 import com.bettermifitness.sync.ui.components.StatusTone
 import com.bettermifitness.sync.ui.icons.AppIcon
 import com.bettermifitness.sync.ui.icons.AppIcons
+import kotlinx.datetime.TimeZone
 
 private const val CREDIT_URL = "https://github.com/ilyasaftr"
 
@@ -130,14 +132,7 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit, onLogout: (
                 AutoSyncCard(
                     state = state,
                     onAutoSyncChange = viewModel::setAutoSync,
-                    onTestBg = viewModel::runBackgroundRefreshTest,
                 )
-                SettingsGroup(title = L10n.string(L10n.settingsPermissionsTitle)) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text(L10n.string(L10n.settingsPermissionsDetail), style = MaterialTheme.typography.bodySmall)
-                        OutlinedButton(onClick = viewModel::openHealthService) { Text(L10n.stringFmt(L10n.openHealth, healthName)) }
-                    }
-                }
                 WhatToSyncCard(
                     healthName = healthName,
                     enabledMetrics = state.enabledMetrics,
@@ -152,15 +147,10 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit, onLogout: (
                     state = state,
                     onToggle = viewModel::setMetricEnabled,
                     onPermissions = viewModel::openInboundPermissions,
-                    onTestMode = viewModel::setInboundTestMode,
+                    onRoutes = viewModel::authorizeWorkoutRoutes,
+                    onCalendarZone = viewModel::setSourceCalendarZone,
                 )
-                SettingsGroup(title = L10n.string(L10n.settingsRetryTitle)) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text(L10n.string(L10n.settingsBodyRetryDetail), style = MaterialTheme.typography.bodySmall)
-                        OutlinedButton(onClick = viewModel::retryBodyImports) { Text(L10n.string(L10n.settingsBodyRetry)) }
-                        if (state.bodyRetryReady) Text(L10n.string(L10n.settingsBodyRetryReady), style = MaterialTheme.typography.bodySmall)
-                    }
-                }
+                com.bettermifitness.sync.zepp.ZeppSettingsCard()
             } else {
                 SettingsGroup(title = L10n.string(L10n.settingsSyncOptionsLoading)) {
                     Row(
@@ -288,16 +278,23 @@ private fun InboundSyncCard(
     state: SettingsUiState,
     onToggle: (String, Boolean) -> Unit,
     onPermissions: () -> Unit,
-    onTestMode: (Boolean) -> Unit,
+    onRoutes: () -> Unit,
+    onCalendarZone: (String?) -> Unit,
 ) {
-    var advanced by remember { mutableStateOf(false) }
     val keys = SyncPreferences.INBOUND_METRIC_KEYS.toList()
     SettingsGroup(title = L10n.string(L10n.syncInboundTitle)) {
         Text(L10n.string(L10n.settingsInboundDetail), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(14.dp))
+        if (SyncPreferences.WORKOUTS_IMPORT_KEY in state.enabledMetrics) {
+            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(L10n.string(L10n.settingsWorkoutImportDetail), style = MaterialTheme.typography.bodySmall)
+                Text(L10n.string(L10n.settingsWorkoutRoutesDetail), style = MaterialTheme.typography.bodySmall)
+                OutlinedButton(onClick = onRoutes) { Text(L10n.string(L10n.settingsWorkoutRoutes)) }
+            }
+        }
         keys.forEachIndexed { index, key ->
             MetricRow(
                 metricKey = key,
-                label = L10n.metric(SyncSelection.sourceMetricKey(key)),
+                label = L10n.metric(key),
                 enabled = key in state.enabledMetrics,
                 onToggle = { onToggle(key, it) },
             )
@@ -306,15 +303,7 @@ private fun InboundSyncCard(
             }
         }
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            TextButton(onClick = { advanced = !advanced }) { Text(L10n.string(L10n.settingsImportAdvanced)) }
-            if (advanced) {
-            Text(L10n.string(L10n.settingsInboundFirstRun), style = MaterialTheme.typography.bodySmall)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(L10n.string(L10n.settingsInboundTestMode), modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-                Switch(checked = state.inboundTestMode, onCheckedChange = onTestMode)
-            }
-            Text(L10n.string(L10n.settingsInboundTestModeDetail), style = MaterialTheme.typography.bodySmall)
-            }
+            SourceCalendarSetting(state.sourceCalendarZoneId, onCalendarZone)
             OutlinedButton(
                 onClick = onPermissions,
                 enabled = state.enabledMetrics.any { it in SyncPreferences.INBOUND_METRIC_KEYS },
@@ -331,6 +320,21 @@ private fun InboundSyncCard(
             }
             Text(L10n.string(L10n.settingsZeppCapabilityDetail), style = MaterialTheme.typography.bodySmall)
         }
+    }
+}
+
+@Composable
+private fun SourceCalendarSetting(saved: String?, onSave: (String?) -> Unit) {
+    var draft by remember(saved) { mutableStateOf(saved.orEmpty()) }
+    val candidate = draft.trim()
+    val valid = candidate.isEmpty() || runCatching { TimeZone.of(candidate) }.isSuccess
+    OutlinedTextField(value = draft, onValueChange = { if (it.length <= 80) draft = it },
+        modifier = Modifier.fillMaxWidth(), singleLine = true,
+        label = { Text(L10n.string(L10n.sourceCalendarZoneLabel)) },
+        placeholder = { Text("America/New_York") }, isError = !valid,
+        supportingText = { Text(L10n.string(if (valid) L10n.sourceCalendarZoneDetail else L10n.sourceCalendarZoneInvalid)) })
+    OutlinedButton(onClick = { onSave(candidate.ifEmpty { null }) }, enabled = valid && candidate != saved.orEmpty()) {
+        Text(L10n.string(L10n.sourceCalendarZoneSave))
     }
 }
 
@@ -375,7 +379,6 @@ private fun HowFarBackCard(rangeDays: Int, onRangeSelected: (Int) -> Unit) {
 private fun AutoSyncCard(
     state: SettingsUiState,
     onAutoSyncChange: (Boolean) -> Unit,
-    onTestBg: () -> Unit,
 ) {
     SettingsGroup(title = L10n.string(L10n.settingsSectionAutoSync)) {
         Row(
@@ -397,31 +400,8 @@ private fun AutoSyncCard(
             )
         }
 
-        if (state.canTestBgRefresh) {
-            HorizontalDivider(
-                Modifier.padding(start = 14.dp),
-                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
-            )
-            TextButton(
-                onClick = onTestBg,
-                enabled = state.autoSync && !state.bgTestRunning,
-                modifier = Modifier.padding(horizontal = 4.dp),
-            ) {
-                if (state.bgTestRunning) {
-                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                    Spacer(Modifier.size(8.dp))
-                }
-                Text(L10n.string(L10n.settingsTestBackgroundRefresh))
-            }
-            state.bgTestStatus?.let { status ->
-                Text(
-                    status,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp),
-                )
-            }
-        }
+        Text(L10n.string(L10n.settingsAutomaticMaintenance), style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp))
     }
 }
 

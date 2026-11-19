@@ -25,14 +25,18 @@ inspect-spo2-minute only reads source, journal and native cloud history.
 
 After the command, the app process is stopped to release the test-session gate.
 Reopen the normal app to resume normal foreground/background synchronization.
+
+sync-zepp-scores requires -AllowCloudWrite and uses the normal shared Zepp service.
+It respects the saved Zepp master switch and individual selections, does not
+change settings, and does not run unrelated Health Connect metrics.
 #>
 [CmdletBinding()]
 param(
     [string]$AdbPath = ".\adb.exe",
     [string]$Serial,
-    [ValidateSet("inspect", "inspect-spo2-minute", "verify-existing-spo2", "inspect-heart-history", "inspect-heart-coverage", "preview-heart-recovery", "reconcile-heart", "verify-existing-heart", "inspect-hc-chain", "sync-one", "sync-one-day", "repair-one", "recover-one-pending", "reconcile-pending")]
+    [ValidateSet("sync-zepp-scores", "inspect-native-workout-file", "inspect-zepp-sync", "restore-zepp-ownership", "inspect", "inspect-spo2-minute", "verify-existing-spo2", "inspect-heart-history", "inspect-heart-coverage", "preview-heart-recovery", "reconcile-heart", "verify-existing-heart", "inspect-hc-chain", "inspect-workouts", "inspect-workout-cloud", "preview-workout-upload", "upload-one-workout", "sync-workouts", "verify-workouts", "sync-workouts-one", "authorize-workout-routes", "inspect-fds-protocol", "repair-workout-files", "migrate-one-native-workout", "sync-one-native-timeline", "inspect-native-workout-codec", "sync-normal-workout-flow", "inspect-workout-settings", "schedule-background-acceptance", "sync-vo2max", "sync-one", "sync-one-day", "repair-one", "recover-one-pending", "reconcile-pending")]
     [string]$Mode = "inspect",
-    [ValidateSet("spo2", "resting_heart_rate", "heart_rate", "hrv", "sleep")]
+    [ValidateSet("spo2", "resting_heart_rate", "heart_rate", "hrv", "sleep", "vo2_max")]
     [string]$Metric = "spo2",
     [ValidateRange(1, 30)]
     [int]$RangeDays = 3,
@@ -46,12 +50,14 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $TargetPackage = "com.bettermifitness.sync.healthlab"
 $TestComponent = "com.bettermifitness.sync.healthlab.test/com.bettermifitness.sync.lab.HealthLabInstrumentation"
-$ExpectedVersionName = "1.0.6-healthlab.20"
-$ExpectedVersionCode = "1000026"
+$ExpectedVersionName = "1.0.6-healthlab.40"
+$ExpectedVersionCode = "1000046"
 $Mode = $Mode.ToLowerInvariant()
 $Metric = $Metric.ToLowerInvariant()
 
-$isWriteMode = $Mode -in @("sync-one", "sync-one-day", "repair-one", "recover-one-pending")
+$isWriteMode = $Mode -in @("sync-zepp-scores", "sync-one", "sync-one-day", "repair-one", "recover-one-pending", "upload-one-workout", "sync-workouts", "sync-workouts-one", "sync-vo2max", "repair-workout-files", "sync-normal-workout-flow", "migrate-one-native-workout", "sync-one-native-timeline", "schedule-background-acceptance")
+if ($Mode -eq "inspect-workouts" -and $RangeDays -gt 27) { throw "inspect-workouts supports -RangeDays 1..27." }
+if ($Mode -eq "sync-vo2max" -and $Metric -ne "vo2_max") { throw "sync-vo2max requires -Metric vo2_max." }
 if ($Mode -eq "sync-one-day" -and $RangeDays -ne 1) { throw "sync-one-day requires -RangeDays 1." }
 if ($isWriteMode -and -not $AllowCloudWrite) {
     throw "$Mode requires -AllowCloudWrite. Omit it and use -Mode inspect for read-only health-data checks."
@@ -160,7 +166,12 @@ if (-not (Test-Path -LiteralPath $reportDirectory -PathType Container)) {
 }
 
 Write-Host "Keep the phone unlocked and leave the app in the foreground during the test."
-Write-Host ("Running " + $Mode + " for " + $Metric + " over " + $RangeDays + " days.")
+$displayMetric = if ($Mode -in @("sync-zepp-scores", "inspect-zepp-sync", "restore-zepp-ownership")) {
+    "saved Zepp selection (Metric is unused)"
+} elseif ($Mode -in @("inspect-workouts", "inspect-workout-cloud", "preview-workout-upload", "upload-one-workout")) {
+    "workouts (Metric is unused)"
+} else { $Metric }
+Write-Host ("Running " + $Mode + " for " + $displayMetric + " over " + $RangeDays + " days.")
 if ($Mode -eq "sync-one") {
     Write-Host "This permits at most one raw import target and no daily-summary write; readback can involve several requests."
 }
@@ -183,6 +194,7 @@ $instrumentArguments = $deviceArguments + @(
     $TestComponent
 )
 $started = $false
+$instrumentOutput = ""
 try {
     # Instrumentation starts a fresh isolated target process. Never clear data.
     Invoke-Adb -AdbArguments ($deviceArguments + @("shell", "am", "force-stop", $TargetPackage)) -Action "pre-test process stop" | Out-Null
@@ -192,7 +204,18 @@ try {
 finally {
     if ($started) {
         try {
-            Invoke-Adb -AdbArguments ($deviceArguments + @("shell", "am", "force-stop", $TargetPackage)) -Action "post-test process stop" | Out-Null
+            if ($Mode -eq "schedule-background-acceptance" -and
+                $instrumentOutput -match "(?m)^runner_outcome=COMPLETED\r?$" -and
+                $instrumentOutput -match "(?m)^background_acceptance.enqueued=true\r?$") {
+                # Preserve the queued system job while killing the process-local test gate.
+                # Reopening our foreground Activity could race the worker with automatic UI sync.
+                Invoke-Adb -AdbArguments ($deviceArguments + @("shell", "am", "start", "-n",
+                    "com.mi.health/com.xiaomi.fitness.login.SplashActivity")) -Action "return to Mi Fitness" | Out-Null
+                Invoke-Adb -AdbArguments ($deviceArguments + @("shell", "am", "kill", $TargetPackage)) -Action "background test process stop" | Out-Null
+            }
+            else {
+                Invoke-Adb -AdbArguments ($deviceArguments + @("shell", "am", "force-stop", $TargetPackage)) -Action "post-test process stop" | Out-Null
+            }
         }
         catch {
             Write-Warning "Could not stop the test process. Force-stop the app before reopening it normally."
@@ -213,7 +236,12 @@ if (-not $report.StartsWith("Mi Health Sync Lab live test v1")) {
 Set-Content -LiteralPath $OutputPath -Value $report -Encoding UTF8
 Write-Host $report
 Write-Host ("Saved sanitized report: " + [System.IO.Path]::GetFullPath($OutputPath))
-Write-Host "Reopen Mi Health Sync Lab when finished to restore normal automatic synchronization."
+if ($Mode -eq "schedule-background-acceptance") {
+    Write-Host "The delayed production worker may run in the background after the test process exits."
+}
+else {
+    Write-Host "Reopen Mi Health Sync Lab when finished to restore normal automatic synchronization."
+}
 if ($report -notmatch "(?m)^runner_outcome=COMPLETED\r?$") {
     throw "The command returned a safe failure report. See runner_failure in the saved file; no automatic retry was attempted."
 }

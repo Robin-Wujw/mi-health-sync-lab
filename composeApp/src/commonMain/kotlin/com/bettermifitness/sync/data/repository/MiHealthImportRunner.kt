@@ -21,6 +21,7 @@ import com.bettermifitness.sync.data.api.summarizeMiHealthImportIssues
 import com.bettermifitness.sync.data.api.summarizeMiHealthImportMismatchFields
 import com.bettermifitness.sync.data.api.MiSpO2MinuteMatchPolicy
 import com.bettermifitness.sync.data.api.importIdentity
+import com.bettermifitness.sync.data.api.possibleDailyReports
 import com.bettermifitness.sync.data.preferences.HealthImportPendingReconciliation
 import com.bettermifitness.sync.data.preferences.HealthImportObservedAlias
 import com.bettermifitness.sync.data.preferences.HealthImportJournal
@@ -69,6 +70,7 @@ class MiHealthImportRunner(
     @Suppress("CyclomaticComplexMethod", "LongMethod", "NestedBlockDepth", "ThrowsCount")
     suspend fun run(account: String, plan: MiHealthImportPlan, testMode: Boolean = false): MiHealthImportRunResult {
         require(account.isNotBlank())
+        check(plan.sleepFiles.isEmpty()) { "Sleep detail files must be independently verified before summary submission." }
         // A test uses one real source row and creates no daily report. It does
         // not clear the journal, bypass preflight or resend an uncertain write.
         val selectedTestRow = if (testMode) plan.rawRows.maxByOrNull { it.identity.time } else null
@@ -105,6 +107,7 @@ class MiHealthImportRunner(
         var verifiedAggregates = 0
         var alreadyPresentDaily = 0
         var preservedDaily = 0
+        var gatedDailyRevisions = 0
         var attemptedRaw = 0
         var attemptedDaily = 0
         var attemptedRevisions = 0
@@ -178,11 +181,13 @@ class MiHealthImportRunner(
             readbackAmbiguousRows = unresolvedReadbacks.values.count { it?.status == MiHealthImportVerificationStatus.AMBIGUOUS },
             readbackUnqueriedRows = unresolvedReadbacks.values.count { it == null },
             preservedDailyRows = preservedDaily,
+            gatedDailyRevisionRows = gatedDailyRevisions,
             sourceRejectedRecords = sourceRejectedCount,
             issueCounts = summarizeMiHealthImportIssues(selectedIssues),
             precheckMismatchFields = summarizeMiHealthImportMismatchFields(blockedVerifications.values),
             readbackMismatchFields = summarizeMiHealthImportMismatchFields(unresolvedReadbacks.values.filterNotNull()),
             sleepConflict = sleepConflicts?.snapshot(),
+            sleepSourceMigration = plan.sleepSourceMigration,
             attemptedRevisionRows = attemptedRevisions,
             verifiedRevisionRows = verifiedRevisions,
             eligibleRevisionRows = eligibleRevisions,
@@ -235,7 +240,9 @@ class MiHealthImportRunner(
                 val pending = journal.pendingIdentities(account,
                     dayRows.map { it.identity.stableKey }.toSet() + minuteIdentities.values)
                 val verifiedFingerprints = journal.verifiedFingerprints(account)
-                val ownedFingerprints = if (sleepConflicts != null) journal.ownedVerifiedFingerprints(account) else emptyMap()
+                val ownedFingerprints = if (sleepConflicts != null || channel == MiHealthImportChannel.DAILY_AGGREGATE) {
+                    journal.ownedVerifiedFingerprints(account)
+                } else emptyMap()
                 val legacyFingerprints = if (sleepConflicts != null) journal.legacyVerifiedFingerprints(account) else emptyMap()
                 val existing = mutableListOf<MiHealthImportRow>()
                 val aliasExisting = mutableListOf<MiHealthImportRow>()
@@ -249,7 +256,8 @@ class MiHealthImportRunner(
                     if (channel == MiHealthImportChannel.RAW) sleepConflicts?.observe(row, before,
                         verifiedFingerprints[digest], ownedFingerprints[digest], legacyFingerprints[digest],
                         row.identity.stableKey in pending, sourceBlocker)
-                    if (status.status == MiHealthImportVerificationStatus.VERIFIED) {
+                    val completeDay = channel != MiHealthImportChannel.DAILY_AGGREGATE || row.completeSourceDay
+                    if (status.status == MiHealthImportVerificationStatus.VERIFIED && completeDay) {
                         existing += row
                         continue
                     }
@@ -274,11 +282,12 @@ class MiHealthImportRunner(
                         }
                         continue
                     }
-                    val dailyAlreadyExists = channel == MiHealthImportChannel.DAILY_AGGREGATE && before.any {
-                        !it.deleted && it.key == row.identity.key && it.tag == row.identity.tag &&
-                            sameOrUncertainLocalDay(row, it)
-                    }
-                    if (dailyAlreadyExists) {
+                    val sameDayReports = if (channel == MiHealthImportChannel.DAILY_AGGREGATE) possibleDailyReports(row, before)
+                        else emptyList()
+                    if (sameDayReports.any { !it.deleted }) {
+                        val allRawVerified = incompleteDayIssues.isEmpty() && dailySourceVerified(row, rows, verifiedRawIdentities)
+                        if (couldBeDailyRevision(row, sameDayReports, ownedFingerprints[digest], allRawVerified,
+                                row.identity.stableKey in pending)) gatedDailyRevisions++
                         warnings += "EXISTING_DAILY_REPORT_PRESERVED"
                         preservedDaily++
                         continue
@@ -289,6 +298,14 @@ class MiHealthImportRunner(
                         blockedPending++
                         blockedVerifications[row.identity.stableKey] = status
                         blockedFields += status.mismatchedFields
+                    } else if (sameDayReports.any { it.deleted }) {
+                        blockedReason = blockedReason ?: MiHealthImportFailureReason.CONFLICT
+                        blockedCount++
+                        blockedConflict++
+                    } else if (!completeDay) {
+                        blockedReason = blockedReason ?: MiHealthImportFailureReason.UNVERIFIED
+                        blockedCount++
+                        blockedFields += "incomplete_daily_source"
                     } else if (status.status != MiHealthImportVerificationStatus.MISSING) {
                         val sleepRevision = if (replacesSleepRows && sourceBlocker == null)
                             prepareSleepRevision(row, before, sourceTimezoneReliable = true) else null
@@ -309,8 +326,7 @@ class MiHealthImportRunner(
                             blockedVerifications[row.identity.stableKey] = status
                             blockedFields += status.mismatchedFields
                         }
-                    } else if (channel == MiHealthImportChannel.RAW &&
-                        HealthImportLedger.identityDigest(row.identity.stableKey) in verifiedFingerprints) {
+                    } else if (digest in verifiedFingerprints) {
                         // A successful earlier read (including the native history
                         // fallback) is not undone by a later query omission. A
                         // server deletion or changed source value must not cause
@@ -359,8 +375,9 @@ class MiHealthImportRunner(
                 for ((index, batch) in toUpload.chunked(batchSize).withIndex()) {
                     val batchSleepRevisions = batch.mapNotNull { sleepRevisions[it.identity.stableKey] }
                     val batchHeartRevisions = batch.mapNotNull { heartRevisions[it.identity.stableKey] }
-                    if (batchSleepRevisions.isNotEmpty() || batchHeartRevisions.isNotEmpty()) {
-                        val updateCount = batchSleepRevisions.size + batchHeartRevisions.size
+                    val creatingDaily = channel == MiHealthImportChannel.DAILY_AGGREGATE
+                    if (creatingDaily || batchSleepRevisions.isNotEmpty() || batchHeartRevisions.isNotEmpty()) {
+                        val updateCount = if (creatingDaily) batch.size else batchSleepRevisions.size + batchHeartRevisions.size
                         stage = MiHealthImportStage.PRECHECK
                         val justBeforeWrite = try { read() } catch (e: CancellationException) {
                             throw e
@@ -375,6 +392,18 @@ class MiHealthImportRunner(
                         // The row may have changed since the precheck, or another operation may
                         // have an uncertain write in flight. Neither can inherit the earlier plan.
                         val currentPending = journal.pendingIdentities(account, batch.map { it.identity.stableKey }.toSet())
+                        if (creatingDaily) {
+                            val appeared = batch.count { possibleDailyReports(it, justBeforeWrite).isNotEmpty() }
+                            if (appeared > 0 || currentPending.isNotEmpty()) {
+                                val reason = if (appeared > 0) MiHealthImportFailureReason.CONFLICT else MiHealthImportFailureReason.PENDING
+                                blockedConflict += appeared
+                                blockedPending += currentPending.size
+                                stoppedPreflightDetail = "DAILY_TARGET_CHANGED"
+                                if (attempted.isEmpty()) throw failure(reason, batch.size, stoppedPreflightDetail)
+                                stoppedPreflightReason = reason
+                                break
+                            }
+                        }
                         if (batchSleepRevisions.any { !it.stillMatches(justBeforeWrite) || it.row.identity.stableKey in currentPending }) {
                             blockedConflict += batchSleepRevisions.size
                             stoppedPreflightDetail = "SLEEP_REVISION_CHANGED"
@@ -423,7 +452,7 @@ class MiHealthImportRunner(
                         uploadResponse = miHealthImportFailureSummary(e)
                         // The request may have applied despite losing its response.
                         // An explicit business rejection above never grants ownership.
-                        ownershipEligible += batch.map { it.identity.stableKey }
+                        if (channel == MiHealthImportChannel.RAW) ownershipEligible += batch.map { it.identity.stableKey }
                         break // May have applied: read back before considering any retry.
                     }
                 }
@@ -599,12 +628,5 @@ class MiHealthImportRunner(
                 ownedUpload = ownedUpload)
         }
 
-        private fun sameOrUncertainLocalDay(expected: MiHealthImportRow, observed: MiHealthImportCloudRow): Boolean {
-            if (expected.identity.time == observed.time) return true
-            val expectedDay = (expected.identity.time + expected.zoneOffsetSeconds).floorDiv(DAY_SECONDS)
-            return observed.zoneOffsetSeconds?.let { offset ->
-                (observed.time + offset).floorDiv(DAY_SECONDS) == expectedDay
-            } ?: (kotlin.math.abs(observed.time - expected.identity.time) <= 18 * 3600L)
-        }
     }
 }

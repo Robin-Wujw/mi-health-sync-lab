@@ -96,6 +96,7 @@ fun MiHealthImportDiagnostic.userFacingDetails(): String = buildList {
     if (readbackMismatchFields.isNotEmpty()) add(L10n.textFmt(L10n.importDiagnosticReadbackFields,
         safeMismatchCounts(readbackMismatchFields).entries.joinToString { "${it.key}: ${it.value}" }))
     if (preservedDailyRows > 0) add(L10n.textFmt(L10n.importDiagnosticPreservedDaily, preservedDailyRows))
+    if (gatedDailyRevisionRows > 0) add(L10n.textFmt(L10n.importDiagnosticGatedDaily, gatedDailyRevisionRows))
     if (sourceRejectedRecords > 0) add(L10n.textFmt(L10n.importDiagnosticRejectedSource, sourceRejectedRecords))
     for (issue in issueCounts.filter { it.code != "HEART_RATE_SOURCE_POINT_EXCLUDED" }) {
         val code = safeMiHealthImportIssueCode(issue.code)
@@ -197,6 +198,7 @@ fun MiHealthImportDiagnostic.copyableText(appVersion: String): String = buildLis
     add("readback_ambiguous_rows=$readbackAmbiguousRows")
     add("readback_unqueried_rows=$readbackUnqueriedRows")
     add("preserved_daily_rows=$preservedDailyRows")
+    add("gated_daily_revision_rows=$gatedDailyRevisionRows")
     add("source_rejected_records=$sourceRejectedRecords")
     add("excluded_hrv_samples=$excludedHrvSamples")
     add("attempted_revision_rows=$attemptedRevisionRows")
@@ -314,6 +316,12 @@ fun MiHealthImportDiagnostic.copyableText(appVersion: String): String = buildLis
         r.readComparison?.let { add(it.copyableText()) }
     }
     sleepConflict?.let { add(it.copyableText()) }
+    sleepSourceMigration?.let {
+        add("sleep_migration.candidate_rows=${it.candidateRows}")
+        add("sleep_migration.submitted_replacement_rows=${it.submittedReplacementRows}")
+        add("sleep_migration.attempted_retirement_rows=${it.attemptedRetirementRows}")
+        add("sleep_migration.verified_rows=${it.verifiedMigrationRows}")
+    }
     addResponse("upload", uploadResponse)
     addResponse("read", readResponse)
     add("excluded=credentials,account_ids,device_ids,source_record_ids,timestamps,health_values,request_bodies,response_bodies")
@@ -344,4 +352,4 @@ private fun MutableList<String>.addResponse(prefix: String, response: MiHealthIm
     add("${prefix}_message_withheld=${response.messageWithheld || safe.second}")
 }
 
-private val DIAGNOSTIC_METRICS = setOf("heart_rate", "resting_heart_rate", "sleep", "hrv", "spo2")
+private val DIAGNOSTIC_METRICS = setOf("heart_rate", "resting_heart_rate", "sleep", "hrv", "spo2", "vo2_max")

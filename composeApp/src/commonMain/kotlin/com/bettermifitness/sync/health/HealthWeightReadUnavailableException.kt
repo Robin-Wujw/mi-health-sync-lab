@@ -8,4 +8,5 @@ package com.bettermifitness.sync.health
 class HealthWeightReadUnavailableException(
     message: String,
     cause: Throwable? = null,
+    val accessBlock: HealthAccessBlock? = null,
 ) : IllegalStateException(message, cause)

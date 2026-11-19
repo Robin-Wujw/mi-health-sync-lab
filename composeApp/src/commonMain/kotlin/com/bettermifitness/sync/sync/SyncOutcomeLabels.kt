@@ -14,6 +14,8 @@ object SyncOutcomeLabels {
         SyncOutcome.STATUS_HEALTH_UNAVAILABLE -> L10n.text(L10n.outcomeHealthNeeded)
         SyncOutcome.STATUS_SKIPPED -> L10n.text(L10n.outcomeNothingToDo)
         SyncOutcome.STATUS_CANCELLED -> L10n.text(L10n.outcomeStopped)
+        "replaced" -> L10n.text(L10n.syncHistoryReplaced)
+        "interrupted" -> L10n.text(L10n.syncInterrupted)
         SyncOutcome.STATUS_ALREADY_RUNNING -> L10n.text(L10n.outcomeInProgress)
         null, "" -> L10n.text(L10n.outcomeNotSynced)
         else -> status.replace('_', ' ').replaceFirstChar { it.uppercase() }
@@ -56,5 +58,6 @@ fun SyncOutcome.userMessage(): String? = when (this) {
     SyncOutcome.NotLoggedIn -> L10n.text(L10n.outcomeSignInAgain)
     SyncOutcome.HealthUnavailable -> L10n.text(L10n.outcomeHealthUnavailable)
     SyncOutcome.AlreadyRunning -> L10n.text(L10n.outcomeRunningDetail)
+    SyncOutcome.Cancelled -> L10n.text(L10n.syncInterrupted)
     is SyncOutcome.Failed -> message ?: L10n.text(L10n.outcomeCouldNotFinish)
 }

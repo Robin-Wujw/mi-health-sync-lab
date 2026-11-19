@@ -354,6 +354,9 @@ data class SportRecordEntry(
     val time: Long = 0,
     val value: String = "",
     val category: String? = null,
+    val sid: String? = null,
+    val zoneOffsetSeconds: Int? = null,
+    val deleted: Boolean = false,
 )
 
 // --- P2: from Mi FitnessPersistKey + item models (decompiled APK) ---

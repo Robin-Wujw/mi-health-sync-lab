@@ -21,9 +21,6 @@ final class SettingsStore: ObservableObject {
         var lastSyncDetail: String = ""
         var lastSyncIsError: Bool = false
         var lastSyncIsWarning: Bool = false
-        var canTestBgRefresh: Bool = false
-        var bgTestStatus: String?
-        var bgTestRunning: Bool = false
         var showShortcutsHelp: Bool = false
         var healthServiceName: String = L10n.healthFallback
         var healthStatusTitle: String = ""
@@ -70,9 +67,6 @@ final class SettingsStore: ObservableObject {
         snap.lastSyncDetail = s.lastSyncDetail
         snap.lastSyncIsError = s.lastSyncIsError
         snap.lastSyncIsWarning = s.lastSyncIsWarning
-        snap.canTestBgRefresh = s.canTestBgRefresh
-        snap.bgTestStatus = s.bgTestStatus
-        snap.bgTestRunning = s.bgTestRunning
         snap.showShortcutsHelp = s.showShortcutsHelp
         snap.healthServiceName = s.healthServiceName
         snap.healthStatusTitle = s.healthStatusTitle
@@ -95,6 +89,5 @@ final class SettingsStore: ObservableObject {
 
     func refreshHealth() { vm.refreshHealth() }
     func openHealth() { vm.openHealthService() }
-    func runBgTest() { vm.runBackgroundRefreshTest() }
     func logout() { IosAppBridge.shared.logout() }
 }

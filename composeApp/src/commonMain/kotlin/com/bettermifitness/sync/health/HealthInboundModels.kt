@@ -1,5 +1,7 @@
 package com.bettermifitness.sync.health
 
+import kotlinx.datetime.TimeZone
+
 /** Only metrics with an explicit, experimental Health Connect -> Mi import path. */
 enum class HealthInboundMetric(val metricKey: String) {
     HEART_RATE("heart_rate"),
@@ -7,6 +9,8 @@ enum class HealthInboundMetric(val metricKey: String) {
     SLEEP("sleep"),
     HRV("hrv"),
     OXYGEN_SATURATION("spo2"),
+    WORKOUTS("workouts"),
+    VO2_MAX("vo2_max"),
 }
 
 /**
@@ -17,6 +21,7 @@ data class HealthInboundReadRequest(
     val fromEpochSeconds: Long,
     val untilEpochSeconds: Long,
     val sourcePackages: Set<String>,
+    val sourceCalendarZone: TimeZone? = null,
 ) {
     init {
         require(fromEpochSeconds >= 0 && untilEpochSeconds > fromEpochSeconds) {
@@ -32,6 +37,18 @@ data class HealthInboundReadRequest(
 
     val fromEpochMillis: Long get() = fromEpochSeconds * 1_000L
     val untilEpochMillis: Long get() = untilEpochSeconds * 1_000L
+
+    internal fun calendarReadSlices(): List<HealthInboundReadRequest> {
+        if (sourceCalendarZone == null) return listOf(this)
+        val slices = mutableListOf<HealthInboundReadRequest>()
+        var start = fromEpochSeconds
+        while (start < untilEpochSeconds) {
+            val end = minOf(untilEpochSeconds, start + 86_400L)
+            slices += copy(fromEpochSeconds = start, untilEpochSeconds = end)
+            start = end
+        }
+        return slices
+    }
 }
 
 /** HC identity is retained separately from measurement time, including revisions. */
@@ -117,4 +134,5 @@ class HealthInboundReadUnavailableException(
     val metric: HealthInboundMetric?,
     message: String,
     cause: Throwable? = null,
+    val accessBlock: HealthAccessBlock? = null,
 ) : IllegalStateException(message, cause)

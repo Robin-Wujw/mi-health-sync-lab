@@ -13,6 +13,7 @@ sealed class MiApiException(
     class AuthExpired(
         message: String = "Mi session expired",
         cause: Throwable? = null,
+        val definitelyRejected: Boolean = false,
     ) : MiApiException(message, cause)
 
     /** Transient network / connectivity. */

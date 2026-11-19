@@ -15,6 +15,8 @@ import com.bettermifitness.sync.data.api.Vo2MaxSample
 import com.bettermifitness.sync.data.api.WeightMeasurement
 import com.bettermifitness.sync.data.api.WorkoutSession
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import platform.Foundation.NSDate
 import platform.Foundation.NSSortDescriptor
 import platform.Foundation.NSURL
@@ -23,6 +25,7 @@ import platform.Foundation.distantPast
 import platform.Foundation.distantFuture
 import platform.HealthKit.HKQuery
 import platform.HealthKit.HKSampleQuery
+import platform.HealthKit.HKSample
 import platform.HealthKit.HKCategoryTypeIdentifierSleepAnalysis
 import platform.HealthKit.HKCorrelation
 import platform.HealthKit.HKCorrelationType
@@ -67,9 +70,11 @@ import kotlin.math.roundToLong
 @OptIn(ExperimentalForeignApi::class)
 actual class HealthWriter : HealthStore {
     private val healthStore = HKHealthStore()
+    private val revisions = IosHealthRevisions(healthStore)
     private val workoutImporter = IosWorkoutImporter(
         healthStore = healthStore,
-        saveObjects = { saveSamples(it) },
+        revisions = revisions,
+        saveObjects = { savePreparedSamples(it) },
     )
 
     actual override suspend fun writeHeartRate(samples: List<HeartRateSample>) {
@@ -389,31 +394,30 @@ actual class HealthWriter : HealthStore {
     actual override suspend fun writeTemperature(samples: List<TemperatureSample>) {
         val clean = HealthDataNormalizer.normalizeTemperature(samples)
         if (clean.isEmpty()) return
+        val plan = planAppleTemperatureWrites(clean)
         val type = HKQuantityType.quantityTypeForIdentifier(
             HKQuantityTypeIdentifierBodyTemperature,
-        ) ?: return
+        )
         val celsius = HKUnit.unitFromString("degC")
-        // Prefer body °C; fall back to skin (still better than dropping data).
-        val hkSamples = clean.mapNotNull { s ->
-            val value = s.bodyCelsius ?: s.skinCelsius ?: return@mapNotNull null
-            val date = NSDate.dateWithTimeIntervalSince1970(s.timestamp.toDouble())
-            val id = if (s.bodyCelsius != null) {
-                HealthRecordIds.bodyTemperature(s.timestamp)
-            } else {
-                HealthRecordIds.skinTemperature(s.timestamp)
-            }
+        val hkSamples = if (type == null) emptyList() else plan.body.map { sample ->
+            val date = NSDate.dateWithTimeIntervalSince1970(sample.timestamp.toDouble())
             HKQuantitySample.quantitySampleWithType(
                 quantityType = type,
-                quantity = HKQuantity.quantityWithUnit(celsius, value),
+                quantity = HKQuantity.quantityWithUnit(celsius, sample.celsius),
                 startDate = date,
                 endDate = date,
                 metadata = mapOf<Any?, Any?>(
-                    HKMetadataKeySyncIdentifier to id,
-                    HKMetadataKeySyncVersion to HealthRecordIds.version(s.timestamp, value),
+                    HKMetadataKeySyncIdentifier to HealthRecordIds.bodyTemperature(sample.timestamp),
+                    HKMetadataKeySyncVersion to HealthRecordIds.version(sample.timestamp, sample.celsius),
                 ),
             )
         }
         saveSamples(hkSamples)
+        val skipped = buildList {
+            if (type == null && plan.body.isNotEmpty()) add("Body temperature (${plan.body.size}): Apple Health type unavailable.")
+            if (plan.skippedSkin > 0) add("Skin temperature (${plan.skippedSkin}): no equivalent Apple Health type.")
+        }
+        if (skipped.isNotEmpty()) throw HealthWriteIncompleteException(hkSamples.size, skipped, storeName = "Apple Health")
     }
 
     actual override suspend fun writeVo2Max(samples: List<Vo2MaxSample>) {
@@ -474,6 +478,14 @@ actual class HealthWriter : HealthStore {
 
     // These experimental imports are implemented for Android Health Connect only.
     // Do not silently present an unsupported HealthKit read as an empty result.
+    actual override suspend fun readWorkouts(request: HealthInboundReadRequest): List<InboundWorkout> =
+        throw UnsupportedOperationException("Workout imports currently require Android Health Connect.")
+
+    actual override suspend fun requestWorkoutRoutes(request: HealthInboundReadRequest): Int = 0
+
+    actual override suspend fun readVo2Max(request: HealthInboundReadRequest): List<InboundVo2Max> =
+        throw UnsupportedOperationException("VO2max imports currently require Android Health Connect.")
+
     actual override suspend fun readHeartRate(
         request: HealthInboundReadRequest,
     ): List<HealthInboundHeartRateRecord> =
@@ -651,14 +663,21 @@ actual class HealthWriter : HealthStore {
 
 
     private suspend fun saveSamples(
-        samples: List<Any>,
+        samples: List<HKSample>,
         chunkSize: Int = IOS_SAVE_CHUNK_SIZE,
     ) {
         if (samples.isEmpty()) return
         samples.chunked(chunkSize).forEach { chunk ->
+            savePreparedSamples(revisions.prepare(chunk))
+        }
+    }
+
+    private suspend fun savePreparedSamples(samples: List<HKSample>) {
+        if (samples.isEmpty()) return
+        for (chunk in samples.chunked(IOS_SAVE_CHUNK_SIZE)) {
+            currentCoroutineContext().ensureActive()
             suspendCoroutine { continuation ->
-                @Suppress("UNCHECKED_CAST")
-                healthStore.saveObjects(chunk as List<platform.HealthKit.HKObject>) { success, error ->
+                healthStore.saveObjects(chunk) { success, error ->
                     if (success) {
                         continuation.resume(Unit)
                     } else {
@@ -668,6 +687,7 @@ actual class HealthWriter : HealthStore {
                     }
                 }
             }
+            revisions.verify(chunk)
         }
     }
 

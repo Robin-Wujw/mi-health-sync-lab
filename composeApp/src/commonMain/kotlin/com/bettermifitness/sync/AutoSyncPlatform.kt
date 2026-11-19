@@ -4,12 +4,16 @@ package com.bettermifitness.sync
  * iOS bridges for system background refresh and status. No-ops on Android.
  */
 expect object AutoSyncPlatform {
-    /** Ask the OS to schedule the next opportunistic background refresh. */
-    fun scheduleBackgroundRefresh()
+    /**
+     * Ask the OS to schedule the recurring refresh. [runImmediately] is used only when the user
+     * turns auto-sync on; restoring an existing schedule must not enqueue a
+     * second full-range sync on every process start.
+     */
+    fun scheduleBackgroundRefresh(runImmediately: Boolean = false)
 
     /**
      * Keep the passport session alive independent of [scheduleBackgroundRefresh].
-     * Runs at most one lightweight stale-check per day and no data sync, so it stays
+     * Checks whether renewal is due without syncing health data, so it stays
      * scheduled even when auto-sync is off — that is what keeps the passToken rotation
      * chain from dying during weeks without a sync.
      */

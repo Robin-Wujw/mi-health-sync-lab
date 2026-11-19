@@ -5,7 +5,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-class SessionRefreshResultTest {
+class SessionRefreshResultTest : com.bettermifitness.sync.LocalizedTest() {
     @Test
     fun successFlags() {
         assertTrue(SessionRefreshResult.Success.isSuccess)
@@ -14,14 +14,16 @@ class SessionRefreshResultTest {
     }
 
     @Test
-    fun userMessagesPreferReason() {
+    fun userMessagesExplainTheActionWithoutDisplayingRawPassportDiagnostics() {
         assertEquals(
-            "please re-auth",
-            SessionRefreshResult.NeedsReLogin("please re-auth").userMessage,
+            "Your Xiaomi sign-in has expired. Sign in again to continue. Sync history and workout backups are retained.",
+            SessionRefreshResult.NeedsReLogin("Saved Mi session was rejected (70016)").userMessage,
         )
         assertEquals(
-            "verify",
+            "Xiaomi requires account verification. Sign in again to continue.",
             SessionRefreshResult.NeedsVerification("verify", notificationUrl = "https://x").userMessage,
         )
+        assertFalse(SessionRefreshResult.NeedsVerification("security diagnostic", "https://private-verification")
+            .userMessage.contains("https://"))
     }
 }

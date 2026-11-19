@@ -14,6 +14,84 @@ import dev.icerock.moko.resources.compose.stringResource
  * The catalog lives in moko-resources and follows the system language.
  */
 object L10n {
+    val settingsAutomaticMaintenance = MR.strings.settings_automatic_maintenance
+    val zeppAutomaticWorkoutHint = MR.strings.zepp_automatic_workout_hint
+    val sessionExpired = MR.strings.session_expired
+    val sessionVerification = MR.strings.session_verification
+    val sessionRenewalFailed = MR.strings.session_renewal_failed
+    val sessionRenewed = MR.strings.session_renewed
+    val sessionSignIn = MR.strings.session_sign_in
+    val syncWaitingForSignIn = MR.strings.sync_waiting_for_sign_in
+    val zeppDetailsShow = MR.strings.zepp_details_show
+    val zeppDetailsHide = MR.strings.zepp_details_hide
+    val zeppTitle = MR.strings.zepp_title
+    val zeppPaiSelection = MR.strings.zepp_pai_selection
+    val zeppStressSelection = MR.strings.zepp_stress_selection
+    val zeppLoadSelection = MR.strings.zepp_load_selection
+    val zeppWorkoutSelection = MR.strings.zepp_workout_selection
+    val zeppWorkoutHeartRateSelection = MR.strings.zepp_workout_heart_rate_selection
+    val zeppVitalityUnavailable = MR.strings.zepp_vitality_unavailable
+    val zeppSourceHint = MR.strings.zepp_source_hint
+    val zeppConnect = MR.strings.zepp_connect
+    val zeppConnected = MR.strings.zepp_connected
+    val zeppAccount = MR.strings.zepp_account
+    val zeppPassword = MR.strings.zepp_password
+    val zeppCountry = MR.strings.zepp_country
+    val zeppPasswordHint = MR.strings.zepp_password_hint
+    val zeppInspect = MR.strings.zepp_inspect
+    val zeppEnable = MR.strings.zepp_enable
+    val zeppSyncHint = MR.strings.zepp_sync_hint
+    val zeppDisconnect = MR.strings.zepp_disconnect
+    val zeppVitalityHint = MR.strings.zepp_vitality_hint
+    val zeppLatestWorkout = MR.strings.zepp_latest_workout
+    val zeppAerobic = MR.strings.zepp_aerobic
+    val zeppAnaerobic = MR.strings.zepp_anaerobic
+    val zeppSyncCounts = MR.strings.zepp_sync_counts
+    val zeppRawIssues = MR.strings.zepp_raw_issues
+    val zeppWorkoutIssues = MR.strings.zepp_workout_issues
+    val zeppWorkoutSkipped = MR.strings.zepp_workout_skipped
+    val zeppSourceIssues = MR.strings.zepp_source_issues
+    val zeppReadCounts = MR.strings.zepp_read_counts
+    val zeppNoMappableData = MR.strings.zepp_no_mappable_data
+    val zeppSyncFailed = MR.strings.zepp_sync_failed
+    val zeppSyncTimeout get() = MR.strings.zepp_sync_timeout
+    val syncInterrupted get() = MR.strings.sync_interrupted
+    val syncWritePermissionMissing get() = MR.strings.sync_write_permission_missing
+    val syncReadPermissionMissing get() = MR.strings.sync_read_permission_missing
+    val syncBackgroundReadUnsupported get() = MR.strings.sync_background_read_unsupported
+    val syncBackgroundReadPermissionMissing get() = MR.strings.sync_background_read_permission_missing
+    val zeppAuthError = MR.strings.zepp_auth_error
+    val zeppCaptchaError = MR.strings.zepp_captcha_error
+    val zeppRateError = MR.strings.zepp_rate_error
+    val zeppNetworkError = MR.strings.zepp_network_error
+    val zeppIncompleteError = MR.strings.zepp_incomplete_error
+    val zeppResponseError = MR.strings.zepp_response_error
+    val zeppInvalidLogin = MR.strings.zepp_invalid_login
+    val zeppBusy = MR.strings.zepp_busy
+    val zeppStressTimezoneHint = MR.strings.zepp_stress_timezone_hint
+
+    fun zeppMetric(metric: String): String = text(when (metric) {
+        "pai_daily" -> MR.strings.zepp_pai_daily
+        "pai_total" -> MR.strings.zepp_pai_total
+        "pai_low_zone" -> MR.strings.zepp_pai_low
+        "pai_medium_zone" -> MR.strings.zepp_pai_medium
+        "pai_high_zone" -> MR.strings.zepp_pai_high
+        "stress" -> MR.strings.zepp_stress
+        "single_stress" -> MR.strings.zepp_manual_stress
+        "stress_average" -> MR.strings.zepp_average_stress
+        "daily_load" -> MR.strings.zepp_daily_load
+        "weekly_load" -> MR.strings.zepp_weekly_load
+        "weekly_load_min" -> MR.strings.zepp_load_min
+        "weekly_load_max" -> MR.strings.zepp_load_max
+        "weekly_load_overreaching" -> MR.strings.zepp_load_overreaching
+        "vendor_atl" -> MR.strings.zepp_atl
+        "vendor_ctl" -> MR.strings.zepp_ctl
+        "vendor_tsb" -> MR.strings.zepp_tsb
+        "vendor_atlTotal" -> MR.strings.zepp_atl_total
+        "vendor_ctlTotal" -> MR.strings.zepp_ctl_total
+        "vendor_tsbTotal" -> MR.strings.zepp_tsb_total
+        else -> MR.strings.zepp_title
+    })
     val importExcludedPoints = MR.strings.import_excluded_points
     val importHrvExcludedSamples = MR.strings.import_hrv_excluded_samples
     val importHeartRateRevision = MR.strings.import_heart_rate_revision
@@ -72,6 +150,9 @@ object L10n {
     @Suppress("CyclomaticComplexMethod") // A lookup table from warning code to string resource.
     fun importWarning(code: String): String {
         val resource = when (code) {
+            "SLEEP_VITALS_READ_UNAVAILABLE" -> MR.strings.import_warning_sleep_vitals_unavailable
+            "SLEEP_VITALS_UNREPRESENTABLE", "SLEEP_VITALS_SOURCE_EXCLUDED" -> MR.strings.import_warning_sleep_vitals_excluded
+            "SLEEP_FILE_UNVERIFIED" -> MR.strings.import_issue_sleep_file_unverified
             "SOURCE_TIMEZONE_UNAVAILABLE" -> MR.strings.import_warning_timezone_unavailable
             "SOURCE_TIMEZONE_CHANGED" -> MR.strings.import_warning_timezone_changed
             "SOURCE_TIMEZONE_NOT_QUARTER_HOUR" -> MR.strings.import_warning_timezone_unusual
@@ -143,6 +224,9 @@ object L10n {
         SyncPreferences.SLEEP_IMPORT_KEY -> MR.strings.metric_import_sleep
         SyncPreferences.HRV_IMPORT_KEY -> MR.strings.metric_import_hrv
         SyncPreferences.SPO2_IMPORT_KEY -> MR.strings.metric_import_spo2
+        SyncPreferences.WORKOUTS_IMPORT_KEY -> MR.strings.metric_import_workouts
+        SyncPreferences.VO2_MAX_IMPORT_KEY -> MR.strings.metric_import_vo2_max
+        SyncPreferences.ZEPP_CLOUD_IMPORT_KEY -> MR.strings.zepp_metric_import
         else -> MR.strings.metric_workouts
     }
 
@@ -238,6 +322,7 @@ object L10n {
     val homeBackgroundSync get() = MR.strings.home_background_sync
     val homeNever get() = MR.strings.home_never
     val homeSyncing get() = MR.strings.home_syncing
+    val homeViewSync get() = MR.strings.home_view_sync
     val homeSyncNow get() = MR.strings.home_sync_now
     val homeOpenSettings get() = MR.strings.home_open_settings
     val homeFailedSuffix get() = MR.strings.home_failed_suffix
@@ -249,8 +334,42 @@ object L10n {
 
     // Sync
     val syncTitle get() = MR.strings.sync_title
+    val syncHistoryTitle get() = MR.strings.sync_history_title
+    val syncHistoryHide get() = MR.strings.sync_history_hide
+    val syncHistoryReplaced get() = MR.strings.sync_history_replaced
+    val syncHistoryCounts get() = MR.strings.sync_history_counts
+    val syncHistoryLastAttempt get() = MR.strings.sync_history_last_attempt
+    val syncHistoryLastSuccess get() = MR.strings.sync_history_last_success
+    val syncHistoryLastSkip get() = MR.strings.sync_history_last_skip
+    val autoLastSkip get() = MR.strings.auto_last_skip
+    val autoSkipNotDue get() = MR.strings.auto_skip_not_due
+    val autoSkipManualBusy get() = MR.strings.auto_skip_manual_busy
+    val autoSkipSyncBusy get() = MR.strings.auto_skip_sync_busy
+    val autoSkipMaintenanceBusy get() = MR.strings.auto_skip_maintenance_busy
+    val autoSkipDisabled get() = MR.strings.auto_skip_disabled
+    val autoSkipPaused get() = MR.strings.auto_skip_paused
+    val autoSkipManualCooldown get() = MR.strings.auto_skip_manual_cooldown
+    val autoSkipRetryDeferred get() = MR.strings.auto_skip_retry_deferred
+    val autoSkipStaleRetry get() = MR.strings.auto_skip_stale_retry
+    val autoSkipAccountChanged get() = MR.strings.auto_skip_account_changed
+    val syncSourceManual get() = MR.strings.sync_source_manual
+    val syncSourceAutomatic get() = MR.strings.sync_source_automatic
+    val syncSourceRecovered get() = MR.strings.sync_source_recovered
+    val syncTaskWindow get() = MR.strings.sync_task_window
+    val syncNoTaskHistory get() = MR.strings.sync_no_task_history
     val syncLastOneDay get() = MR.strings.sync_last_one_day
     val syncLastNDays get() = MR.strings.sync_last_n_days
+    val syncActiveRange get() = MR.strings.sync_active_range
+    val syncDraftRange get() = MR.strings.sync_draft_range
+    val syncReplaceRange get() = MR.strings.sync_replace_range
+    val syncStopping get() = MR.strings.sync_stopping
+    val syncStop get() = MR.strings.sync_stop
+    val syncStopAndCancelReplacement get() = MR.strings.sync_stop_and_cancel_replacement
+    val syncStopped get() = MR.strings.sync_stopped
+    val syncStopFailed get() = MR.strings.sync_stop_failed
+    val syncResumeReplacement get() = MR.strings.sync_resume_replacement
+    val syncResumeReplacementDetail get() = MR.strings.sync_resume_replacement_detail
+    val syncQueuedRange get() = MR.strings.sync_queued_range
     val syncNow get() = MR.strings.sync_now
     val syncOpenHealth get() = MR.strings.sync_open_health
     val syncNoMetrics get() = MR.strings.sync_no_metrics
@@ -352,10 +471,21 @@ object L10n {
     val settingsToHealthDetail get() = MR.strings.settings_to_health_detail
     val settingsWeightDetail get() = MR.strings.settings_weight_detail
     val settingsInboundDetail get() = MR.strings.settings_inbound_detail
+    val sourceCalendarZoneLabel get() = MR.strings.source_calendar_zone_label
+    val sourceCalendarZoneDetail get() = MR.strings.source_calendar_zone_detail
+    val sourceCalendarZoneInvalid get() = MR.strings.source_calendar_zone_invalid
+    val sourceCalendarZoneSave get() = MR.strings.source_calendar_zone_save
+    val syncZeppSourceChanged get() = MR.strings.sync_zepp_source_changed
+    val syncSourceDayUnverified get() = MR.strings.sync_source_day_unverified
     val settingsImportAdvanced get() = MR.strings.settings_import_advanced
     val settingsInboundFirstRun get() = MR.strings.settings_inbound_first_run
     val settingsHrvDetail get() = MR.strings.settings_hrv_detail
     val settingsZeppCapabilityDetail get() = MR.strings.settings_zepp_capability_detail
+    val settingsWorkoutImportDetail get() = MR.strings.settings_workout_import_detail
+    val workoutImportResult get() = MR.strings.workout_import_result
+    val settingsWorkoutRoutes get() = MR.strings.settings_workout_routes
+    val settingsWorkoutRoutesDetail get() = MR.strings.settings_workout_routes_detail
+    val settingsWorkoutRoutesResult get() = MR.strings.settings_workout_routes_result
     val settingsInboundPermissions get() = MR.strings.settings_inbound_permissions
     val settingsInboundPermissionsReady get() = MR.strings.settings_inbound_permissions_ready
     val settingsInboundPermissionsMissing get() = MR.strings.settings_inbound_permissions_missing
@@ -465,6 +595,7 @@ object L10n {
     val importDiagnosticPrecheckFields get() = MR.strings.import_diagnostic_precheck_fields
     val importDiagnosticReadbackFields get() = MR.strings.import_diagnostic_readback_fields
     val importDiagnosticPreservedDaily get() = MR.strings.import_diagnostic_preserved_daily
+    val importDiagnosticGatedDaily get() = MR.strings.import_diagnostic_gated_daily
     val importDiagnosticRejectedSource get() = MR.strings.import_diagnostic_rejected_source
     val importDiagnosticIssue get() = MR.strings.import_diagnostic_issue
     val importDiagnosticIssueOverlap get() = MR.strings.import_diagnostic_issue_overlap

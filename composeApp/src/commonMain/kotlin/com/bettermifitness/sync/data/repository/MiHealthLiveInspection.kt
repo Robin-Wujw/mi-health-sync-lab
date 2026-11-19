@@ -19,7 +19,12 @@ internal suspend fun prepareMiHealthImportPlan(
     reader: HealthMetricReader,
     request: HealthInboundReadRequest,
     sourcePackage: String,
+    sleepBreath: (suspend (List<com.bettermifitness.sync.health.HealthInboundSleepRecord>) ->
+        List<com.bettermifitness.sync.data.api.SleepVitalPoint>)? = null,
 ): MiHealthImportPlan = when (metric) {
+    HealthInboundMetric.WORKOUTS ->
+        throw UnsupportedOperationException("This metric uses the dedicated workout/VO2max workflow.")
+    HealthInboundMetric.VO2_MAX -> com.bettermifitness.sync.data.api.prepareVo2MaxImport(reader.readVo2Max(request))
     HealthInboundMetric.HEART_RATE -> MiHealthImportMapper.heartRate(
         reader.readHeartRate(request), sourcePackage, includeDailyAggregates = true, coverage = request)
     HealthInboundMetric.RESTING_HEART_RATE -> {
@@ -40,8 +45,30 @@ internal suspend fun prepareMiHealthImportPlan(
         } else selected
         MiHealthImportMapper.restingHeartRate(records, sourcePackage, includeDailyAggregates = true, coverage = request)
     }
-    HealthInboundMetric.SLEEP -> MiHealthImportMapper.sleep(
-        reader.readSleep(request), sourcePackage, includeDailyAggregates = true, coverage = request)
+    HealthInboundMetric.SLEEP -> {
+        val sleeps = reader.readSleep(request)
+        val base = MiHealthImportMapper.sleep(sleeps, sourcePackage, includeDailyAggregates = true, coverage = request)
+        if (sleeps.isEmpty()) base else {
+            val full = request.copy(fromEpochSeconds = minOf(request.fromEpochSeconds,
+                sleeps.minOf { it.startEpochMillis / 1_000 }), untilEpochSeconds = maxOf(request.untilEpochSeconds,
+                sleeps.maxOf { it.endEpochMillis / 1_000 + 1 }))
+            val optionalIssues = mutableListOf<com.bettermifitness.sync.data.api.MiHealthImportIssue>()
+            suspend fun <T> optional(read: suspend () -> List<T>): List<T> = try { read() }
+            catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+            catch (error: Exception) {
+                if (error !is com.bettermifitness.sync.health.HealthInboundReadUnavailableException &&
+                    error !is UnsupportedOperationException && error !is com.bettermifitness.sync.zepp.ZeppException) throw error
+                optionalIssues += com.bettermifitness.sync.data.api.MiHealthImportIssue("SLEEP_VITALS_READ_UNAVAILABLE",
+                    emptySet(), "An optional sleep vital source could not be read.", MiHealthImportIssueSeverity.WARNING)
+                emptyList()
+            }
+            com.bettermifitness.sync.data.api.MiSleepVitalsMapper.enrich(base, sleeps, sourcePackage,
+                optional { reader.readHeartRate(full) }, optional { reader.readOxygenSaturation(full) },
+                optional { sleepBreath?.invoke(sleeps).orEmpty() }).let {
+                    it.copy(issues = (it.issues + optionalIssues).distinct())
+                }
+        }
+    }
     HealthInboundMetric.OXYGEN_SATURATION -> MiHealthImportMapper.oxygenSaturation(
         reader.readOxygenSaturation(request), sourcePackage, includeDailyAggregates = true, coverage = request)
     HealthInboundMetric.HRV -> {
@@ -62,11 +89,12 @@ internal suspend fun prepareMiHealthImportPlan(
 data class MiHealthLiveInspection(
     val diagnostic: MiHealthImportDiagnostic,
     val pendingProbe: MiPendingImportProbeResult,
+    val sleepSourceDiagnostic: String = "",
 )
 
 fun MiHealthLiveInspection.copyableText(appVersion: String): String =
     "Mi Health Sync Lab live inspection v1\ninspect_only=true\nhealth_data_writes_attempted=0\n" +
-        diagnostic.copy(pendingProbe = pendingProbe).copyableText(appVersion)
+        diagnostic.copy(pendingProbe = pendingProbe).copyableText(appVersion) + sleepSourceDiagnostic
 
 internal fun MiHealthImportPlan.inspectionDiagnostic(): MiHealthImportDiagnostic {
     val rejected = issues.filter { it.severity == MiHealthImportIssueSeverity.REJECTED }

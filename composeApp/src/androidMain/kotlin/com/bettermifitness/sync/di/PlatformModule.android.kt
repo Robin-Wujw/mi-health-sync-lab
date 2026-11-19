@@ -4,7 +4,11 @@ import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
+import androidx.health.connect.client.HealthConnectClient
+import com.bettermifitness.sync.data.preferences.CredentialsStore
+import com.bettermifitness.sync.data.repository.FitnessPageCache
 import com.bettermifitness.sync.health.HealthWriter
+import com.bettermifitness.sync.sync.UserSyncJournal
 import okio.Path.Companion.toPath
 import org.koin.core.module.Module
 import org.koin.dsl.module
@@ -30,5 +34,12 @@ actual fun platformModule(): Module = module {
             },
         )
     }
-    single { HealthWriter(appContext) }
+    single {
+        val credentials = get<CredentialsStore>()
+        HealthWriter(appContext, { HealthConnectClient.getOrCreate(appContext) }, credentials::accountGeneration)
+    }
+    single {
+        UserSyncJournal.create(appContext.noBackupFilesDir.resolve("user_sync_v1.json").absolutePath.toPath())
+    }
+    single { FitnessPageCache(appContext.noBackupFilesDir.resolve("fitness_read_pages_v1").absolutePath.toPath()) }
 }

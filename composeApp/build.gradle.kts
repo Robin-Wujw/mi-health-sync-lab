@@ -100,6 +100,7 @@ kotlin {
         }
 
         androidMain.dependencies {
+            implementation(libs.datastore.core.okio)
             implementation(libs.ktor.client.okhttp)
             implementation(libs.androidx.activity.compose)
             implementation(libs.health.connect)

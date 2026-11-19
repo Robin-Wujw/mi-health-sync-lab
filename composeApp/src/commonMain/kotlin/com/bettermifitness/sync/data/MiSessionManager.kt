@@ -1,16 +1,24 @@
 package com.bettermifitness.sync.data
 
 import com.bettermifitness.sync.data.api.MiDirectApi
-import com.bettermifitness.sync.data.preferences.CredentialsPort
+import com.bettermifitness.sync.data.preferences.CredentialsStore
 import com.bettermifitness.sync.data.preferences.SyncSessionPort
+import com.bettermifitness.sync.data.repository.FitnessPageCache
 import com.mifitness.miclient.api.MiDataClient
 import com.mifitness.miclient.auth.MiAuth
 import com.mifitness.miclient.auth.MiAuthException
 import com.mifitness.miclient.auth.MiCredentials
+import com.mifitness.miclient.auth.MiRegion
 import kotlin.time.Clock
 import kotlin.time.Duration
-import kotlin.time.Duration.Companion.days
+import kotlin.time.Duration.Companion.hours
+import kotlin.time.Duration.Companion.minutes
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import com.mifitness.miclient.api.MiApiException
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -19,16 +27,26 @@ import kotlinx.coroutines.sync.withLock
  * Can re-mint serviceToken via [refreshSession] using the stored passToken (APK force-refresh).
  */
 class MiSessionManager(
-    private val credentialsStore: CredentialsPort,
+    private val credentialsStore: CredentialsStore,
     private val miAuth: MiAuth,
+    private val pageCache: FitnessPageCache? = null,
 ) : SyncSessionPort {
     private var dataClient: MiDataClient? = null
     private var directApi: MiDirectApi? = null
     private val refreshMutex = Mutex()
+    private val accountMutex = Mutex()
+    private val mutableReauthenticationRequired = MutableStateFlow(false)
+    val reauthenticationRequired: StateFlow<Boolean> = mutableReauthenticationRequired
+    override val requiresReauthentication: Boolean get() = mutableReauthenticationRequired.value
+    private var lastProactiveAttempt: Long? = null
+    private var lastProactiveResult: SessionRefreshResult? = null
 
     /** The active API client. Throws if not logged in. */
     val api: MiDirectApi
-        get() = directApi ?: throw IllegalStateException("Not logged in — call activate() first")
+        get() {
+            if (requiresReauthentication) throw MiApiException.AuthExpired()
+            return directApi ?: throw IllegalStateException("Not logged in — call activate() first")
+        }
 
     val isActive: Boolean get() = directApi != null
 
@@ -36,44 +54,70 @@ class MiSessionManager(
     var currentUserId: String? = null
         private set
 
-    /** Activates the session with fresh credentials (called after login). */
-    fun activate(credentials: MiCredentials) {
+    internal suspend fun signIn(credentials: MiCredentials): Long = withContext(NonCancellable) {
+        accountMutex.withLock {
+            credentialsStore.saveNewAccount(credentials).also {
+                pageCache?.clear()
+                activate(credentials, requiresReauthentication = false)
+            }
+        }
+    }
+
+    suspend fun signOut() = withContext(NonCancellable) {
+        accountMutex.withLock {
+            credentialsStore.clearCredentials()
+            clear()
+            pageCache?.clear()
+        }
+    }
+
+    private fun activate(credentials: MiCredentials, requiresReauthentication: Boolean) {
         currentUserId = credentials.userId
         dataClient?.close()
         dataClient = MiDataClient(credentials)
         directApi = MiDirectApi(dataClient!!)
+        mutableReauthenticationRequired.value = requiresReauthentication
+        lastProactiveAttempt = null
+        lastProactiveResult = null
     }
 
     /** Clears the session (called on logout). */
-    fun clear() {
+    internal fun clear() {
+        mutableReauthenticationRequired.value = false
         currentUserId = null
         dataClient?.close()
         dataClient = null
         directApi = null
+        lastProactiveAttempt = null
+        lastProactiveResult = null
     }
 
     /**
      * Ensures an in-memory session exists from persisted credentials.
      * @return false if there are no saved credentials
      */
-    override suspend fun ensureActive(): Boolean {
-        if (isActive) return true
-        val creds = credentialsStore.loadCredentials() ?: return false
+    override suspend fun ensureActive(): Boolean = accountMutex.withLock {
+        val account = credentialsStore.loadAccount() ?: return@withLock false
+        mutableReauthenticationRequired.value = account.rejected
+        if (isActive) return@withLock true
+        val creds = account.credentials
         if (creds.serviceToken.isBlank() || creds.userId.isBlank() || creds.ssecurity.isBlank()) {
-            return false
+            return@withLock false
         }
-        activate(creds)
-        return true
+        activate(creds, requiresReauthentication = account.rejected)
+        true
     }
 
     /**
      * Rebuilds the in-memory client from persisted credentials (e.g. after region change).
      * @return false if not signed in
      */
-    suspend fun reloadFromStore(): Boolean {
-        val creds = credentialsStore.loadCredentials() ?: return false
-        activate(creds)
-        return true
+    internal suspend fun applyDiscoveredRegion(generation: Long, result: MiRegion.DiscoveryResult) = accountMutex.withLock {
+        if (credentialsStore.setDiscoveredRegion(generation, result)) {
+            credentialsStore.loadAccount()?.takeIf { it.generation == generation }?.let {
+                activate(it.credentials, requiresReauthentication = it.rejected)
+            }
+        }
     }
 
     /**
@@ -81,27 +125,38 @@ class MiSessionManager(
      * Serialized so concurrent metric failures do not stampede passport (APK update lock).
      */
     suspend fun refreshSessionDetailed(): SessionRefreshResult = refreshMutex.withLock {
-        val current = credentialsStore.loadCredentials()
-            ?: return@withLock SessionRefreshResult.NeedsReLogin("No saved credentials")
+        val account = accountMutex.withLock {
+            credentialsStore.loadAccount()?.also { mutableReauthenticationRequired.value = it.rejected }
+        } ?: return@withLock SessionRefreshResult.NeedsReLogin("No saved credentials")
+        if (account.rejected) {
+            return@withLock SessionRefreshResult.NeedsReLogin("Previously rejected saved session")
+        }
+        val generation = account.generation
+        val current = account.credentials
         if (current.passToken.isBlank()) {
-            return@withLock SessionRefreshResult.NeedsReLogin(
+            return@withLock requireReauthentication(generation, SessionRefreshResult.NeedsReLogin(
                 "No passToken saved — sign in again to stay connected across days",
-            )
+            ))
         }
         if (current.deviceId.isBlank()) {
-            return@withLock SessionRefreshResult.NeedsReLogin(
+            return@withLock requireReauthentication(generation, SessionRefreshResult.NeedsReLogin(
                 "No deviceId saved — sign in again",
-            )
+            ))
         }
 
         return@withLock try {
-            val refreshed = miAuth.refreshWithPassToken(current, onPassTokenRotated = credentialsStore::savePassToken)
-            credentialsStore.saveCredentials(refreshed)
-            val effective = credentialsStore.loadCredentials() ?: refreshed
-            activate(effective)
-            SessionRefreshResult.Success
+            val refreshed = miAuth.refreshWithPassToken(current) { rotated ->
+                credentialsStore.refreshPassToken(generation, rotated)
+            }
+            accountMutex.withLock accountUpdate@{
+                if (!credentialsStore.refreshCredentials(generation, refreshed)) return@accountUpdate accountChanged()
+                val stored = credentialsStore.loadAccount()?.takeIf { it.generation == generation }
+                    ?: return@accountUpdate accountChanged()
+                activate(stored.credentials, requiresReauthentication = false)
+                SessionRefreshResult.Success
+            }
         } catch (e: MiAuthException) {
-            when (e.kind) {
+            val result = when (e.kind) {
                 MiAuthException.Kind.MissingPassToken,
                 MiAuthException.Kind.MissingDeviceId,
                 MiAuthException.Kind.InvalidCredential,
@@ -115,6 +170,11 @@ class MiSessionManager(
                 MiAuthException.Kind.Generic,
                 -> SessionRefreshResult.TransientFailure(e.message ?: "Session refresh failed")
             }
+            if (result is SessionRefreshResult.NeedsReLogin || result is SessionRefreshResult.NeedsVerification) {
+                requireReauthentication(generation, result)
+            } else {
+                result
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -122,6 +182,21 @@ class MiSessionManager(
                 e.message?.takeIf { it.isNotBlank() } ?: (e::class.simpleName ?: "Refresh error"),
             )
         }
+    }
+
+    private fun accountChanged() = SessionRefreshResult.NeedsReLogin("Account changed during session refresh")
+
+    private suspend fun requireReauthentication(generation: Long, result: SessionRefreshResult): SessionRefreshResult =
+        withContext(NonCancellable) {
+            accountMutex.withLock {
+                if (!credentialsStore.markReauthenticationRequired(generation)) return@withLock accountChanged()
+                mutableReauthenticationRequired.value = true
+                result
+            }
+        }
+
+    private suspend fun storeProactiveResult(generation: Long, result: SessionRefreshResult) = accountMutex.withLock {
+        if (credentialsStore.accountGeneration() == generation) lastProactiveResult = result
     }
 
     /**
@@ -137,20 +212,27 @@ class MiSessionManager(
      * long-valid serviceToken means no refresh happens at all — and by the time one is needed
      * the stored passToken can already be dead (code 70016 → forced re-login).
      *
-     * Runs at most once per [PROACTIVE_REFRESH_AFTER]. Failures are swallowed on purpose:
-     * this is opportunistic, and the lazy path still reports real problems to the user.
+     * Successful renewals are spaced by [PROACTIVE_REFRESH_AFTER]. Transient failures
+     * use a shorter retry cooldown; hard rejections persist a fresh-sign-in requirement.
      */
     override suspend fun refreshSessionIfStale() {
-        val stale = isSessionStale(
-            lastRefreshEpochSeconds = credentialsStore.lastSessionRefreshEpochSeconds(),
-            nowEpochSeconds = Clock.System.now().epochSeconds,
-        )
-        if (!stale) return
+        refreshSessionIfDue()
+    }
 
-        val current = credentialsStore.loadCredentials() ?: return
-        if (current.passToken.isBlank() || current.deviceId.isBlank()) return
-
-        refreshSessionDetailed()
+    /** A null result means no renewal was due. Network failures remain retryable for WorkManager. */
+    suspend fun refreshSessionIfDue(): SessionRefreshResult? {
+        val generation = accountMutex.withLock {
+            if (requiresReauthentication) return SessionRefreshResult.NeedsReLogin("Saved session requires sign-in")
+            val now = Clock.System.now().epochSeconds
+            if (!isSessionStale(credentialsStore.lastSessionRefreshEpochSeconds(), now)) return null
+            val sinceAttempt = lastProactiveAttempt?.let { now - it }
+            if (sinceAttempt != null && sinceAttempt in 0 until PROACTIVE_RETRY_AFTER.inWholeSeconds) {
+                lastProactiveResult?.let { return it }
+            }
+            lastProactiveAttempt = now
+            credentialsStore.accountGeneration()
+        }
+        return refreshSessionDetailed().also { storeProactiveResult(generation, it) }
     }
 
     companion object {
@@ -158,7 +240,8 @@ class MiSessionManager(
          * How long a session may go unrefreshed before we roll it forward.
          * Well inside Xiaomi's retirement window for a superseded passToken.
          */
-        val PROACTIVE_REFRESH_AFTER: Duration = 1.days
+        val PROACTIVE_REFRESH_AFTER: Duration = 6.hours
+        private val PROACTIVE_RETRY_AFTER: Duration = 15.minutes
 
         /**
          * Whether the passport session should be re-minted.

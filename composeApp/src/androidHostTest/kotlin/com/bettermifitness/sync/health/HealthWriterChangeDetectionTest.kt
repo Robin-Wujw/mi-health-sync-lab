@@ -68,6 +68,7 @@ import kotlin.reflect.KClass
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CancellationException
@@ -314,6 +315,58 @@ class HealthWriterChangeDetectionTest : LocalizedTest() {
     }
 
     @Test
+    fun moreWorkoutNotesCannotReplaceASavedRoute() = runBlocking<Unit> {
+        val summary = summaryWorkout()
+        val routed = summary.copy(route = fullWorkout().route.take(2))
+        writer.writeWorkouts(listOf(routed))
+        val manyNotes = summary.copy(trainLoad = 40.0, recoverMinutes = 60, avgPowerWatts = 100.0)
+        writer.writeWorkouts(listOf(manyNotes))
+        assertEquals(2, store.single<ExerciseSessionRecord>().routePoints())
+    }
+
+    @Test
+    fun routeUsesOnlyUniquePointsInsideHalfOpenWorkoutInterval() = runBlocking<Unit> {
+        val workout = summaryWorkout()
+        fun point(time: Long) = WorkoutRoutePoint(time, 31.0, 121.0)
+        val route = listOf(point(workout.endTime), point(T0 + 30), point(T0 - 1), point(T0), point(T0 + 30),
+            point(T0 + 10).copy(latitude = Double.NaN))
+        writer.writeWorkouts(listOf(workout.copy(route = route)))
+        val written = assertIs<ExerciseRouteResult.Data>(store.single<ExerciseSessionRecord>().exerciseRouteResult)
+        assertEquals(listOf(T0, T0 + 30), written.exerciseRoute.route.map { it.time.epochSecond })
+    }
+
+    @Test
+    fun invalidRouteReportsPartialWriteWithoutBlockingOtherWorkouts() = runBlocking<Unit> {
+        val workout = summaryWorkout()
+        val invalid = workout.copy(route = listOf(
+            WorkoutRoutePoint(workout.startTime - 1, 31.0, 121.0),
+            WorkoutRoutePoint(workout.endTime, 31.0, 121.0),
+        ))
+        val next = workout.copy(startTime = workout.startTime + 86_400, endTime = workout.endTime + 86_400)
+        val failure = assertFailsWith<HealthWriteIncompleteException> { writer.writeWorkouts(listOf(invalid, next)) }
+        assertTrue(failure.skippedReasons.any { "fewer than two valid points" in it })
+        assertEquals(2, store.inserted.filterIsInstance<ExerciseSessionRecord>().size)
+    }
+
+    @Test
+    fun overlapUsesStoredWorkoutChildrenEvenWhenCurrentSyncDoesNotWriteWorkouts() = runBlocking<Unit> {
+        val workout = summaryWorkout()
+        writer.writeWorkouts(listOf(workout))
+        writer.writeSteps(listOf(steps(100)))
+        val from = kotlin.time.Instant.fromEpochSeconds(workout.startTime + 1_800)
+        val until = kotlin.time.Instant.fromEpochSeconds(workout.endTime)
+        val counts = assertNotNull(writer.readOwnWorkoutContributions(WorkoutContributionMetric.STEPS, from, until))
+        assertEquals(workout.totalSteps, counts.single().totalSteps)
+        assertEquals(workout.startTime, counts.single().startTime)
+        val distance = assertNotNull(writer.readOwnWorkoutContributions(WorkoutContributionMetric.DISTANCE, from, until))
+        val calories = assertNotNull(writer.readOwnWorkoutContributions(WorkoutContributionMetric.CALORIES, from, until))
+        assertEquals(workout.distanceMeters, distance.single().distanceMeters)
+        assertEquals(workout.caloriesKcal, calories.single().caloriesKcal)
+        assertEquals(emptyList(), writer.readOwnWorkoutContributions(WorkoutContributionMetric.STEPS, until,
+            kotlin.time.Instant.fromEpochSeconds(workout.endTime + 1_800)))
+    }
+
+    @Test
     fun sleepWithoutStages_neverReplacesOneWithStages() = runBlocking<Unit> {
         writer.writeSleep(listOf(sleep()))
         writer.writeSleep(listOf(SleepSession(T0, T0 + 7_200, tzIn15Min = 32)))
@@ -364,14 +417,16 @@ class HealthWriterChangeDetectionTest : LocalizedTest() {
     }
 
     @Test
-    fun failedComparison_writesEverythingLikeBefore() = runBlocking<Unit> {
+    fun failedComparisonReportsIncompleteInsteadOfOverwriting() = runBlocking<Unit> {
         writer.writeRestingHeartRate(listOf(heartRate(T0, 55)))
         store.readFailure = SecurityException("not allowed")
         store.inserted.clear()
 
-        writer.writeRestingHeartRate(listOf(heartRate(T0, 55)))
-
-        assertEquals(1, store.inserted.size)
+        val failure = assertFailsWith<HealthWriteIncompleteException> {
+            writer.writeRestingHeartRate(listOf(heartRate(T0, 57)))
+        }
+        assertEquals(0, failure.writtenRecordCount)
+        assertEquals(emptyList(), store.inserted)
     }
 
     @Test

@@ -2,6 +2,7 @@
 
 package com.bettermifitness.sync.data.repository
 
+import com.bettermifitness.sync.data.api.MI_SLEEP_FILE_IMPORT_SID
 import com.bettermifitness.sync.data.api.MI_HEALTH_CONNECT_IMPORT_SID
 import com.bettermifitness.sync.data.api.MiHealthImportChannel
 import com.bettermifitness.sync.data.api.MiHealthImportCloudRow
@@ -56,7 +57,7 @@ internal fun assessSleepRevision(
     sourceTimezoneReliable: Boolean,
 ): MiSleepRevisionStatus {
     if (row.identity.channel != MiHealthImportChannel.RAW || row.identity.key != "sleep" ||
-        row.identity.sid != MI_HEALTH_CONNECT_IMPORT_SID || row.identity.tag != null ||
+        row.identity.sid !in setOf(MI_HEALTH_CONNECT_IMPORT_SID, MI_SLEEP_FILE_IMPORT_SID) || row.identity.tag != null ||
         row.value.keys.any { it !in replaceableFields(row) }) {
         return MiSleepRevisionStatus.UNSUPPORTED_TARGET
     }
@@ -109,10 +110,16 @@ internal fun describeSleepConflictOwnership(
 }
 
 private fun replaceableFields(row: MiHealthImportRow): Set<String> =
-    if (row.enrichment == MiHealthImportEnrichment.SLEEP_HRV) MAPPED_SLEEP_FIELDS + HRV_SUMMARY_FIELDS else MAPPED_SLEEP_FIELDS
+    when (row.enrichment) {
+        MiHealthImportEnrichment.SLEEP_HRV -> MAPPED_SLEEP_FIELDS + HRV_SUMMARY_FIELDS
+        MiHealthImportEnrichment.SLEEP_VITALS -> MAPPED_SLEEP_FIELDS + row.value.keys.intersect(VITAL_FIELDS)
+        null -> MAPPED_SLEEP_FIELDS
+    }
 
 private fun sleepTargets(row: MiHealthImportRow, observedRows: List<MiHealthImportCloudRow>) = observedRows.filter {
-    it.key == row.identity.key && it.time == row.identity.time
+    it.key == row.identity.key && it.time == row.identity.time &&
+        !(row.identity.sid == MI_SLEEP_FILE_IMPORT_SID &&
+            it.sid == MI_HEALTH_CONNECT_IMPORT_SID && it.deleted)
 }
 
 private fun uniqueUncontestedSleepTarget(row: MiHealthImportRow, observedRows: List<MiHealthImportCloudRow>): MiHealthImportCloudRow? {
@@ -139,3 +146,5 @@ private val REQUIRED_SLEEP_FIELDS = setOf("bedtime", "wake_up_time", "bed_timest
     "duration", "sleep_deep_duration", "sleep_light_duration", "sleep_rem_duration", "sleep_awake_duration",
     "awake_count", "items")
 private val MAPPED_SLEEP_FIELDS = REQUIRED_SLEEP_FIELDS + setOf("timezone", "is_uncomplete")
+private val VITAL_FIELDS = setOf("avg_hr", "min_hr", "max_hr", "avg_spo2", "min_spo2", "max_spo2",
+    "avg_breath", "version", "protoTime")

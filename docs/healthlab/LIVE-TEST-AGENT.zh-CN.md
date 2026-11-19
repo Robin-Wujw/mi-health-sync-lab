@@ -1,6 +1,8 @@
-# Mi Health Sync Lab：真实线上同步与实机测试交接（healthlab.7）
+# Mi Health Sync Lab：真实线上同步与实机测试交接（healthlab.40）
 
-## .7 当前优先操作
+> 当前工作区与已连接真机使用 `1.0.6-healthlab.40 (1000046)`。本文中 `.7 / 1000013` 的描述是历史交接记录，不得作为当前候选包的版本、签名或验收证据；当前证据以 `docs/healthlab/SPEC-ACCEPTANCE-MATRIX.zh-CN.md`、`SYNC-REVISION-STATUS.zh-CN.md` 和同目录 `live-*` 报告为准。
+
+## 历史 .7 交接记录
 
 先使用手机“核对全部待确认血氧”或 PC `-Mode reconcile-pending -Metric spo2`（不带 AllowCloudWrite）。它只读云端，在一次本地事务中批量完成明确匹配的 pending 核对，未匹配不上传、不清锁。`inspect` 仍不改本地账本；`recover-one-pending` 才是有条件的一条真实补传。不要把 `reconcile-pending` 的 `already_present_raw_rows` 当作本轮上传数。新报告看 `pending_reconcile.status/reconciled_rows/unresolved_rows` 及分类；最终验证只认 `.7 / 1000013` 的 validation.json。
 
@@ -9,9 +11,9 @@
 
 更新：2026-11-03。本轮首先处理用户回传的 **132 条血氧 pending**，让本地代理完成观察、一次有限恢复、读回和复测；已有心率、睡眠、静息心率和实验 HRV 能力继续保留。
 
-## 1. 当前实现与验证边界
+## 1. 历史 .7 实现与验证边界
 
-- 本轮版本：`1.0.6-healthlab.7`，versionCode `1000013`。
+- 历史版本：`1.0.6-healthlab.7`，versionCode `1000013`；不代表当前候选包。
 - 主包：`com.bettermifitness.sync.healthlab`；Activity：`com.bettermifitness.sync.MainActivity`。
 - 测试包：`com.bettermifitness.sync.healthlab.test`；runner：`com.bettermifitness.sync.lab.HealthLabInstrumentation`。
 - 来源为华米官方 Zepp 包 `com.huami.watch.hmwatchmanager`。路径为 Zepp → 手机 Health Connect → 小米云端，不能混称 Zepp Life。

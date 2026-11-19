@@ -33,14 +33,19 @@ class MiDataClient(
     // equivalent body-replay protection when used for writes.
     private val httpClient: HttpClient = createPlatformHttpClient(allowAutomaticReplay = false),
     private val userAgent: String = DEFAULT_USER_AGENT,
+    private val legacyIdentityCookie: Boolean = false,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
     /** The regional data host for this user (e.g. "sg.hlth.io.mi.com"). */
     val healthHost: String = buildHealthHost(credentials.region)
+    val sourceUserId: String get() = credentials.userId
 
     /** Device-scoped phone identifier for fitness data uploads (APK `phoneId`). */
     val phoneId: String get() = credentials.deviceId.ifBlank { "xiaomiwear_app_manually" }
+
+    /** Same saved session, alternate legacy healthapp cookie convention; never exports credentials. */
+    fun legacyHealthAppClient(): MiDataClient = MiDataClient(credentials, legacyIdentityCookie = true)
 
     /**
      * Sends an encrypted POST request and returns the decrypted JSON response.
@@ -107,18 +112,18 @@ class MiDataClient(
         }
 
         val status = response.status.value
+        if (status == 401 || status == 403) {
+            throw MiApiException.AuthExpired("Mi cloud rejected session (HTTP $status)", definitelyRejected = true)
+        }
+        if (status == 429) {
+            throw MiApiException.RateLimited("Mi cloud rate limited (HTTP 429)")
+        }
         val responseBase64 = response.bodyAsText().trim()
-
-        when {
-            status == 401 || status == 403 ->
-                throw MiApiException.AuthExpired("Mi cloud rejected session (HTTP $status)")
-            status == 429 ->
-                throw MiApiException.RateLimited("Mi cloud rate limited (HTTP 429)")
-            status !in 200..299 ->
-                throw MiApiException.Server(
-                    httpOrBusinessCode = status,
-                    message = "Mi cloud HTTP $status: ${responseBase64.take(160)}",
-                )
+        if (status !in 200..299) {
+            throw MiApiException.Server(
+                httpOrBusinessCode = status,
+                message = "Mi cloud HTTP $status: ${responseBase64.take(160)}",
+            )
         }
 
         val decrypted = try {
@@ -155,6 +160,7 @@ class MiDataClient(
             if (MiApiException.isAuthBusinessCode(code) || MiApiException.looksLikeAuthMessage(message)) {
                 throw MiApiException.AuthExpired(
                     message = message?.takeIf { it.isNotBlank() } ?: "Mi auth error (code $code)",
+                    definitelyRejected = MiApiException.isAuthBusinessCode(code),
                 )
             }
         } else if (message != null && MiApiException.looksLikeAuthMessage(message)) {
@@ -212,7 +218,9 @@ class MiDataClient(
     private fun buildCookieHeader(): String {
         // APK plantHealthCookie uses cUserId for .hlth.io.mi.com; fall back to userId for legacy sessions.
         // Official traffic also carries PassportDeviceId on health calls (Reqable record 2213).
-        val identityCookie = if (credentials.cUserId.isNotBlank()) {
+        val identityCookie = if (legacyIdentityCookie) {
+            "userId=${credentials.userId}"
+        } else if (credentials.cUserId.isNotBlank()) {
             "cUserId=${credentials.cUserId}"
         } else {
             "userId=${credentials.userId}"

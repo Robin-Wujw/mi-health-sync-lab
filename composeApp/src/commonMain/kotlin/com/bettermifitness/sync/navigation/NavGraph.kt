@@ -39,6 +39,7 @@ private object Routes {
 private enum class AuthBootstrap {
     Loading,
     LoggedOut,
+    Reauthenticating,
     LoggedIn,
 }
 
@@ -63,6 +64,7 @@ fun NavGraph() {
     // Coming back to the app: keep LoggedIn if session is still active.
     LaunchedEffect(lifecycleOwner) {
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            if (auth == AuthBootstrap.Reauthenticating) return@repeatOnLifecycle
             if (sessionManager.isActive) {
                 if (auth != AuthBootstrap.LoggedIn) auth = AuthBootstrap.LoggedIn
                 return@repeatOnLifecycle
@@ -85,7 +87,7 @@ fun NavGraph() {
             }
         }
 
-        AuthBootstrap.LoggedOut -> {
+        AuthBootstrap.LoggedOut, AuthBootstrap.Reauthenticating -> {
             LoginScreen(
                 onLoginSuccess = { auth = AuthBootstrap.LoggedIn },
             )
@@ -116,6 +118,7 @@ fun NavGraph() {
                     SyncScreen(
                         viewModel = entry.sharedKoinViewModel(navController),
                         onBack = { navController.popBackStack() },
+                        onSignIn = { auth = AuthBootstrap.Reauthenticating },
                     )
                 }
             }
@@ -135,7 +138,7 @@ private suspend fun restoreAuth(
         credentials.userId.isNotBlank() &&
         credentials.ssecurity.isNotBlank()
     ) {
-        sessionManager.activate(credentials)
+        sessionManager.ensureActive()
         AuthBootstrap.LoggedIn
     } else {
         AuthBootstrap.LoggedOut

@@ -5,8 +5,10 @@ import Combine
 @MainActor
 final class SyncStore: ObservableObject {
     @Published private(set) var state = Snapshot()
+    @Published private(set) var history: [String] = []
     private let vm: SyncViewModel
     private var subscription: FlowSubscription?
+    private var historySubscription: FlowSubscription?
 
     struct MetricRow: Identifiable {
         let id: String
@@ -17,6 +19,9 @@ final class SyncStore: ObservableObject {
 
     struct Snapshot {
         var isSyncing: Bool = false
+        var isStopping: Bool = false
+        var wasStopped: Bool = false
+        var activeDescription: String?
         var healthAvailable: Bool = true
         var availabilityHint: String?
         var permissionError: String?
@@ -37,13 +42,24 @@ final class SyncStore: ObservableObject {
                 }
             }
         )
+        historySubscription = FlowSubscription(
+            IosAppBridge.shared.watchSyncHistory(vm: vm) { [weak self] rows in
+                Task { @MainActor in self?.history = rows }
+            }
+        )
     }
 
-    deinit { subscription?.cancel() }
+    deinit {
+        subscription?.cancel()
+        historySubscription?.cancel()
+    }
 
     private func apply(_ s: SyncUiState) {
         var snap = Snapshot()
         snap.isSyncing = s.isSyncing
+        snap.isStopping = s.isStopping
+        snap.wasStopped = s.wasStopped
+        snap.activeDescription = IosAppBridge.shared.activeSyncDescription(state: s)
         snap.healthAvailable = s.healthAvailable
         snap.availabilityHint = s.availabilityHint
         snap.permissionError = s.permissionError
@@ -67,5 +83,6 @@ final class SyncStore: ObservableObject {
     }
 
     func startSync() { vm.startSync() }
+    func stopSync() { vm.stopSync() }
     func openHealth() { vm.openHealthService() }
 }

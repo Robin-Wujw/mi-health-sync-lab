@@ -32,6 +32,9 @@ expect class HealthWriter : HealthStore {
     override suspend fun writeVo2Max(samples: List<Vo2MaxSample>)
     override suspend fun writeHrv(samples: List<HrvSample>)
     override suspend fun readLatestWeight(): WeightMeasurement?
+    override suspend fun readWorkouts(request: HealthInboundReadRequest): List<InboundWorkout>
+    override suspend fun readVo2Max(request: HealthInboundReadRequest): List<InboundVo2Max>
+    override suspend fun requestWorkoutRoutes(request: HealthInboundReadRequest): Int
     override suspend fun readHeartRate(request: HealthInboundReadRequest): List<HealthInboundHeartRateRecord>
     override suspend fun readRestingHeartRate(
         request: HealthInboundReadRequest,

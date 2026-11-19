@@ -3,6 +3,7 @@ package com.bettermifitness.sync
 import com.bettermifitness.sync.data.MiSessionManager
 import com.bettermifitness.sync.sync.SyncCoordinator
 import com.bettermifitness.sync.sync.SyncOutcome
+import com.bettermifitness.sync.sync.recordIosSyncTask
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -12,6 +13,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import org.koin.mp.KoinPlatform
 
 /**
@@ -29,24 +31,46 @@ object BackgroundSync {
     const val STATUS_FAILED = SyncOutcome.STATUS_FAILED
     const val STATUS_ALREADY_RUNNING = SyncOutcome.STATUS_ALREADY_RUNNING
 
-    private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    private const val AUTOMATIC_OWNER = "ios-bg-processing-v1"
+    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private val mutex = Mutex()
-    private var currentJob: Job? = null
+    private var automaticJob: Job? = null
     private var inFlight: CompletableDeferred<String>? = null
 
     fun cancel() {
-        currentJob?.cancel()
+        scope.launch { automaticJob?.cancel() }
+    }
+
+    fun automaticScheduleDelay(completion: (Double) -> Unit) {
+        scope.launch {
+            val delay = try {
+                doInitKoin()
+                KoinPlatform.getKoin().get<SyncCoordinator>().automaticScheduleDelay(AUTOMATIC_OWNER)?.toDouble() ?: -1.0
+            } catch (_: Exception) {
+                900.0
+            }
+            completion(delay)
+        }
     }
 
     fun runOpportunisticBackgroundSync(completion: (String) -> Unit) {
-        enqueue(
-            rangeDaysOverride = 1,
-            requireAutoSync = true,
-            requestHealthPermissions = false,
-            recordAsBackground = true,
-            userInitiated = false,
-            completion = completion,
-        )
+        scope.launch {
+            if (automaticJob?.isActive == true) {
+                completion(STATUS_ALREADY_RUNNING)
+                return@launch
+            }
+            automaticJob = scope.launch {
+                val status = try {
+                    doSyncWork(0, requireAutoSync = true, requestHealthPermissions = false,
+                        recordAsBackground = true, userInitiated = false)
+                } catch (_: CancellationException) {
+                    STATUS_CANCELLED
+                } catch (_: Exception) {
+                    STATUS_FAILED
+                }
+                completion(status)
+            }
+        }
     }
 
     fun runUserInitiatedSync(completion: (String) -> Unit) {
@@ -60,23 +84,6 @@ object BackgroundSync {
         )
     }
 
-    fun runForegroundAutoSync(completion: (String) -> Unit) {
-        enqueue(
-            rangeDaysOverride = 0,
-            requireAutoSync = true,
-            requestHealthPermissions = true,
-            recordAsBackground = false,
-            userInitiated = false,
-            completion = completion,
-        )
-    }
-
-    fun runAutoSync(completion: (Boolean) -> Unit) {
-        runForegroundAutoSync { status ->
-            completion(status == STATUS_SUCCESS || status == STATUS_COMPLETED_WITH_SKIPS || status == STATUS_SKIPPED)
-        }
-    }
-
     /**
      * Session keepalive for BGTaskScheduler ticks: rolls the passport session forward
      * when stale and syncs nothing. Called from Swift handlers before the data sync so
@@ -86,12 +93,18 @@ object BackgroundSync {
         scope.launch {
             val status = try {
                 doInitKoin()
-                val session = KoinPlatform.getKoin().get<MiSessionManager>()
-                if (!session.ensureActive()) {
-                    STATUS_NOT_LOGGED_IN
-                } else {
-                    session.refreshSessionIfStale()
-                    STATUS_SUCCESS
+                val koin = KoinPlatform.getKoin()
+                val session = koin.get<MiSessionManager>()
+                val coordinator = koin.get<SyncCoordinator>()
+                var signedIn = false
+                val acquired = coordinator.runSessionMaintenance {
+                    signedIn = session.ensureActive()
+                    if (signedIn) session.refreshSessionIfStale()
+                }
+                when {
+                    !acquired -> STATUS_ALREADY_RUNNING
+                    !signedIn || session.requiresReauthentication -> STATUS_NOT_LOGGED_IN
+                    else -> STATUS_SUCCESS
                 }
             } catch (_: CancellationException) {
                 STATUS_CANCELLED
@@ -142,7 +155,7 @@ object BackgroundSync {
             }
             val created = CompletableDeferred<String>()
             inFlight = created
-            currentJob = scope.launch {
+            scope.launch {
                 val result = try {
                     doSyncWork(
                         rangeDaysOverride = rangeDaysOverride,
@@ -160,7 +173,6 @@ object BackgroundSync {
                 mutex.withLock {
                     if (inFlight === created) {
                         inFlight = null
-                        currentJob = null
                     }
                 }
             }
@@ -175,16 +187,19 @@ object BackgroundSync {
         requestHealthPermissions: Boolean,
         recordAsBackground: Boolean,
         userInitiated: Boolean,
-    ): String {
+    ): String = withContext(Dispatchers.Default) {
         doInitKoin()
         val coordinator = KoinPlatform.getKoin().get<SyncCoordinator>()
-        return coordinator.run(
+        coordinator.run(
             rangeDaysOverride = rangeDaysOverride,
             requireAutoSync = requireAutoSync,
             requestHealthPermissions = requestHealthPermissions,
             recordAsBackground = recordAsBackground,
             resetProgress = false,
             userInitiated = userInitiated,
+            request = if (userInitiated && !requireAutoSync && rangeDaysOverride == 0) coordinator.captureUserSyncRequest() else null,
+            persistedAutomaticOwner = AUTOMATIC_OWNER.takeIf { requireAutoSync },
+            onTaskFinished = ::recordIosSyncTask,
         ).toStatusCode()
     }
 }

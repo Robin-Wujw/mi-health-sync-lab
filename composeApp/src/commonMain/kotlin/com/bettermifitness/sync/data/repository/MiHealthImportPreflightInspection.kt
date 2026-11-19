@@ -3,6 +3,7 @@ package com.bettermifitness.sync.data.repository
 import com.bettermifitness.sync.data.api.MiHealthImportChannel
 import com.bettermifitness.sync.data.api.MiHealthImportCloud
 import com.bettermifitness.sync.data.api.MiHealthImportDiagnostic
+import com.bettermifitness.sync.data.api.MiHealthImportIdentity
 import com.bettermifitness.sync.data.api.MiHealthImportIssueSeverity
 import com.bettermifitness.sync.data.api.MiHealthImportObservationIndex
 import com.bettermifitness.sync.data.api.MiHealthImportPlan
@@ -23,6 +24,10 @@ internal suspend fun inspectMiHealthImportPreflight(
 ): MiHealthImportDiagnostic {
     val base = plan.inspectionDiagnostic()
     val rows = plan.rawRows.distinctBy { it.identity }
+    val duplicateRaw = plan.rawRows.groupBy { it.identity }.filterValues { variants ->
+        variants.map { it.canonicalContent to it.zoneOffsetSeconds }.distinct().size != 1
+    }.keys
+    val verifiedForDaily = mutableSetOf<MiHealthImportIdentity>()
     val pending = journal.pendingIdentities(account, rows.map { it.identity.stableKey }.toSet())
     var matched = 0
     var conflicts = 0
@@ -39,7 +44,11 @@ internal suspend fun inspectMiHealthImportPreflight(
         val index = MiHealthImportObservationIndex(observed)
         for (row in targets) {
             val verification = index.verify(row)
-            if (verification.status == MiHealthImportVerificationStatus.VERIFIED) { matched++; continue }
+            if (verification.status == MiHealthImportVerificationStatus.VERIFIED) {
+                matched++
+                if (row.identity.stableKey !in pending && row.identity !in duplicateRaw) verifiedForDaily += row.identity
+                continue
+            }
             if (sourceValid && verification.status == MiHealthImportVerificationStatus.MISSING &&
                 minutePolicy.find(row, observed) != null) { matched++; continue }
             verifications += verification
@@ -67,10 +76,15 @@ internal suspend fun inspectMiHealthImportPreflight(
         blockedPending > 0 -> MiHealthImportFailureReason.PENDING.name
         else -> base.failureReason
     }
-    return base.copy(stage = if (matched == rows.size && reason == null) MiHealthImportStage.COMPLETE else MiHealthImportStage.PRECHECK,
+    val sourceComplete = sourceValid && plan.issues.none { it.code == "HEART_RATE_SOURCE_POINT_EXCLUDED" }
+    val daily = inspectDailyReports(account, plan, cloud, journal, verifiedForDaily.takeIf { sourceComplete }.orEmpty())
+    val complete = matched == rows.size && daily.verified == base.plannedDailyRows && reason == null
+    return base.copy(stage = if (complete) MiHealthImportStage.COMPLETE else MiHealthImportStage.PRECHECK,
         channel = MiHealthImportChannel.RAW, verifiedRawRows = matched, alreadyPresentRawRows = matched,
         notAttemptedRawRows = rows.size - matched, blockedConflictRows = conflicts,
         blockedAmbiguousRows = ambiguous, blockedPendingRows = blockedPending,
+        verifiedDailyRows = daily.verified, preservedDailyRows = daily.preserved,
+        gatedDailyRevisionRows = daily.candidates, notAttemptedDailyRows = base.plannedDailyRows - daily.verified - daily.preserved,
         eligibleRevisionRows = eligible, revisionMetadataIssues = metadata.groupingBy { it }.eachCount(),
         affectedRows = rows.size - matched + base.sourceRejectedRecords,
         precheckMismatchFields = summarizeMiHealthImportMismatchFields(verifications), failureReason = reason)

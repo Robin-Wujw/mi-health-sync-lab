@@ -23,14 +23,58 @@ class TokenStoreLogoutTest {
     private val bodyLedger = BodySyncLedger(store)
 
     @Test
-    fun logoutWipesTheSessionAndSettings() = runBlocking<Unit> {
+    fun logoutWipesTheSessionAndKeepsSettings() = runBlocking<Unit> {
         tokenStore.saveCredentials(credentials())
         tokenStore.setAutoSync(true)
 
         tokenStore.clear()
 
         assertNull(tokenStore.loadCredentials())
-        assertFalse(tokenStore.autoSync.first())
+        assertTrue(tokenStore.autoSync.first())
+    }
+
+    @Test
+    fun defaultsEnableScaleBodyCompositionAndAllZeppImports() = runBlocking<Unit> {
+        val enabled = tokenStore.enabledMetrics.first()
+        assertTrue("weight" in enabled)
+        assertTrue(SyncPreferences.BODY_COMPOSITION_IMPORT_KEY in enabled)
+        assertTrue(enabled.containsAll(SyncPreferences.INBOUND_METRIC_KEYS))
+        assertFalse(tokenStore.sync.inboundTestMode.first())
+    }
+
+    @Test
+    fun upgradeEnablesRequestedDefaultsOnceAndPreservesOtherChoices() = runBlocking<Unit> {
+        val legacyStore = MemoryStore()
+        legacyStore.updateData { it.toMutablePreferences().apply {
+            this[androidx.datastore.preferences.core.stringSetPreferencesKey("enabled_metrics")] = setOf("sleep")
+        } }
+        val upgraded = TokenStore(legacyStore)
+        val enabled = upgraded.enabledMetrics.first()
+        assertTrue(enabled.containsAll(SyncPreferences.INBOUND_METRIC_KEYS))
+        assertTrue(SyncPreferences.BODY_COMPOSITION_IMPORT_KEY in enabled)
+        assertFalse("workouts" in enabled)
+        upgraded.setMetricEnabled(SyncPreferences.SLEEP_IMPORT_KEY, false)
+        assertFalse(SyncPreferences.SLEEP_IMPORT_KEY in TokenStore(legacyStore).enabledMetrics.first())
+    }
+
+    @Test
+    fun reLoginPreservesSelectionsRangeAndAutoSyncButClearsOldActivity() = runBlocking<Unit> {
+        tokenStore.saveCredentials(credentials())
+        tokenStore.setAutoSync(true)
+        tokenStore.setSyncRangeDays(30)
+        tokenStore.setMetricEnabled(SyncPreferences.SPO2_IMPORT_KEY, false)
+        val enabled = tokenStore.enabledMetrics.first()
+        tokenStore.sync.updateLastSyncOutcome("not_logged_in", "old rejection")
+        tokenStore.updateLastSync("yesterday")
+        tokenStore.clear()
+        tokenStore.saveCredentials(credentials())
+        val restored = TokenStore(store)
+        assertEquals(enabled, restored.enabledMetrics.first())
+        assertEquals(30, restored.syncRangeDays.first())
+        assertTrue(restored.autoSync.first())
+        assertNull(restored.lastSyncTime.first())
+        assertNull(restored.sync.lastSyncMessage.first())
+        assertNull(restored.sync.lastSyncStatus.first())
     }
 
     @Test
@@ -73,6 +117,37 @@ class TokenStoreLogoutTest {
 
         assertEquals("exported", bodyLedger.lastExport(ACCOUNT))
         assertEquals("pending", bodyLedger.attempt(ACCOUNT, "uploaded"))
+    }
+
+    @Test
+    fun onlyDocumentedRateLimitRejectionCanRetryAfterDurableCooldown() = runBlocking<Unit> {
+        var timestamp = 1000L
+        val ledger = BodySyncLedger(store) { timestamp }
+        assertEquals(BodyUploadDecision.Send(1), ledger.beginUpload(ACCOUNT, "limited"))
+        assertEquals(BodyUploadDecision.VerifyOnly, ledger.beginUpload(ACCOUNT, "limited"))
+        ledger.noteRateLimit(ACCOUNT, "limited", sendCount = 1)
+        val reopened = BodySyncLedger(store) { timestamp }
+        assertEquals(BodyUploadDecision.CoolingDown, reopened.beginUpload(ACCOUNT, "limited"))
+        timestamp += 900
+        assertEquals(BodyUploadDecision.Send(2), reopened.beginUpload(ACCOUNT, "limited"))
+        reopened.noteRateLimit(ACCOUNT, "limited", sendCount = 2)
+        timestamp += 1800
+        assertEquals(BodyUploadDecision.Send(3), reopened.beginUpload(ACCOUNT, "limited"))
+        reopened.noteRateLimit(ACCOUNT, "limited", sendCount = 3)
+        timestamp += 2700
+        assertEquals(BodyUploadDecision.RetryLimit, reopened.beginUpload(ACCOUNT, "limited"))
+    }
+
+    @Test
+    fun fullBodyJournalNeverPrunesAnUnknownWrite() = runBlocking<Unit> {
+        repeat(128) { index ->
+            assertEquals(BodyUploadDecision.Send(1), bodyLedger.beginUpload(ACCOUNT, "unknown-$index"))
+        }
+        assertEquals(BodyUploadDecision.AtCapacity, bodyLedger.beginUpload(ACCOUNT, "new"))
+        assertEquals(BodyUploadDecision.VerifyOnly, bodyLedger.beginUpload(ACCOUNT, "unknown-0"))
+        bodyLedger.noteAttempt(ACCOUNT, "unknown-1", "verified")
+        assertEquals(BodyUploadDecision.Send(1), bodyLedger.beginUpload(ACCOUNT, "new"))
+        assertEquals("pending", bodyLedger.attempt(ACCOUNT, "unknown-0"))
     }
 
     @Test

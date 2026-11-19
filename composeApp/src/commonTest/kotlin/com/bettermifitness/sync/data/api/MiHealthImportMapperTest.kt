@@ -19,8 +19,38 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.time.Instant
+import kotlinx.datetime.TimeZone
 
 class MiHealthImportMapperTest {
+    @Test fun daylightSavingDaysRequireAllReadSlicesAndMatchingOffsets() {
+        val zone = TimeZone.of("America/New_York")
+        val spring = listOf("2026-03-08T05:00:00Z", "2026-03-09T04:00:00Z", "2026-03-08T00:00:00Z")
+        val autumn = listOf("2026-11-01T04:00:00Z", "2026-11-02T05:00:00Z", "2026-11-01T00:00:00Z")
+        for (dates in listOf(spring, autumn)) {
+            val (start, end, anchor) = dates.map { Instant.parse(it).epochSeconds }
+            val first = if (dates == spring) -18_000 else -14_400
+            val last = if (dates == spring) -14_400 else -18_000
+            val request = HealthInboundReadRequest(start, end, setOf(source), zone)
+            val inputs = listOf(
+                HealthInboundOxygenSaturationRecord(origin("early"), (start + 60) * 1_000, first, 96.0),
+                HealthInboundOxygenSaturationRecord(origin("late"), (end - 60) * 1_000, last, 98.0),
+            )
+            fun plan(input: List<HealthInboundOxygenSaturationRecord>, coverage: HealthInboundReadRequest) =
+                MiHealthImportMapper.oxygenSaturation(input, source, true, coverage)
+            val full = plan(inputs, request)
+            assertEquals(anchor, full.aggregateRows.single().identity.time)
+            assertEquals(97, full.aggregateRows.single().value.getValue("avg_spo2").jsonPrimitive.int)
+            assertTrue(plan(inputs, request.copy(untilEpochSeconds = minOf(end - 1, start + 86_400L))).aggregateRows.isEmpty())
+            assertTrue(plan(inputs, request.copy(sourceCalendarZone = null)).aggregateRows.isEmpty())
+            assertTrue(plan(listOf(inputs.first(), inputs.last().copy(zoneOffsetSeconds = first)), request).aggregateRows.isEmpty())
+            val slices = request.calendarReadSlices()
+            assertEquals(if (dates == spring) listOf(23 * 3_600L) else listOf(86_400L, 3_600L),
+                slices.map { it.untilEpochSeconds - it.fromEpochSeconds })
+            assertEquals(end, slices.last().untilEpochSeconds)
+        }
+    }
+
     private val source = "com.xiaomi.hm.health"
     private val day = 20_000L * 86_400L
 

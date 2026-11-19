@@ -154,7 +154,7 @@ data class MiHealthImportDiagnostic(
     val blockedPendingRows: Int = 0,
     val blockedConflictRows: Int = 0,
     val blockedAmbiguousRows: Int = 0,
-    /** Previously verified RAW identity omitted by this read; never automatically re-uploaded. */
+    /** Previously verified identity omitted by this read; never automatically re-uploaded. */
     val blockedVerifiedHistoryRows: Int = 0,
     val sourceCollisionRows: Int = 0,
     /** Final unresolved classifications, not cumulative counts across repeated GET attempts. */
@@ -163,6 +163,7 @@ data class MiHealthImportDiagnostic(
     val readbackAmbiguousRows: Int = 0,
     val readbackUnqueriedRows: Int = 0,
     val preservedDailyRows: Int = 0,
+    val gatedDailyRevisionRows: Int = 0,
     /** Distinct rejected source IDs, with unkeyed issue fallback; not Xiaomi row count. */
     val sourceRejectedRecords: Int = 0,
     val issueCounts: List<MiHealthImportIssueCount> = emptyList(),
@@ -175,6 +176,7 @@ data class MiHealthImportDiagnostic(
     val pendingRecovery: MiPendingRecoveryDiagnostic? = null,
     val pendingReconcile: MiPendingReconcileDiagnostic? = null,
     val sleepConflict: MiSleepConflictDiagnostic? = null,
+    val sleepSourceMigration: MiSleepSourceMigrationDiagnostic? = null,
     val attemptedRevisionRows: Int = 0,
     val verifiedRevisionRows: Int = 0,
     val eligibleRevisionRows: Int = 0,
@@ -191,7 +193,8 @@ data class MiHealthImportDiagnostic(
 
 /** Do not serialize arbitrary keys even if they resemble an internal diagnostic code. */
 internal fun safeMiHealthImportIssueCode(code: String): String =
-    code.takeIf { it in SAFE_IMPORT_ISSUE_CODES } ?: "UNKNOWN"
+    code.takeIf { it in SAFE_IMPORT_ISSUE_CODES || it in SAFE_SLEEP_FILE_DIAGNOSTIC_CODES ||
+        SAFE_SLEEP_FILE_SERVER_CODE.matches(it) } ?: "UNKNOWN"
 
 internal fun safeMiHealthImportFailureReason(reason: String): String =
     reason.takeIf { it in setOf("CONFLICT", "PENDING", "REJECTED", "UNVERIFIED", "SOURCE_REJECTED") } ?: "UNKNOWN"
@@ -214,6 +217,8 @@ private val SAFE_IMPORT_MISMATCH_FIELDS = setOf(
 )
 
 private val SAFE_IMPORT_ISSUE_CODES = setOf(
+    "SLEEP_VITALS_READ_UNAVAILABLE", "SLEEP_VITALS_UNREPRESENTABLE", "SLEEP_VITALS_SOURCE_EXCLUDED",
+    "SLEEP_FILE_UNVERIFIED", "SLEEP_SOURCE_MIGRATION_UNVERIFIED",
     "INVALID_INTERVAL", "EMPTY_SAMPLES", "INVALID_HEART_RATE_SAMPLE", "INVALID_RESTING_HEART_RATE",
     "RESTING_HEART_RATE_DATE_UNKNOWN", "INVALID_RESTING_HEART_RATE_DATE", "RESTING_HEART_RATE_DAY_COLLISION",
     "RESTING_HEART_RATE_RAW_ONLY", "RESTING_HEART_RATE_DAILY_MINIMUM_APPLIED", "INVALID_OXYGEN_SATURATION",
@@ -267,3 +272,14 @@ private val SAFE_SERVER_MESSAGES = setOf(
     "数据错误", "数据格式错误", "无效数据", "未授权", "没有权限", "权限不足", "服务异常",
     "系统错误", "系统异常", "服务器错误", "操作成功", "成功", "失败",
 )
+
+// Explicit products of bounded phase/reason vocabularies; never admit exception messages.
+private val SAFE_SLEEP_FILE_DIAGNOSTIC_CODES = listOf("TARGET_READ", "TARGET_OWNERSHIP", "ENCODE",
+    "JOURNAL_READ", "PREVIOUS_READ", "EXISTING_READ", "RESERVE", "INITIAL_READ", "UPLOAD_ADDRESS", "UPLOAD_READBACK")
+    .flatMap { phase -> listOf("SERVER", "SERVER_400", "SERVER_401", "SERVER_403", "SERVER_404", "SERVER_500",
+        "PROTOCOL", "MISSING_ENTRY", "MISSING_KEY", "MISSING_URL", "INVALID", "CHECK", "UNAVAILABLE")
+        .map { reason -> "SLEEP_FILE_${phase}_$reason" } }.toSet()
+
+private val SAFE_SLEEP_FILE_SERVER_CODE = Regex(
+    "SLEEP_FILE_(TARGET_READ|TARGET_OWNERSHIP|ENCODE|JOURNAL_READ|PREVIOUS_READ|EXISTING_READ|" +
+        "RESERVE|INITIAL_READ|UPLOAD_ADDRESS|UPLOAD_READBACK)_SERVER_-?[0-9]{1,10}")

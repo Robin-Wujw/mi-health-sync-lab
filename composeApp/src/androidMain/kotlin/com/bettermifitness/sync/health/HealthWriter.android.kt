@@ -2,6 +2,8 @@ package com.bettermifitness.sync.health
 
 import com.bettermifitness.sync.i18n.L10n
 import android.content.Context
+import android.app.KeyguardManager
+import android.os.PowerManager
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.HealthConnectFeatures
 import androidx.health.connect.client.permission.HealthPermission
@@ -15,6 +17,7 @@ import androidx.health.connect.client.records.BoneMassRecord
 import androidx.health.connect.client.records.CyclingPedalingCadenceRecord
 import androidx.health.connect.client.records.DistanceRecord
 import androidx.health.connect.client.records.ElevationGainedRecord
+import androidx.health.connect.client.records.ExerciseRouteResult
 import androidx.health.connect.client.records.ExerciseSessionRecord
 import androidx.health.connect.client.records.HeartRateRecord
 import androidx.health.connect.client.records.HeartRateVariabilityRmssdRecord
@@ -43,8 +46,6 @@ import androidx.health.connect.client.units.Temperature
 import androidx.health.connect.client.units.TemperatureDelta
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.ProcessLifecycleOwner
 import com.bettermifitness.sync.data.api.ActiveCaloriesSample
 import com.bettermifitness.sync.data.api.BloodPressureSample
 import com.bettermifitness.sync.data.api.DistanceSample
@@ -58,18 +59,23 @@ import com.bettermifitness.sync.data.api.TemperatureSample
 import com.bettermifitness.sync.data.api.Vo2MaxSample
 import com.bettermifitness.sync.data.api.WeightMeasurement
 import com.bettermifitness.sync.data.api.WorkoutSession
+import com.bettermifitness.sync.data.preferences.SyncPreferences
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 import kotlin.reflect.KClass
+import kotlinx.coroutines.CancellationException
 
 @Suppress("LargeClass") // The platform adapter, with one read and one write function per Health Connect record type.
 actual class HealthWriter internal constructor(
     private val context: Context,
     clientProvider: () -> HealthConnectClient,
+    private val routeCacheGeneration: suspend () -> Long,
 ) : HealthStore {
-    constructor(context: Context) : this(context, { HealthConnectClient.getOrCreate(context) })
+    internal constructor(context: Context, clientProvider: () -> HealthConnectClient) : this(context, clientProvider, { 0L })
+    constructor(context: Context) : this(context, { HealthConnectClient.getOrCreate(context) }, { 0L })
 
     private val client by lazy(clientProvider)
+    private val workoutRouteCache by lazy { AndroidWorkoutRouteCache(context) }
     private val changeFilter = HealthRecordChangeFilter { type, range ->
         readRecordsPaged(type, range, setOf(DataOrigin(context.packageName)))
     }
@@ -384,6 +390,37 @@ actual class HealthWriter internal constructor(
         insertChunked(records)
     }
 
+    override suspend fun readOwnWorkoutContributions(
+        metric: WorkoutContributionMetric, from: kotlin.time.Instant, until: kotlin.time.Instant,
+    ): List<WorkoutSession>? {
+        val start = Instant.ofEpochSecond(from.epochSeconds)
+        val end = Instant.ofEpochSecond(until.epochSeconds)
+        val range = TimeRangeFilter.between(start.minusSeconds(86_400), end.plusSeconds(86_400))
+        val origins = setOf(DataOrigin(context.packageName))
+        val records: List<Record> = when (metric) {
+            WorkoutContributionMetric.STEPS -> readRecordsPaged(HcStepsRecord::class, range, origins)
+            WorkoutContributionMetric.DISTANCE -> readRecordsPaged(DistanceRecord::class, range, origins)
+            WorkoutContributionMetric.CALORIES -> readRecordsPaged(ActiveCaloriesBurnedRecord::class, range, origins)
+        }
+        return records.mapNotNull { record ->
+            val workout = when (record) {
+                is HcStepsRecord -> workoutContribution(record, record.startTime, record.endTime, "steps")
+                    ?.copy(totalSteps = record.count.toInt())
+                is DistanceRecord -> workoutContribution(record, record.startTime, record.endTime, "dist")
+                    ?.copy(distanceMeters = record.distance.inMeters)
+                is ActiveCaloriesBurnedRecord -> workoutContribution(record, record.startTime, record.endTime, "kcal")
+                    ?.copy(caloriesKcal = record.energy.inKilocalories)
+                else -> null
+            }
+            workout?.takeIf { it.startTime < until.epochSeconds && it.endTime > from.epochSeconds }
+        }
+    }
+
+    private fun workoutContribution(record: Record, start: Instant, end: Instant, suffix: String): WorkoutSession? {
+        if (record.metadata.clientRecordId != "${HealthRecordIds.workout(start.epochSecond)}:$suffix") return null
+        return WorkoutSession(startTime = start.epochSecond, endTime = end.epochSecond, activityType = "workout")
+    }
+
     actual override suspend fun writeWorkouts(sessions: List<WorkoutSession>) {
         val clean = HealthDataNormalizer.normalizeWorkouts(sessions)
         if (clean.isEmpty()) return
@@ -391,12 +428,27 @@ actual class HealthWriter internal constructor(
         val granted = client.permissionController.getGrantedPermissions()
         val includeRoute = HealthPermission.PERMISSION_WRITE_EXERCISE_ROUTE in granted
         val factory = AndroidWorkoutRecordFactory()
-        val batch = clean.flatMap { factory.buildRecords(it, revision, includeRoute) }
+        var invalidWorkouts = 0
+        var invalidRoutes = 0
+        val batch = clean.flatMap { workout ->
+            try {
+                factory.buildRecords(workout, revision, includeRoute).also { records ->
+                    if (includeRoute && workout.route.size >= 2 && records.filterIsInstance<ExerciseSessionRecord>()
+                            .none { it.exerciseRouteResult is ExerciseRouteResult.Data }) {
+                        invalidRoutes++
+                    }
+                }
+            } catch (_: IllegalArgumentException) {
+                invalidWorkouts++
+                emptyList()
+            }
+        }
         val omittedRoutes = if (includeRoute) 0 else clean.count { it.route.size >= 2 }
-        val skipped = if (omittedRoutes == 0) emptyList() else listOf(
-            "Exercise routes: write access is required in Health Connect " +
-                "($omittedRoutes route(s) skipped; permitted workout records can still be written).",
-        )
+        val skipped = buildList {
+            if (omittedRoutes > 0) add("Exercise routes ($omittedRoutes): write access is required in Health Connect.")
+            if (invalidRoutes > 0) add("Exercise routes ($invalidRoutes): fewer than two valid points within the workout.")
+            if (invalidWorkouts > 0) add("Workouts ($invalidWorkouts): invalid data for Health Connect.")
+        }
         insertChunked(batch, chunkSize = 50, additionalSkippedReasons = skipped)
     }
 
@@ -536,12 +588,8 @@ actual class HealthWriter internal constructor(
     actual override suspend fun readHeartRate(
         request: HealthInboundReadRequest,
     ): List<HealthInboundHeartRateRecord> = withInboundRead(HealthInboundMetric.HEART_RATE, request) {
-        val records = readRecordsPaged(
-            HeartRateRecord::class,
-            inboundTimeRange(request, includeIntervalBoundary = true),
-            request.sourcePackages.map { DataOrigin(it) }.toSet(),
-            readGuard = { ensureInboundAccess(HealthInboundMetric.HEART_RATE) },
-        ).map { record ->
+        val records = readInboundCalendarPages(HeartRateRecord::class, request, HealthInboundMetric.HEART_RATE,
+            includeIntervalBoundary = true).map { record ->
             HealthInboundHeartRateRecord(
                 origin = record.metadata.toInboundOrigin(),
                 startEpochMillis = record.startTime.toEpochMilli(),
@@ -579,12 +627,8 @@ actual class HealthWriter internal constructor(
     actual override suspend fun readSleep(
         request: HealthInboundReadRequest,
     ): List<HealthInboundSleepRecord> = withInboundRead(HealthInboundMetric.SLEEP, request) {
-        val records = readRecordsPaged(
-            SleepSessionRecord::class,
-            inboundTimeRange(request, includeIntervalBoundary = true),
-            request.sourcePackages.map { DataOrigin(it) }.toSet(),
-            readGuard = { ensureInboundAccess(HealthInboundMetric.SLEEP) },
-        ).map { record ->
+        val records = readInboundCalendarPages(SleepSessionRecord::class, request, HealthInboundMetric.SLEEP,
+            includeIntervalBoundary = true).map { record ->
             HealthInboundSleepRecord(
                 origin = record.metadata.toInboundOrigin(),
                 startEpochMillis = record.startTime.toEpochMilli(),
@@ -626,12 +670,8 @@ actual class HealthWriter internal constructor(
     actual override suspend fun readOxygenSaturation(
         request: HealthInboundReadRequest,
     ): List<HealthInboundOxygenSaturationRecord> = withInboundRead(HealthInboundMetric.OXYGEN_SATURATION, request) {
-        val records = readRecordsPaged(
-            OxygenSaturationRecord::class,
-            inboundTimeRange(request),
-            request.sourcePackages.map { DataOrigin(it) }.toSet(),
-            readGuard = { ensureInboundAccess(HealthInboundMetric.OXYGEN_SATURATION) },
-        ).map { record ->
+        val records = readInboundCalendarPages(OxygenSaturationRecord::class, request, HealthInboundMetric.OXYGEN_SATURATION)
+            .map { record ->
             HealthInboundOxygenSaturationRecord(
                 origin = record.metadata.toInboundOrigin(),
                 epochMillis = record.time.toEpochMilli(),
@@ -640,6 +680,16 @@ actual class HealthWriter internal constructor(
             )
         }
         HealthInboundReadPolicy.oxygenSaturation(records, request, context.packageName)
+    }
+
+    private suspend fun <T : Record> readInboundCalendarPages(
+        type: KClass<T>, request: HealthInboundReadRequest, metric: HealthInboundMetric, includeIntervalBoundary: Boolean = false,
+    ): List<T> {
+        val origins = request.sourcePackages.map { DataOrigin(it) }.toSet()
+        return request.calendarReadSlices().flatMap { slice ->
+            readRecordsPaged(type, inboundTimeRange(slice, includeIntervalBoundary), origins,
+                readGuard = { ensureInboundAccess(metric) })
+        }
     }
 
     private fun inboundTimeRange(
@@ -679,34 +729,147 @@ actual class HealthWriter internal constructor(
         else -> HealthInboundSleepStageKind.UNKNOWN
     }
 
+    actual override suspend fun readWorkouts(request: HealthInboundReadRequest): List<InboundWorkout> =
+        withInboundRead(HealthInboundMetric.WORKOUTS, request) {
+            val generation = routeCacheGeneration()
+            workoutRouteCache.prune(generation)
+            AndroidWorkoutInboundReader(client, context.packageName,
+                { ensureInboundAccess(HealthInboundMetric.WORKOUTS) },
+                { record -> when (record.exerciseRouteResult) {
+                    is ExerciseRouteResult.ConsentRequired -> workoutRouteCache.read(record, generation)
+                    is ExerciseRouteResult.NoData -> {
+                        workoutRouteCache.discard(record)
+                        null
+                    }
+                    else -> null
+                } })
+                .workouts(request)
+        }
+
+    override fun clearCachedWorkoutRoutes() = workoutRouteCache.clear()
+
+    internal suspend fun refreshWorkoutRouteCache() {
+        workoutRouteCache.prune(routeCacheGeneration())
+        if (!isAvailable()) return
+        try {
+            observeWorkoutRoutePermissions(client.permissionController.getGrantedPermissions())
+        } catch (_: SecurityException) {
+            workoutRouteCache.clear()
+        }
+    }
+
+    private fun observeWorkoutRoutePermissions(granted: Set<String>) {
+        workoutRouteCache.observePermissions(HealthInboundMetric.WORKOUTS.readPermission() in granted,
+            "android.permission.health.READ_EXERCISE_ROUTES" in granted)
+    }
+
+    actual override suspend fun requestWorkoutRoutes(request: HealthInboundReadRequest): Int =
+        withInboundRead(HealthInboundMetric.WORKOUTS, request) {
+            val generation = routeCacheGeneration()
+            workoutRouteCache.prune(generation)
+            val rows = readRecordsPaged(ExerciseSessionRecord::class, inboundTimeRange(request),
+                request.sourcePackages.map { DataOrigin(it) }.toSet(),
+                readGuard = { ensureInboundAccess(HealthInboundMetric.WORKOUTS) })
+                .filter { HealthInboundReadPolicy.allowsOrigin(it.metadata.toInboundOrigin(), request, context.packageName) }
+            var granted = 0
+            for (record in rows) {
+                if (routeCacheGeneration() != generation) return@withInboundRead granted
+                val direct = record.exerciseRouteResult as? ExerciseRouteResult.Data
+                if (direct != null) workoutRouteCache.save(record, direct.exerciseRoute, generation)
+            }
+            for (record in rows.filter { it.exerciseType in setOf(ExerciseSessionRecord.EXERCISE_TYPE_RUNNING,
+                    ExerciseSessionRecord.EXERCISE_TYPE_WALKING, ExerciseSessionRecord.EXERCISE_TYPE_BIKING,
+                    ExerciseSessionRecord.EXERCISE_TYPE_HIKING) &&
+                    it.exerciseRouteResult is ExerciseRouteResult.ConsentRequired &&
+                    workoutRouteCache.read(it, generation) == null }.sortedByDescending { it.startTime }) {
+                val launcher = HealthConnectPermissionBridge.requestRoute
+                    ?: throw IllegalStateException("Open the app to authorize exercise routes.")
+                val route = launcher(record.metadata.id) ?: break
+                if (routeCacheGeneration() != generation) break
+                ensureInboundAccess(HealthInboundMetric.WORKOUTS)
+                workoutRouteCache.save(record, route, generation)
+                granted++
+            }
+            granted
+        }
+
+    actual override suspend fun readVo2Max(request: HealthInboundReadRequest): List<InboundVo2Max> =
+        withInboundRead(HealthInboundMetric.VO2_MAX, request) {
+            AndroidWorkoutInboundReader(client, context.packageName, { ensureInboundAccess(HealthInboundMetric.VO2_MAX) })
+                .vo2Max(request)
+        }
+
     private fun HealthInboundMetric.readPermission(): String = when (this) {
         HealthInboundMetric.HEART_RATE -> HealthPermission.getReadPermission(HeartRateRecord::class)
         HealthInboundMetric.RESTING_HEART_RATE -> HealthPermission.getReadPermission(RestingHeartRateRecord::class)
         HealthInboundMetric.SLEEP -> HealthPermission.getReadPermission(SleepSessionRecord::class)
         HealthInboundMetric.HRV -> HealthPermission.getReadPermission(HeartRateVariabilityRmssdRecord::class)
         HealthInboundMetric.OXYGEN_SATURATION -> HealthPermission.getReadPermission(OxygenSaturationRecord::class)
+        HealthInboundMetric.WORKOUTS -> HealthPermission.getReadPermission(ExerciseSessionRecord::class)
+        HealthInboundMetric.VO2_MAX -> HealthPermission.getReadPermission(Vo2MaxRecord::class)
     }
+
+    override suspend fun blockedSyncMetrics(enabled: Set<String>, from: kotlin.time.Instant): Map<String, HealthAccessBlock> {
+        val healthKeys = enabled.intersect(SyncPreferences.ALL_METRIC_KEYS + SyncPreferences.INBOUND_METRIC_KEYS)
+        if (healthKeys.isEmpty()) return emptyMap()
+        if (!isAvailable()) return healthKeys.associateWith { HealthAccessBlock.UNAVAILABLE }
+        val granted = try {
+            client.permissionController.getGrantedPermissions()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            return healthKeys.associateWith { HealthAccessBlock.CHECK_FAILED }
+        }
+        val foreground = isAppForeground()
+        val backgroundFeature = foreground || backgroundReadAvailable()
+        val needsHistory = from.epochSeconds < Instant.now().epochSecond - INBOUND_LOOKBACK_DAYS * 86_400L
+        if ("workouts" in healthKeys || SyncPreferences.WORKOUTS_IMPORT_KEY in healthKeys) observeWorkoutRoutePermissions(granted)
+        return healthKeys.mapNotNull { key ->
+            val inbound = HealthInboundMetric.entries.firstOrNull { "${it.metricKey}_import_experimental" == key }
+            val block = if (inbound != null) {
+                val required = if (inbound == HealthInboundMetric.HRV) listOf(inbound, HealthInboundMetric.SLEEP) else listOf(inbound)
+                required.firstNotNullOfOrNull { metric ->
+                    androidExternalReadBlock(granted, metric.readPermission(), foreground, backgroundFeature, needsHistory)
+                }
+            } else {
+                val required = exportPermissions(key)
+                HealthAccessBlock.WRITE_PERMISSION.takeIf { required.isNotEmpty() && required.none { it in granted } }
+            }
+            block?.let { key to it }
+        }.toMap()
+    }
+
+    private fun exportPermissions(key: String): Set<String> {
+        val record = when (key) {
+            "heart_rate" -> HeartRateRecord::class
+            "resting_heart_rate" -> RestingHeartRateRecord::class
+            "sleep" -> SleepSessionRecord::class
+            "hrv" -> HeartRateVariabilityRmssdRecord::class
+            "steps" -> HcStepsRecord::class
+            "distance" -> DistanceRecord::class
+            "active_calories" -> ActiveCaloriesBurnedRecord::class
+            "spo2" -> OxygenSaturationRecord::class
+            "workouts" -> ExerciseSessionRecord::class
+            "blood_pressure" -> BloodPressureRecord::class
+            "temperature" -> BodyTemperatureRecord::class
+            "vo2_max" -> Vo2MaxRecord::class
+            else -> return emptySet()
+        }
+        return if (key == "temperature" && skinTemperatureAvailable()) {
+            setOf(HealthPermission.getWritePermission(record), HealthPermission.getWritePermission(SkinTemperatureRecord::class))
+        } else setOf(HealthPermission.getWritePermission(record))
+    }
+
+    private fun isAppForeground(): Boolean = HealthConnectPermissionBridge.hasVisibleActivity &&
+        context.getSystemService(PowerManager::class.java)?.isInteractive == true &&
+        context.getSystemService(KeyguardManager::class.java)?.isKeyguardLocked == false
 
     private suspend fun ensureInboundAccess(metric: HealthInboundMetric): Set<String> {
         val granted = client.permissionController.getGrantedPermissions()
-        if (metric.readPermission() !in granted) {
-            throw HealthInboundReadUnavailableException(
-                metric,
-                "Allow Health Connect to read ${L10n.metric(metric.metricKey)} " +
-                    "before importing this metric into Mi Fitness.",
-            )
-        }
-        val isForeground = ProcessLifecycleOwner.get().lifecycle.currentState
-            .isAtLeast(Lifecycle.State.STARTED)
-        if (!isForeground && (!backgroundReadAvailable() ||
-            HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND !in granted)
-        ) {
-            throw HealthInboundReadUnavailableException(
-                metric,
-                "Health Connect background reading is not allowed. " +
-                    "Keep Better Mi Fitness Sync open while importing, or allow background " +
-                    "data access in Health Connect when supported.",
-            )
+        if (metric == HealthInboundMetric.WORKOUTS) observeWorkoutRoutePermissions(granted)
+        val foreground = isAppForeground()
+        androidExternalReadBlock(granted, metric.readPermission(), foreground, foreground || backgroundReadAvailable())?.let {
+            throw HealthInboundReadUnavailableException(metric, it.message(), accessBlock = it)
         }
         return granted
     }
@@ -732,47 +895,36 @@ actual class HealthWriter internal constructor(
                 throw HealthInboundReadUnavailableException(
                     metric,
                     L10n.text(L10n.inboundHistoryRequired),
+                    accessBlock = HealthAccessBlock.HISTORY_PERMISSION,
                 )
             }
             return read()
         } catch (e: SecurityException) {
+            if (metric == HealthInboundMetric.WORKOUTS) workoutRouteCache.clear()
             throw HealthInboundReadUnavailableException(
                 metric,
                 "Health Connect denied reading ${L10n.metric(metric.metricKey)}. " +
                     "Review read permissions and retry while the app is open. No empty-data result was recorded.",
                 e,
+                accessBlock = HealthAccessBlock.READ_PERMISSION,
             )
         }
     }
 
     actual override suspend fun readLatestWeight(): WeightMeasurement? {
         if (!isAvailable()) {
-            throw HealthWeightReadUnavailableException("Health Connect is unavailable for reading weight.")
+            val reason = HealthAccessBlock.UNAVAILABLE
+            throw HealthWeightReadUnavailableException(reason.message(), accessBlock = reason)
         }
         return try {
-            val granted = client.permissionController.getGrantedPermissions()
-            if (HealthPermission.getReadPermission(WeightRecord::class) !in granted) {
-                throw HealthWeightReadUnavailableException(
-                    "Allow reading weight in Health Connect to sync Health Connect data to Mi Fitness.",
-                )
-            }
-            val isForeground = ProcessLifecycleOwner.get().lifecycle.currentState
-                .isAtLeast(Lifecycle.State.STARTED)
-            if (!isForeground && (!backgroundReadAvailable() ||
-                HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND !in granted)
-            ) {
-                throw HealthWeightReadUnavailableException(
-                    "Health Connect background reading is not allowed. " +
-                        "Open Better Mi Fitness Sync and sync in the foreground, or allow " +
-                        "background data access in Health Connect when supported.",
-                )
-            }
+            val granted = ensureBodyReadAccess(WeightRecord::class)
             val now = Instant.now()
             // No history permission is requested. Stay inside HC's default 30-day
             // window instead of issuing an EPOCH query that can fail authorization.
             val records = readRecordsPaged(
                 WeightRecord::class,
                 TimeRangeFilter.between(now.minus(WEIGHT_LOOKBACK_DAYS, ChronoUnit.DAYS), now),
+                readGuard = { ensureBodyReadAccess(WeightRecord::class) },
             )
             val r = records.asSequence()
                 .filterNot { isSelfWritten(it.metadata.clientRecordId, it.metadata.dataOrigin.packageName) }
@@ -815,8 +967,19 @@ actual class HealthWriter internal constructor(
                 "Health Connect denied reading weight or body composition. " +
                     "Review the app's read permissions and retry in the foreground.",
                 e,
+                accessBlock = HealthAccessBlock.READ_PERMISSION,
             )
         }
+    }
+
+    private suspend fun ensureBodyReadAccess(recordType: KClass<out Record>): Set<String> {
+        val granted = client.permissionController.getGrantedPermissions()
+        val foreground = isAppForeground()
+        androidExternalReadBlock(granted, HealthPermission.getReadPermission(recordType),
+            foreground, foreground || backgroundReadAvailable())?.let {
+            throw HealthWeightReadUnavailableException(it.message(), accessBlock = it)
+        }
+        return granted
     }
 
     private suspend fun <T : Record> readAssociatedBodyValue(
@@ -835,6 +998,7 @@ actual class HealthWriter internal constructor(
             recordType,
             TimeRangeFilter.between(weight.time.minusSeconds(1), weight.time.plusSeconds(1)),
             setOf(DataOrigin(source)),
+            readGuard = { ensureBodyReadAccess(recordType) },
         ).filterNot { isSelfWritten(it.metadata.clientRecordId, it.metadata.dataOrigin.packageName) }
             .map { record ->
                 val measurementTime = time(record)
@@ -916,6 +1080,11 @@ actual class HealthWriter internal constructor(
             throw HealthInboundReadUnavailableException(null, "Health Connect is unavailable for importing data.")
         }
         val needed = metrics.map { it.readPermission() }.toMutableSet()
+        if (HealthInboundMetric.WORKOUTS in metrics) {
+            needed += listOf(DistanceRecord::class, ActiveCaloriesBurnedRecord::class, HeartRateRecord::class,
+                SpeedRecord::class, StepsCadenceRecord::class, CyclingPedalingCadenceRecord::class,
+                PowerRecord::class, ElevationGainedRecord::class).map { HealthPermission.getReadPermission(it) }
+        }
         if (includeHistory) {
             val historyAvailable = client.features.getFeatureStatus(HealthConnectFeatures.FEATURE_READ_HEALTH_DATA_HISTORY) ==
                 HealthConnectFeatures.FEATURE_STATUS_AVAILABLE
@@ -989,7 +1158,7 @@ actual class HealthWriter internal constructor(
         val changed = changeFilter.changedOnly(records)
         val granted = client.permissionController.getGrantedPermissions()
         val plan = planHealthWrites(
-            candidates = changed.map { record ->
+            candidates = changed.records.map { record ->
                 HealthWriteCandidate(
                     record = record,
                     label = recordLabel(record),
@@ -1001,7 +1170,7 @@ actual class HealthWriter internal constructor(
                 "$label ($count): ${L10n.text(L10n.healthPermissionsIncomplete)}"
             },
         )
-        val skipped = plan.skippedReasons + additionalSkippedReasons
+        val skipped = changed.skippedReasons + plan.skippedReasons + additionalSkippedReasons
         var written = 0
         try {
             plan.writableRecords.chunked(chunkSize).forEach { chunk ->

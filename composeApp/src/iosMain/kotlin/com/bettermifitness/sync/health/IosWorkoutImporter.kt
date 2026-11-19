@@ -3,12 +3,15 @@ package com.bettermifitness.sync.health
 import com.bettermifitness.sync.data.api.WorkoutRoutePoint
 import com.bettermifitness.sync.data.api.WorkoutSession
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import platform.CoreLocation.CLLocation
 import platform.CoreLocation.CLLocationCoordinate2DMake
 import platform.Foundation.NSDate
-import platform.Foundation.NSLog
 import platform.Foundation.dateWithTimeIntervalSince1970
 import platform.HealthKit.HKHealthStore
+import platform.HealthKit.HKObjectType
 import platform.HealthKit.HKQuantity
 import platform.HealthKit.HKQuantitySample
 import platform.HealthKit.HKSample
@@ -28,36 +31,28 @@ import kotlin.coroutines.suspendCoroutine
  * Sample construction is delegated to [IosWorkoutSampleFactory].
  */
 @OptIn(ExperimentalForeignApi::class)
-class IosWorkoutImporter(
+internal class IosWorkoutImporter(
     private val healthStore: HKHealthStore,
+    private val revisions: IosHealthRevisions,
     private val samples: IosWorkoutSampleFactory = IosWorkoutSampleFactory(healthStore),
-    private val saveObjects: suspend (List<Any>) -> Unit,
+    private val saveObjects: suspend (List<HKSample>) -> Unit,
 ) {
 
     suspend fun importAll(sessions: List<WorkoutSession>) {
         val clean = HealthDataNormalizer.normalizeWorkouts(sessions)
-        for (session in clean) {
-            try {
-                importWithBuilder(session)
-            } catch (e: Exception) {
-                NSLog("BetterMi: workout builder failed (${session.startTime}): ${e.message}; legacy")
-                try {
-                    importLegacy(session)
-                } catch (e2: Exception) {
-                    NSLog("BetterMi: workout write failed (${session.startTime}): ${e2.message}")
-                }
-            }
-        }
+        writeAppleWorkouts(clean, ::importWithBuilder, ::importLegacy)
     }
 
     /**
      * Historical import via [HKWorkoutBuilder] so form metrics associate with the workout
      * (WWDC22 / Apple docs — statistics need builder-collected samples).
      */
-    private suspend fun importWithBuilder(session: WorkoutSession) {
+    private suspend fun importWithBuilder(session: WorkoutSession): Int {
         val mapping = SportTypeMapper.map(session.activityType)
         val version = WorkoutFormSeries.contentVersion(session, mapping.title, "builder-v3-stride")
-        val meta = samples.workoutMetadata(session, version)
+        val meta = revisions.metadata(HKObjectType.workoutType(), samples.workoutMetadata(session, version)) ?: return 0
+        val core = revisions.prepare(samples.coreSamples(session, version)).filterIsInstance<HKQuantitySample>()
+        val form = revisions.prepare(samples.formSamples(session, version)).filterIsInstance<HKQuantitySample>()
         val start = epochDate(session.startTime)
         val end = epochDate(session.endTime)
 
@@ -71,44 +66,36 @@ class IosWorkoutImporter(
             device = null,
         )
 
-        beginCollection(builder, start)
-        addMetadata(builder, meta)
-
-        val core = samples.coreSamples(session, version)
-        val form = samples.formSamples(session, version)
-        addSamples(builder, core)
-        var formAdded = 0
-        form.groupBy { it.quantityType.identifier }.forEach { (typeId, list) ->
-            try {
-                addSamples(builder, list)
-                formAdded += list.size
-            } catch (e: Exception) {
-                NSLog("BetterMi: skip form type $typeId: ${e.message}")
+        var omitted = 0
+        try {
+            beginCollection(builder, start)
+            addMetadata(builder, meta)
+            addSamples(builder, core)
+            form.groupBy { it.quantityType.identifier }.values.forEach { list ->
+                omitted += writeOptionalAppleDetail { addSamples(builder, list) }
             }
+            endCollection(builder, end)
+            currentCoroutineContext().ensureActive()
+        } catch (cancelled: CancellationException) {
+            builder.discardWorkout()
+            throw cancelled
+        } catch (e: Exception) {
+            builder.discardWorkout()
+            throw WorkoutNotYetSaved(e)
         }
-        if (form.isNotEmpty()) {
-            NSLog(
-                "BetterMi: workout ${session.startTime} builder core=${core.size} " +
-                    "form=$formAdded/${form.size} stride=${session.strideMetersSeries.size}",
-            )
-        }
-
-        endCollection(builder, end)
         val workout = finishWorkout(builder)
+        revisions.verifyMetadata(HKObjectType.workoutType(), meta)
+        revisions.verify(core)
         if (session.route.size >= 2) {
-            try {
-                saveRoute(workout, session.route)
-            } catch (e: Exception) {
-                NSLog("BetterMi: route failed: ${e.message}")
-            }
+            omitted += writeOptionalAppleDetail { saveRoute(workout, session.route) }
         }
-        saveRecoverHr(session, version)
+        return omitted + saveRecoverHr(session, version)
     }
 
-    private suspend fun importLegacy(session: WorkoutSession) {
+    private suspend fun importLegacy(session: WorkoutSession): Int {
         val mapping = SportTypeMapper.map(session.activityType)
         val version = WorkoutFormSeries.contentVersion(session, mapping.title, "builder-v3-stride")
-        val meta = samples.workoutMetadata(session, version)
+        val meta = revisions.metadata(HKObjectType.workoutType(), samples.workoutMetadata(session, version)) ?: return 0
         val kcal = HKUnit.unitFromString("kcal")
         val meters = HKUnit.unitFromString("m")
         val workout = HKWorkout.workoutWithActivityType(
@@ -120,29 +107,25 @@ class IosWorkoutImporter(
             totalDistance = session.distanceMeters?.let { HKQuantity.quantityWithUnit(meters, it) },
             metadata = meta,
         )
+        currentCoroutineContext().ensureActive()
         saveObjects(listOf(workout))
+        var omitted = 0
         if (session.route.size >= 2) {
-            try {
-                saveRoute(workout, session.route)
-            } catch (_: Exception) { /* best-effort */ }
+            omitted += writeOptionalAppleDetail { saveRoute(workout, session.route) }
         }
         samples.allSamples(session, version).chunked(200).forEach { chunk ->
-            try {
-                saveObjects(chunk)
-            } catch (_: Exception) { /* optional */ }
+            omitted += writeOptionalAppleDetail { saveObjects(revisions.prepare(chunk)) }
         }
-        saveRecoverHr(session, version)
+        return omitted + saveRecoverHr(session, version)
     }
 
-    private suspend fun saveRecoverHr(session: WorkoutSession, version: Long) {
+    private suspend fun saveRecoverHr(session: WorkoutSession, version: Long): Int = writeOptionalAppleDetail {
         val list = samples.recoverHeartRateSamples(session, version)
-        if (list.isEmpty()) return
-        try {
-            saveObjects(list)
-        } catch (_: Exception) { /* optional */ }
+        if (list.isNotEmpty()) saveObjects(revisions.prepare(list))
     }
 
     private suspend fun beginCollection(builder: HKWorkoutBuilder, start: NSDate) {
+        currentCoroutineContext().ensureActive()
         suspendCoroutine { cont ->
             builder.beginCollectionWithStartDate(start) { ok, error ->
                 if (ok) cont.resume(Unit)
@@ -154,6 +137,7 @@ class IosWorkoutImporter(
     }
 
     private suspend fun addMetadata(builder: HKWorkoutBuilder, meta: Map<Any?, Any?>) {
+        currentCoroutineContext().ensureActive()
         suspendCoroutine { cont ->
             builder.addMetadata(meta) { ok, error ->
                 if (ok) cont.resume(Unit)
@@ -167,6 +151,7 @@ class IosWorkoutImporter(
     private suspend fun addSamples(builder: HKWorkoutBuilder, list: List<HKQuantitySample>) {
         if (list.isEmpty()) return
         list.chunked(100).forEach { chunk ->
+            currentCoroutineContext().ensureActive()
             suspendCoroutine { cont ->
                 @Suppress("UNCHECKED_CAST")
                 builder.addSamples(chunk as List<HKSample>) { ok, error ->
@@ -180,6 +165,7 @@ class IosWorkoutImporter(
     }
 
     private suspend fun endCollection(builder: HKWorkoutBuilder, end: NSDate) {
+        currentCoroutineContext().ensureActive()
         suspendCoroutine { cont ->
             builder.endCollectionWithEndDate(end) { ok, error ->
                 if (ok) cont.resume(Unit)
@@ -220,11 +206,11 @@ class IosWorkoutImporter(
                     )
                     return@insertRouteData
                 }
-                routeBuilder.finishRouteWithWorkout(workout, metadata = null) { _, finishError ->
-                    if (finishError != null) {
-                        cont.resumeWithException(Exception(finishError.localizedDescription))
-                    } else {
+                routeBuilder.finishRouteWithWorkout(workout, metadata = null) { savedRoute, finishError ->
+                    if (savedRoute != null && finishError == null) {
                         cont.resume(Unit)
+                    } else {
+                        cont.resumeWithException(Exception(finishError?.localizedDescription ?: "Route save not confirmed"))
                     }
                 }
             }

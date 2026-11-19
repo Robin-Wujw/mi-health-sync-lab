@@ -65,6 +65,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-MiHealt
 
 报告不包含账号、设备标识、令牌、来源记录 ID、健康数值或称量/心率等记录的时间戳。文件名中的时间只是本次检查的运行时间。
 
+权限组合验收还应同时查看 `history_read_available`、`history_read_granted`、`selected_read_permissions` 和 `selected_read_permissions_granted`。前两项只描述 Health Connect 的历史读取能力；后两项描述当前 `-Metric`（或运动检查）真正需要的指标读取权限。指标权限被拒绝时，runner 应报告 `HEALTH_READ_UNAVAILABLE`，不能把历史权限状态当成指标已授权。
+
 ## 一次核对全部待确认血氧（.7 新增）
 
 **手机可直接完成这一步。** 覆盖安装 `.7`，设置中开启“血氧 → 小米”，选择覆盖问题记录的 1、7 或 14 天，再到同步页点“核对全部待确认血氧”。结果在“本次待确认血氧处理结果”中单独显示并可复制，普通同步的历史统计不变。“恢复一条待确认血氧”仍在同一区域，是另一项最多上传一条的操作；核对按钮不会自动触发它。

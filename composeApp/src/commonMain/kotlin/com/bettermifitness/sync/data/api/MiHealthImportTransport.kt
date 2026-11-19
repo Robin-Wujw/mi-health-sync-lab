@@ -23,6 +23,21 @@ class MiDirectHealthImportCloud(
 ) : MiHealthImportCloud {
     constructor(api: MiDirectApi) : this({ api })
 
+    override suspend fun retireLegacySleep(identity: MiHealthImportIdentity): MiHealthImportUploadResult {
+        require(identity.channel == MiHealthImportChannel.RAW && identity.key == "sleep" &&
+            identity.sid == MI_HEALTH_CONNECT_IMPORT_SID && identity.tag == null)
+        val client = apiProvider().dataClient()
+        val payload = buildJsonObject {
+            put("phone_id", client.phoneId)
+            put("keys", JsonArray(listOf(buildJsonObject {
+                put("sid", identity.sid); put("key", identity.key); put("time", identity.time)
+            })))
+        }
+        return parseMiHealthImportUploadResponse(requestWithKnownHttpStatus {
+            client.encryptedPost(path = "/app/v1/data/delete_fitness_data", payload = payload.toString())
+        })
+    }
+
     override suspend fun readRows(
         channel: MiHealthImportChannel,
         key: String,
@@ -48,7 +63,7 @@ class MiDirectHealthImportCloud(
             all += page.rows.filter { it.time >= fromEpochSeconds && it.time < untilEpochSeconds }
             next = cursor.nextCursor(page.hasMore, page.nextKey)
         } while (next != null)
-        return all.distinct()
+        return if (channel == MiHealthImportChannel.DAILY_AGGREGATE) all else all.distinct()
     }
 
     override suspend fun readRawRowsWithoutStart(
@@ -71,7 +86,9 @@ class MiDirectHealthImportCloud(
         val channel = rows.first().identity.channel
         require(rows.size <= if (channel == MiHealthImportChannel.RAW) MI_HEALTH_IMPORT_RAW_BATCH_SIZE
             else MI_HEALTH_IMPORT_AGGREGATE_BATCH_SIZE) { "Import batch exceeds the bounded upload size." }
-        require(rows.all { it.identity.key in SUPPORTED_IMPORT_KEYS && it.identity.sid == MI_HEALTH_CONNECT_IMPORT_SID })
+        require(rows.all { it.identity.key in SUPPORTED_IMPORT_KEYS && (it.identity.sid == MI_HEALTH_CONNECT_IMPORT_SID ||
+            it.identity.channel == MiHealthImportChannel.RAW && it.identity.key == "sleep" &&
+            it.identity.sid == MI_SLEEP_FILE_IMPORT_SID) })
         require(rows.map { it.identity }.distinct().size == rows.size) {
             "Duplicate target identities require conflict resolution before upload."
         }
@@ -85,12 +102,15 @@ class MiDirectHealthImportCloud(
     }
 }
 
-private val SUPPORTED_IMPORT_KEYS = setOf("heart_rate", "resting_heart_rate", "sleep", "spo2")
+private val SUPPORTED_IMPORT_KEYS = setOf("heart_rate", "resting_heart_rate", "sleep", "spo2", "vo2_max",
+    "pai", "stress", "single_stress", "training_load")
 
 internal fun buildMiHealthImportReadPayload(channel: MiHealthImportChannel, key: String,
     from: Long, until: Long, next: String?): Map<String, Any?> = buildMap {
     put("key", key)
-    put("start_time", from)
+    // The raw endpoint excludes records equal to start_time. The public reader
+    // promises [from, until), and filters the expanded page back to that range.
+    put("start_time", if (channel == MiHealthImportChannel.RAW) (from - 1).coerceAtLeast(0) else from)
     put("end_time", until)
     put("reverse", true)
     // RAW follows the native by-time schema, which has no limit field.
@@ -258,20 +278,30 @@ internal fun parseMiHealthImportReadPage(
             } else null
             else -> null
         } ?: if (deleted) JsonObject(emptyMap()) else throw MiApiException.Unexpected("Mi import readback value is not a JSON object")
+        val key = row.stringOrNull("key") ?: requestedKey
+        val tag = row.stringOrNull("tag")
+        val utcDay = time >= 0 && time % 86_400 == 0L &&
+            (value["date_time"] as? JsonPrimitive)?.longOrNull == time
         MiHealthImportCloudRow(
             sid = row.stringOrNull("sid"),
-            key = row.stringOrNull("key") ?: requestedKey,
+            key = key,
             time = time,
             // The aggregate request is already restricted to this tag. The
             // source SID is never inferred: it must be returned to verify.
-            tag = row.stringOrNull("tag") ?: if (channel == MiHealthImportChannel.DAILY_AGGREGATE) "daily_report" else null,
+            tag = tag ?: if (channel == MiHealthImportChannel.DAILY_AGGREGATE) "daily_report" else null,
             value = value,
             deleted = deleted,
             zoneOffsetSeconds = when (val offset = row["zone_offset"]) {
-                null, JsonNull -> null
+                // Native Huami training load uses UTC dayId seconds and offset 0.
+                // Live cloud readback omits that zero field. Only this exact daily
+                // contract establishes UTC; other missing/null offsets stay unknown.
+                null -> if (channel == MiHealthImportChannel.RAW && key == "training_load" &&
+                    !deleted && utcDay) 0 else null
+                JsonNull -> null
                 is JsonPrimitive -> offset.intOrNull ?: throw MiApiException.Unexpected("Mi import readback zone_offset is invalid")
                 else -> throw MiApiException.Unexpected("Mi import readback zone_offset is invalid")
             },
+            tagInferred = tag == null && channel == MiHealthImportChannel.DAILY_AGGREGATE,
         )
     }
     val flag = result["has_more"]

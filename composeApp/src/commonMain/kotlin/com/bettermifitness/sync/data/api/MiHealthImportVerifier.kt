@@ -28,14 +28,26 @@ fun canonicalMiHealthImportJson(value: JsonElement): String = when (value) {
 }
 
 /** Index one completed read once, retaining every candidate for the semantic verifier. */
-internal class MiHealthImportObservationIndex(observedRows: List<MiHealthImportCloudRow>) {
+internal class MiHealthImportObservationIndex(private val observedRows: List<MiHealthImportCloudRow>) {
     private val byTarget = observedRows.groupBy { it.key to it.time }
 
     fun atTarget(row: MiHealthImportRow): List<MiHealthImportCloudRow> =
         byTarget[row.identity.key to row.identity.time].orEmpty()
 
-    fun verify(row: MiHealthImportRow): MiHealthImportVerification =
-        MiHealthImportVerifier.verify(row, atTarget(row))
+    fun verify(row: MiHealthImportRow): MiHealthImportVerification {
+        val candidates = if (row.identity.channel == MiHealthImportChannel.DAILY_AGGREGATE) observedRows else atTarget(row)
+        return MiHealthImportVerifier.verify(row, candidates)
+    }
+}
+
+internal fun possibleDailyReports(expected: MiHealthImportRow, observed: List<MiHealthImportCloudRow>): List<MiHealthImportCloudRow> {
+    val expectedDay = (expected.identity.time + expected.zoneOffsetSeconds).floorDiv(86_400L)
+    return observed.filter { row ->
+        row.key == expected.identity.key && (row.tag == expected.identity.tag || row.tag.isNullOrBlank()) &&
+            (expected.identity.time == row.time || (row.zoneOffsetSeconds?.let { offset ->
+                (row.time + offset).floorDiv(86_400L) == expectedDay
+            } ?: (kotlin.math.abs(row.time - expected.identity.time) <= 18 * 3600L)))
+    }
 }
 
 /**
@@ -48,6 +60,9 @@ object MiHealthImportVerifier {
         observedRows: List<MiHealthImportCloudRow>,
     ): MiHealthImportVerification {
         val identity = expectedRow.identity
+        if (identity.channel == MiHealthImportChannel.DAILY_AGGREGATE && possibleDailyReports(expectedRow, observedRows).size > 1) {
+            return MiHealthImportVerification(MiHealthImportVerificationStatus.AMBIGUOUS, setOf("duplicate_daily_report"))
+        }
         val atTarget = observedRows.filter {
             !it.deleted && it.key == identity.key && it.time == identity.time &&
                 (identity.channel == MiHealthImportChannel.RAW || it.tag == identity.tag)

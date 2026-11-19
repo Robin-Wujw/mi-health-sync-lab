@@ -14,10 +14,13 @@ import androidx.health.connect.client.PermissionController
 import com.bettermifitness.sync.health.HealthConnectPermissionBridge
 import com.bettermifitness.sync.sync.LiveTestSessionGate
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.receiveAsFlow
 
 class MainActivity : ComponentActivity() {
+
+    private val routeResults = Channel<androidx.health.connect.client.records.ExerciseRoute?>(capacity = Channel.BUFFERED)
+    private val routeLauncher = registerForActivityResult(
+        androidx.health.connect.client.contracts.ExerciseRouteRequestContract()
+    ) { route -> routeResults.trySend(route) }
 
     private val permissionResults = Channel<Set<String>>(capacity = Channel.BUFFERED)
 
@@ -29,6 +32,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        HealthConnectPermissionBridge.requestRoute = { recordId ->
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) { routeLauncher.launch(recordId) }
+            routeResults.receive()
+        }
+        HealthConnectPermissionBridge.requestPermissions = { permissions ->
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) { requestPermissionLauncher.launch(permissions) }
+            permissionResults.receive()
+        }
         if (LiveTestSessionGate.isActive) {
             // Keep HC access in a visible Activity without constructing the
             // normal navigation graph. HomeViewModel's independent profile
@@ -44,10 +55,6 @@ class MainActivity : ComponentActivity() {
         }
         enableEdgeToEdge()
 
-        HealthConnectPermissionBridge.requestPermissions = { permissions ->
-            requestPermissionLauncher.launch(permissions)
-            permissionResults.receiveAsFlow().first()
-        }
         HealthConnectPermissionBridge.openHealthConnect = {
             openHealthConnectOrStore()
         }
@@ -57,7 +64,18 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        HealthConnectPermissionBridge.activityStarted()
+    }
+
+    override fun onStop() {
+        HealthConnectPermissionBridge.activityStopped()
+        super.onStop()
+    }
+
     override fun onDestroy() {
+        HealthConnectPermissionBridge.requestRoute = null
         HealthConnectPermissionBridge.requestPermissions = null
         HealthConnectPermissionBridge.openHealthConnect = null
         super.onDestroy()

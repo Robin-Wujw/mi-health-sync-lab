@@ -41,18 +41,9 @@ class MiDirectApi(private val client: MiDataClient) {
         to: String,
         nextKey: String? = null,
     ): FitnessResponse<HeartRateEntry> {
-        val payload = buildMap<String, Any?> {
-            put("key", key)
-            put("start_time", parseToUnix(from))
-            put("end_time", parseToUnix(to))
-            put("reverse", true)
-            if (!nextKey.isNullOrEmpty()) put("next_key", nextKey)
+        return readMiFitnessTimePage(key, parseToUnix(from), parseToUnix(to), nextKey) { payload ->
+            client.post(path = "/app/v1/data/get_fitness_data_by_time", payload = payload)
         }
-        val result = client.post(
-            path = "/app/v1/data/get_fitness_data_by_time",
-            payload = payload,
-        )
-        return parseMiDataListResponse(result)
     }
 
     /**
@@ -116,26 +107,23 @@ class MiDirectApi(private val client: MiDataClient) {
         to: String,
         maxPages: Int = 40,
     ): List<SportRecordEntry> {
+        val fromSeconds = parseToUnix(from)
+        val untilSeconds = parseToUnix(to)
         val all = mutableListOf<SportRecordEntry>()
         var next: String? = null
         val cursor = MiPageCursorGuard(maxPages)
         do {
-            val payload = buildMap<String, Any?> {
-                put("start_time", parseToUnix(from))
-                put("end_time", parseToUnix(to))
-                put("limit", 50)
-                if (!next.isNullOrEmpty()) put("next_key", next)
-            }
-            val result = client.post(
-                path = "/app/v1/data/get_sport_records_by_time",
-                payload = payload,
-            )
-            val page = parseMiSportRecordsPage(result)
+            val page = getSportRecordPage(fromSeconds, untilSeconds, next)
             all += page.dataList
             next = cursor.nextCursor(page.hasMore, page.nextKey)
         } while (next != null)
-        return all
+        return all.filter { it.time >= fromSeconds && it.time < untilSeconds }
     }
+
+    internal suspend fun getSportRecordPage(from: Long, until: Long, next: String?, strict: Boolean = false):
+        FitnessResult<SportRecordEntry> = parseMiSportRecordsPage(client.post(
+            path = "/app/v1/data/get_sport_records_by_time", payload = buildMiWorkoutReadPayload(from, until, next),
+        ), strict)
 
     /**
      * Downloads FDS sport files (GPS + record + recover) and merges into [base].
