@@ -168,16 +168,19 @@ class MiFitnessParsersTest {
     }
 
     @Test
-    fun fillAwakeGaps_insertsStage5ForGapsAtLeast60s() {
-        val raw = listOf(
-            SleepStage(1_000L, 1_100L, 2),
-            SleepStage(1_200L, 1_300L, 3), // 100s gap → awake
+    fun parseSleep_preservesUnobservedGapsWithoutInventingAwake() {
+        val entry = RawFitnessEntry(
+            key = "sleep",
+            value = """{"bedtime":1700000000,"wake_up_time":1700001300,"items":[
+              {"start_time":1700000000,"end_time":1700001100,"state":2},
+              {"start_time":1700001200,"end_time":1700001300,"state":3}
+            ]}""",
         )
-        val stages = MiFitnessParsers.fillAwakeGaps(raw)
-        assertEquals(3, stages.size)
-        assertEquals(5, stages[1].stage)
-        assertEquals(1_100L, stages[1].startTime)
-        assertEquals(1_200L, stages[1].endTime)
+        val stages = MiFitnessParsers.parseSleepSession(entry)!!.stages
+        assertEquals(2, stages.size)
+        assertEquals(1_700_001_100L, stages[0].endTime)
+        assertEquals(1_700_001_200L, stages[1].startTime)
+        assertTrue(stages.none { it.stage == 5 })
     }
 
     @Test
@@ -392,7 +395,7 @@ class MiFitnessParsersTest {
     }
 
     @Test
-    fun parseHrvSamples_rejectsImplausibleValues() {
+    fun parseHrvSamples_rejectsZeroSentinel() {
         val entry = RawFitnessEntry(
             key = "sleep",
             time = 1_700_003_600L,
@@ -403,7 +406,7 @@ class MiFitnessParsersTest {
                     {
                       "bedtime": 1700000000,
                       "wake_up_time": 1700036000,
-                      "avg_hrv": 999,
+                      "avg_hrv": 0,
                       "items": []
                     }
                   ]

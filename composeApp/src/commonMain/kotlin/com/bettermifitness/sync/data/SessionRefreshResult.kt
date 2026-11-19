@@ -1,5 +1,7 @@
 package com.bettermifitness.sync.data
 
+import com.bettermifitness.sync.i18n.L10n
+
 /**
  * Outcome of passToken → serviceToken refresh (APK force-refresh parity).
  */
@@ -22,11 +24,9 @@ sealed class SessionRefreshResult {
 
     val userMessage: String
         get() = when (this) {
-            Success -> "Session renewed"
-            is NeedsReLogin -> reason.ifBlank { "Session expired — sign in again" }
-            is NeedsVerification -> reason.ifBlank {
-                "Xiaomi requires re-verification — sign in again"
-            }
-            is TransientFailure -> reason.ifBlank { "Could not renew session — try again" }
+            Success -> L10n.text(L10n.sessionRenewed)
+            is NeedsReLogin -> L10n.text(L10n.sessionExpired)
+            is NeedsVerification -> L10n.text(L10n.sessionVerification)
+            is TransientFailure -> L10n.text(L10n.sessionRenewalFailed)
         }
 }

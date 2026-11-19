@@ -4,6 +4,8 @@ import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.bettermifitness.sync.data.preferences.SyncPreferences
+import com.bettermifitness.sync.data.MiSessionManager
+import kotlinx.coroutines.CancellationException
 import com.bettermifitness.sync.sync.SyncCoordinator
 import com.bettermifitness.sync.sync.SyncOutcome
 import kotlinx.coroutines.CoroutineScope
@@ -35,21 +37,21 @@ object AndroidForegroundAutoSync {
 
     private suspend fun runIfEnabled() {
         try {
-            val prefs = KoinPlatform.getKoin().get<SyncPreferences>()
-            if (!prefs.autoSync.first()) return
             val coordinator = KoinPlatform.getKoin().get<SyncCoordinator>()
-            val outcome = coordinator.run(
-                rangeDaysOverride = 0,
-                requireAutoSync = true,
-                requestHealthPermissions = false,
-                recordAsBackground = false,
-                resetProgress = false,
-                userInitiated = false,
-            )
+            val session = KoinPlatform.getKoin().get<MiSessionManager>()
+            coordinator.runSessionMaintenance {
+                if (session.ensureActive()) session.refreshSessionIfStale()
+            }
+            val prefs = KoinPlatform.getKoin().get<SyncPreferences>()
+            if (!prefs.autoSync.first() || coordinator.isRunning.value) return
+            val outcome = com.bettermifitness.sync.sync.UserSyncService.startAndAwait(
+                com.bettermifitness.sync.di.androidAppContext(), automatic = true)
             // Permission UI is not available from ProcessLifecycle; user must grant on Sync screen once.
             if (outcome is SyncOutcome.Failed) {
                 android.util.Log.w("AndroidForegroundAutoSync", "sync failed: ${outcome.message}")
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             android.util.Log.w("AndroidForegroundAutoSync", "sync error", e)
         }

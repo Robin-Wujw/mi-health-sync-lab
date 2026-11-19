@@ -3,6 +3,7 @@ package com.bettermifitness.sync.data.preferences
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.mifitness.miclient.auth.MiCredentials
 import com.mifitness.miclient.auth.MiRegion
@@ -45,6 +46,7 @@ class CredentialsStore(
             preferences[MI_USER_ID_KEY] = credentials.userId
             preferences[SSECURITY_KEY] = credentials.ssecurity
             preferences[PASS_TOKEN_KEY] = credentials.passToken
+            preferences.remove(REAUTHENTICATION_REQUIRED_KEY)
             // Device identity is stable across logins; never blank it from legacy creds.
             if (credentials.deviceId.isNotBlank()) {
                 preferences[DEVICE_ID_KEY] = credentials.deviceId
@@ -65,6 +67,17 @@ class CredentialsStore(
             // Drop legacy manual mode key if present
             preferences.remove(REGION_MODE_KEY)
         }
+    }
+
+    override suspend fun savePassToken(passToken: String) {
+        dataStore.edit { it[PASS_TOKEN_KEY] = passToken }
+    }
+
+    override suspend fun requiresReauthentication(): Boolean =
+        dataStore.data.first()[REAUTHENTICATION_REQUIRED_KEY] == true
+
+    override suspend fun markReauthenticationRequired() {
+        dataStore.edit { it[REAUTHENTICATION_REQUIRED_KEY] = true }
     }
 
     override suspend fun loadCredentials(): MiCredentials? {
@@ -149,6 +162,7 @@ class CredentialsStore(
             preferences.remove(PASS_TOKEN_KEY)
             preferences.remove(C_USER_ID_KEY)
             preferences.remove(SESSION_REFRESHED_AT_KEY)
+            preferences.remove(REAUTHENTICATION_REQUIRED_KEY)
         }
     }
 
@@ -165,5 +179,6 @@ class CredentialsStore(
         private val DEVICE_ID_KEY = stringPreferencesKey("device_id")
         private val C_USER_ID_KEY = stringPreferencesKey("c_user_id")
         private val SESSION_REFRESHED_AT_KEY = stringPreferencesKey("session_refreshed_at")
+        private val REAUTHENTICATION_REQUIRED_KEY = booleanPreferencesKey("mi_reauthentication_required")
     }
 }

@@ -7,6 +7,10 @@ import com.bettermifitness.sync.data.api.WorkoutSession
  * Shared by HealthKit and Health Connect writers (SRP: presentation only).
  */
 object WorkoutNotes {
+    private const val PART_SEPARATOR = " · "
+
+    /** How many details a built note carries, so a less detailed copy can be told apart. */
+    fun partCount(notes: String?): Int = notes?.split(PART_SEPARATOR)?.size ?: 0
 
     fun build(session: WorkoutSession): String? {
         val parts = mutableListOf<String>()
@@ -45,7 +49,7 @@ object WorkoutNotes {
         )
         if (zones.isNotEmpty()) parts += zones.joinToString("/")
         if (session.kmSplits.isNotEmpty()) parts += "${session.kmSplits.size} km splits"
-        return parts.takeIf { it.isNotEmpty() }?.joinToString(" · ")
+        return parts.takeIf { it.isNotEmpty() }?.joinToString(PART_SEPARATOR)
     }
 
     fun formatPace(secPerKm: Double): String {

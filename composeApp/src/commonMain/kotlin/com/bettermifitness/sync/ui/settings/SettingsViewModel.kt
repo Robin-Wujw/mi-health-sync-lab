@@ -12,6 +12,7 @@ import com.bettermifitness.sync.health.HealthAvailability
 import com.bettermifitness.sync.health.HealthPermissionRequester
 import com.bettermifitness.sync.health.HealthReadiness
 import com.bettermifitness.sync.sync.SyncOutcomeLabels
+import com.bettermifitness.sync.ui.SyncSelection
 import com.bettermifitness.sync.util.RelativeTime
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -20,6 +21,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 
 data class SettingsUiState(
     /**
@@ -40,9 +42,6 @@ data class SettingsUiState(
     val lastSyncDetail: String = L10n.text(L10n.outcomeIdleDetail),
     val lastSyncIsError: Boolean = false,
     val lastSyncIsWarning: Boolean = false,
-    val canTestBgRefresh: Boolean = false,
-    val bgTestStatus: String? = null,
-    val bgTestRunning: Boolean = false,
     val showShortcutsHelp: Boolean = false,
     val showBackgroundRefreshDetails: Boolean = true,
     val healthServiceName: String = "",
@@ -50,6 +49,8 @@ data class SettingsUiState(
     val healthStatusDetail: String = "",
     val healthNeedsAction: Boolean = false,
     val loggedOut: Boolean = false,
+    val inboundPermissionMessage: String? = null,
+    val inboundPermissionNeedsAction: Boolean = false,
 )
 
 class SettingsViewModel(
@@ -67,7 +68,6 @@ class SettingsViewModel(
 
     private val localState = MutableStateFlow(
         LocalSettingsState(
-            canTestBgRefresh = AutoSyncPlatform.supportsOpportunisticRefreshTest(),
             loggedOut = false,
         ),
     )
@@ -92,25 +92,18 @@ class SettingsViewModel(
         syncPreferences.lastBackgroundSyncMessage,
     ) { t, s, m -> Triple(t, s, m) }
 
-    private val configBundle = combine(
-        prefsSnapshot,
-    ) { snaps ->
-        val snap = snaps[0]
-        Triple(snap.enabledMetrics, snap.syncRangeDays, snap.autoSync) to snap.ready
-    }
-
     val uiState: StateFlow<SettingsUiState> = combine(
-        configBundle,
+        prefsSnapshot,
         lastSyncBundle,
         lastBgBundle,
         localState,
         healthState,
     ) { config, lastSync, lastBg, local, health ->
         SettingsUiState(
-            enabledMetrics = config.first.first,
-            prefsReady = config.second,
-            rangeDays = config.first.second,
-            autoSync = config.first.third,
+            enabledMetrics = config.enabledMetrics,
+            prefsReady = config.ready,
+            rangeDays = config.syncRangeDays,
+            autoSync = config.autoSync,
             lastBackgroundSyncLabel = RelativeTime.format(lastBg.first),
             lastBackgroundStatusTitle = SyncOutcomeLabels.title(lastBg.second),
             lastBackgroundDetail = SyncOutcomeLabels.detail(lastBg.second, lastBg.third),
@@ -120,9 +113,6 @@ class SettingsViewModel(
             lastSyncDetail = SyncOutcomeLabels.detail(lastSync.second, lastSync.third),
             lastSyncIsError = SyncOutcomeLabels.isError(lastSync.second),
             lastSyncIsWarning = SyncOutcomeLabels.isWarning(lastSync.second),
-            canTestBgRefresh = local.canTestBgRefresh,
-            bgTestStatus = local.bgTestStatus,
-            bgTestRunning = local.bgTestRunning,
             showShortcutsHelp = showShortcutsHelp,
             showBackgroundRefreshDetails = true,
             healthServiceName = health.serviceName,
@@ -130,6 +120,8 @@ class SettingsViewModel(
             healthStatusDetail = health.statusDetail,
             healthNeedsAction = !health.isReady,
             loggedOut = local.loggedOut,
+            inboundPermissionMessage = local.inboundPermissionMessage,
+            inboundPermissionNeedsAction = local.inboundPermissionNeedsAction,
         )
     }.stateIn(
         scope = viewModelScope,
@@ -137,7 +129,6 @@ class SettingsViewModel(
         started = SharingStarted.Eagerly,
         initialValue = SettingsUiState(
             prefsReady = false,
-            canTestBgRefresh = localState.value.canTestBgRefresh,
             showShortcutsHelp = showShortcutsHelp,
             healthServiceName = healthAvailability.healthServiceName(),
         ),
@@ -169,6 +160,7 @@ class SettingsViewModel(
             } catch (_: Exception) {
                 // Denied / failed — open Settings or Health Connect below.
             }
+            requestSelectedInboundPermissions()
             if (!healthAvailability.hasWritePermissions()) {
                 healthAvailability.openHealthService()
             }
@@ -179,6 +171,65 @@ class SettingsViewModel(
     fun setMetricEnabled(key: String, enabled: Boolean) {
         viewModelScope.launch {
             syncPreferences.setMetricEnabled(key, enabled)
+            if (key in SyncPreferences.INBOUND_METRIC_KEYS) {
+                localState.update { it.copy(inboundPermissionMessage = null, inboundPermissionNeedsAction = false) }
+            }
+        }
+    }
+
+    fun authorizeWorkoutRoutes() {
+        viewModelScope.launch {
+            try {
+                val until = kotlin.time.Clock.System.now()
+                val days = prefsSnapshot.value.syncRangeDays.coerceIn(1, 27)
+                val granted = healthPermissions.requestWorkoutRoutes(com.bettermifitness.sync.health.HealthInboundReadRequest(
+                    until.epochSeconds - days * 86400L, until.epochSeconds, setOf("com.huami.watch.hmwatchmanager")))
+                localState.update { it.copy(inboundPermissionMessage = L10n.textFmt(L10n.settingsWorkoutRoutesResult, granted),
+                    inboundPermissionNeedsAction = false) }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) {
+                localState.update { it.copy(inboundPermissionMessage = L10n.text(L10n.settingsInboundPermissionsFailed),
+                    inboundPermissionNeedsAction = true) }
+            }
+        }
+    }
+
+    fun openInboundPermissions() {
+        viewModelScope.launch {
+            requestSelectedInboundPermissions()
+            refreshHealth()
+        }
+    }
+
+    private suspend fun requestSelectedInboundPermissions() {
+        val snapshot = prefsSnapshot.value
+        val requested = SyncSelection.inboundMetrics(snapshot.enabledMetrics)
+        if (requested.isEmpty()) return
+        try {
+            val granted = healthPermissions.requestReadPermissions(
+                requested, includeBackground = true, includeHistory = snapshot.syncRangeDays > 27)
+            val missing = requested - granted
+            localState.update {
+                it.copy(
+                    inboundPermissionMessage = if (missing.isEmpty()) {
+                        L10n.text(L10n.settingsInboundPermissionsReady)
+                    } else {
+                        L10n.textFmt(L10n.settingsInboundPermissionsMissing, missing.joinToString(", ") { metric ->
+                            L10n.metric(metric.metricKey)
+                        })
+                    },
+                    inboundPermissionNeedsAction = missing.isNotEmpty(),
+                )
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            localState.update {
+                it.copy(
+                    inboundPermissionMessage = L10n.text(L10n.settingsInboundPermissionsFailed),
+                    inboundPermissionNeedsAction = true,
+                )
+            }
         }
     }
 
@@ -192,30 +243,11 @@ class SettingsViewModel(
         viewModelScope.launch {
             syncPreferences.setAutoSync(enabled)
             if (enabled) {
-                AutoSyncPlatform.scheduleBackgroundRefresh()
+                AutoSyncPlatform.scheduleBackgroundRefresh(runImmediately = true)
             } else {
                 AutoSyncPlatform.cancelBackgroundRefresh()
                 // Staying logged in must not depend on the data-sync toggle.
                 AutoSyncPlatform.scheduleSessionRefresh()
-            }
-        }
-    }
-
-    fun runBackgroundRefreshTest() {
-        if (localState.value.bgTestRunning) return
-        if (!uiState.value.autoSync) return
-
-        localState.update {
-            it.copy(bgTestRunning = true, bgTestStatus = L10n.text(L10n.settingsRunningRefresh))
-        }
-        AutoSyncPlatform.runOpportunisticRefreshTest { status ->
-            viewModelScope.launch {
-                localState.update {
-                    it.copy(
-                        bgTestRunning = false,
-                        bgTestStatus = mapBgTestStatus(status),
-                    )
-                }
             }
         }
     }
@@ -232,19 +264,9 @@ class SettingsViewModel(
         localState.update { it.copy(loggedOut = false) }
     }
 
-    private fun mapBgTestStatus(status: String): String = when (status) {
-        "success" -> L10n.text(L10n.settingsTestOk)
-        "partial_success" -> L10n.text(L10n.settingsPartialOk)
-        "skipped" -> L10n.text(L10n.settingsSkipped)
-        "not_logged_in" -> L10n.text(L10n.settingsNotSignedIn)
-        "cancelled" -> L10n.text(L10n.settingsCancelled)
-        else -> L10n.textFmt(L10n.settingsFailedStatus, status)
-    }
-
     private data class LocalSettingsState(
-        val canTestBgRefresh: Boolean = false,
-        val bgTestStatus: String? = null,
-        val bgTestRunning: Boolean = false,
         val loggedOut: Boolean = false,
+        val inboundPermissionMessage: String? = null,
+        val inboundPermissionNeedsAction: Boolean = false,
     )
 }

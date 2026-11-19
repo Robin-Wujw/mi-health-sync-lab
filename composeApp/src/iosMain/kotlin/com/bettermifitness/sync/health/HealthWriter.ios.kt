@@ -5,6 +5,7 @@ import com.bettermifitness.sync.data.api.ActiveCaloriesSample
 import com.bettermifitness.sync.data.api.BloodPressureSample
 import com.bettermifitness.sync.data.api.DistanceSample
 import com.bettermifitness.sync.data.api.HeartRateSample
+import com.bettermifitness.sync.data.api.HrvAlgorithm
 import com.bettermifitness.sync.data.api.HrvSample
 import com.bettermifitness.sync.data.api.SleepSession
 import com.bettermifitness.sync.data.api.SpO2Sample
@@ -144,7 +145,7 @@ actual class HealthWriter : HealthStore {
                 ),
             )
 
-            val stageSamples = session.stages.map { stage ->
+            val stageSamples = session.stages.mapNotNull { stage ->
                 val start = NSDate.dateWithTimeIntervalSince1970(stage.startTime.toDouble())
                 val end = NSDate.dateWithTimeIntervalSince1970(stage.endTime.toDouble())
                 val value = when (HealthDataNormalizer.miSleepStageKind(stage.stage)) {
@@ -152,7 +153,9 @@ actual class HealthWriter : HealthStore {
                     HealthDataNormalizer.MiSleepStageKind.DEEP -> HKCategoryValueSleepAnalysisAsleepDeep
                     HealthDataNormalizer.MiSleepStageKind.LIGHT -> HKCategoryValueSleepAnalysisAsleepCore
                     HealthDataNormalizer.MiSleepStageKind.REM -> HKCategoryValueSleepAnalysisAsleepREM
-                    HealthDataNormalizer.MiSleepStageKind.UNKNOWN -> HKCategoryValueSleepAnalysisAsleepUnspecified
+                    // Unknown/phone-tracking/conflicting phases do not establish
+                    // that the person was asleep. Keep the in-bed interval only.
+                    HealthDataNormalizer.MiSleepStageKind.UNKNOWN -> return@mapNotNull null
                 }
                 HKCategorySample.categorySampleWithType(
                     type = sleepType,
@@ -435,15 +438,18 @@ actual class HealthWriter : HealthStore {
     }
 
     /**
-     * Writes Mi overnight HRV (ms) into HealthKit HRV SDNN type.
-     * Apple only exposes SDNN publicly; Mi's wrist overnight value is closest available mapping.
+     * HealthKit's HRV quantity is SDNN. Generic overnight HRV and RMSSD must not
+     * be relabelled as SDNN merely because both use milliseconds.
      */
     actual override suspend fun writeHrv(samples: List<HrvSample>) {
-        val clean = HealthDataNormalizer.normalizeHrv(samples)
+        val clean = HrvAlgorithmPolicy.requireCompatible(
+            HealthDataNormalizer.normalizeHrv(samples),
+            HrvAlgorithm.SDNN,
+        )
         if (clean.isEmpty()) return
         val type = HKQuantityType.quantityTypeForIdentifier(
             HKQuantityTypeIdentifierHeartRateVariabilitySDNN,
-        ) ?: return
+        ) ?: throw IllegalStateException("HealthKit HRV SDNN is unavailable")
         val unit = HKUnit.unitFromString("ms")
         val hkSamples = clean.map { s ->
             val date = NSDate.dateWithTimeIntervalSince1970(s.timestamp.toDouble())
@@ -464,6 +470,50 @@ actual class HealthWriter : HealthStore {
     actual override suspend fun readLatestWeight(): WeightMeasurement? {
         val identifier = HKQuantityTypeIdentifierBodyMass ?: return null
         return readLatestQuantity(identifier)
+    }
+
+    // These experimental imports are implemented for Android Health Connect only.
+    // Do not silently present an unsupported HealthKit read as an empty result.
+    actual override suspend fun readWorkouts(request: HealthInboundReadRequest): List<InboundWorkout> =
+        throw UnsupportedOperationException("Workout imports currently require Android Health Connect.")
+
+    actual override suspend fun requestWorkoutRoutes(request: HealthInboundReadRequest): Int = 0
+
+    actual override suspend fun readVo2Max(request: HealthInboundReadRequest): List<InboundVo2Max> =
+        throw UnsupportedOperationException("VO2max imports currently require Android Health Connect.")
+
+    actual override suspend fun readHeartRate(
+        request: HealthInboundReadRequest,
+    ): List<HealthInboundHeartRateRecord> =
+        throw UnsupportedOperationException("Heart-rate imports currently require Android Health Connect.")
+
+    actual override suspend fun readRestingHeartRate(
+        request: HealthInboundReadRequest,
+    ): List<HealthInboundRestingHeartRateRecord> =
+        throw UnsupportedOperationException("Resting-heart-rate imports currently require Android Health Connect.")
+
+    actual override suspend fun readSleep(
+        request: HealthInboundReadRequest,
+    ): List<HealthInboundSleepRecord> =
+        throw UnsupportedOperationException("Sleep imports currently require Android Health Connect.")
+
+    actual override suspend fun readHrv(
+        request: HealthInboundReadRequest,
+    ): List<HealthInboundHrvRecord> =
+        throw UnsupportedOperationException("Experimental HRV imports currently require Android Health Connect.")
+
+    actual override suspend fun readOxygenSaturation(
+        request: HealthInboundReadRequest,
+    ): List<HealthInboundOxygenSaturationRecord> =
+        throw UnsupportedOperationException("Oxygen-saturation imports currently require Android Health Connect.")
+
+    actual override suspend fun requestReadPermissions(
+        metrics: Set<HealthInboundMetric>,
+        includeBackground: Boolean,
+        includeHistory: Boolean,
+    ): Set<HealthInboundMetric> {
+        if (metrics.isEmpty()) return emptySet()
+        throw UnsupportedOperationException("Experimental metric imports currently require Android Health Connect.")
     }
 
     @OptIn(ExperimentalForeignApi::class)

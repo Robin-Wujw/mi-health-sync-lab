@@ -2,7 +2,6 @@ package com.bettermifitness.sync.data.preferences
 
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
-import androidx.datastore.preferences.core.edit
 import com.mifitness.miclient.auth.MiCredentials
 import kotlinx.coroutines.flow.Flow
 
@@ -11,7 +10,7 @@ import kotlinx.coroutines.flow.Flow
  * (logout, full clear). Prefer injecting the focused stores when possible (ISP).
  */
 class TokenStore(
-    private val dataStore: DataStore<Preferences>,
+    dataStore: DataStore<Preferences>,
     val credentials: CredentialsStore = CredentialsStore(dataStore),
     val sync: SyncPreferences = SyncPreferences(dataStore),
 ) {
@@ -41,15 +40,17 @@ class TokenStore(
     suspend fun setSyncRangeDays(days: Int) = sync.setSyncRangeDays(days)
 
     /**
-     * Logout wipe. Keeps the stable device identity so the next sign-in is
-     * recognized as the same trusted install instead of a brand-new device.
+     * Logout clears credentials and activity, preserving sync settings and the stable
+     * device identity so the next sign-in is recognized as the same trusted install.
+     *
+     * Also keeps the account-scoped upload journals and explicit workout recovery backup
+     * in this app-private preferences file. Losing the upload journals would turn this
+     * app's own uploads into records of unknown origin, which can never be corrected, and
+     * would lift the lock that stops an uncertain upload from being repeated.
      */
     suspend fun clear() {
-        // Logout wipes tokens but keeps the trusted device id, so the next
-        // sign-in presents the same install instead of a new device (no repeat OTP).
-        val deviceId = credentials.loadDeviceId()
-        dataStore.edit { it.clear() }
-        credentials.restoreDeviceId(deviceId.ifBlank { credentials.ensureDeviceId() })
+        credentials.clearCredentials()
+        sync.clearSyncHistory()
     }
 
     companion object {

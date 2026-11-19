@@ -42,23 +42,6 @@ struct SettingsView: View {
                     get: { store.state.autoSync },
                     set: { store.setAutoSync($0) }
                 ))
-                if store.state.canTestBgRefresh {
-                    Button {
-                        store.runBgTest()
-                    } label: {
-                        if store.state.bgTestRunning {
-                            ProgressView()
-                        } else {
-                            Text(L10n.settingsTestBackgroundRefresh)
-                        }
-                    }
-                    .disabled(!store.state.autoSync || store.state.bgTestRunning)
-                }
-                if let status = store.state.bgTestStatus {
-                    Text(status)
-                        .font(.caption)
-                        .foregroundStyle(Brand.secondaryLabel)
-                }
             }
 
             Section(L10n.settingsSectionMetrics) {

@@ -189,6 +189,7 @@ enum BackgroundSyncManager {
                 let code = (status as? String) ?? BackgroundSync.shared.STATUS_FAILED
                 // success or quiet skip both count as a completed task for the OS
                 let ok = code == BackgroundSync.shared.STATUS_SUCCESS
+                    || code == BackgroundSync.shared.STATUS_COMPLETED_WITH_SKIPS
                     || code == BackgroundSync.shared.STATUS_SKIPPED
                 print("[BGSync] opportunistic sync finished status=\(code)")
                 finish(success: ok)
@@ -220,6 +221,7 @@ enum BackgroundSyncManager {
             BackgroundSync.shared.runOpportunisticBackgroundSync { status in
                 let code = (status as? String) ?? BackgroundSync.shared.STATUS_FAILED
                 let ok = code == BackgroundSync.shared.STATUS_SUCCESS
+                    || code == BackgroundSync.shared.STATUS_COMPLETED_WITH_SKIPS
                     || code == BackgroundSync.shared.STATUS_SKIPPED
                 print("[BGSync] processing sync finished status=\(code)")
                 finish(success: ok)

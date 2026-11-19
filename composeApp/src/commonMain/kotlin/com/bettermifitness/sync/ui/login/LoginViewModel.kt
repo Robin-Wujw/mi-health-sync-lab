@@ -494,8 +494,8 @@ class LoginViewModel(
             }
             return
         }
-        sessionManager.activate(effective)
         credentialsStore.saveCredentials(effective)
+        sessionManager.activate(effective)
         // Pick the health cloud shard that actually holds the newest samples.
         try {
             val discovered = regionDiscovery.discover(effective)

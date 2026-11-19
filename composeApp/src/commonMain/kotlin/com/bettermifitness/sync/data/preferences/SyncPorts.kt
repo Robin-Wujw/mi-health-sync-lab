@@ -10,6 +10,15 @@ interface CredentialsPort {
     suspend fun saveCredentials(credentials: MiCredentials)
 
     /**
+     * Saves a rotated passToken the moment Xiaomi issues it, before the rest of the refresh
+     * has finished. Does not count as a completed refresh, so a stale session stays stale.
+     */
+    suspend fun savePassToken(passToken: String) = Unit
+
+    suspend fun requiresReauthentication(): Boolean = false
+    suspend fun markReauthenticationRequired() = Unit
+
+    /**
      * Epoch seconds of the last successful login or passport refresh, or null when unknown
      * (never signed in, or credentials stored by a build that predates this key).
      *
@@ -32,6 +41,9 @@ interface SyncPreferencesPort {
     val autoSync: Flow<Boolean>
     val enabledMetrics: Flow<Set<String>>
     val syncRangeDays: Flow<Int>
+    /** Start/end of actual work, including failed or cancelled manual runs. */
+    val lastSyncActivityTime: Flow<String?>
+    suspend fun updateLastSyncActivity(timestamp: String)
     suspend fun updateLastSync(timestamp: String)
     suspend fun updateLastBackgroundSync(timestamp: String)
     suspend fun updateLastSyncOutcome(status: String, message: String?)
@@ -50,11 +62,14 @@ data class UserPrefsSnapshot(
     val autoSync: Boolean = false,
     val lastSyncTime: String? = null,
     val lastBackgroundSyncTime: String? = null,
+    val inboundTestMode: Boolean = false,
 )
 
 /** ISP: ensure Mi API session is usable. */
 interface SyncSessionPort {
     suspend fun ensureActive(): Boolean
+
+    val requiresReauthentication: Boolean get() = false
 
     /**
      * Re-mints the session when it has not been refreshed recently.

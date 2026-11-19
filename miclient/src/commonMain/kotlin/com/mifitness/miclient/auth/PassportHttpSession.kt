@@ -44,6 +44,15 @@ object PassportHttpSession {
         }
     }
 
+    /** Passport credentials are opaque cookie values; percent-encoding changes the credential. */
+    suspend fun seedPassTokenCookie(storage: AcceptAllCookiesStorage, passToken: String) {
+        storage.addCookie(
+            Url("https://account.xiaomi.com/"),
+            Cookie(name = "passToken", value = passToken, encoding = CookieEncoding.RAW,
+                domain = ".xiaomi.com", path = "/"),
+        )
+    }
+
     /** Seeds the captcha `ick` token so the retry posts on the same session. */
     suspend fun seedIckCookie(storage: AcceptAllCookiesStorage, ick: String) {
         if (ick.isEmpty()) return

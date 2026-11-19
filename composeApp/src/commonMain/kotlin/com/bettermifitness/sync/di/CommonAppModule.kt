@@ -5,6 +5,8 @@ import com.bettermifitness.sync.data.MiSessionManager
 import com.bettermifitness.sync.data.preferences.CredentialsPort
 import com.bettermifitness.sync.data.preferences.CredentialsStore
 import com.bettermifitness.sync.data.preferences.SyncPreferences
+import com.bettermifitness.sync.data.preferences.BodySyncLedger
+import com.bettermifitness.sync.data.preferences.HealthImportLedger
 import com.bettermifitness.sync.data.preferences.SyncPreferencesPort
 import com.bettermifitness.sync.data.preferences.SyncSessionPort
 import com.bettermifitness.sync.data.preferences.TokenStore
@@ -20,6 +22,7 @@ import com.bettermifitness.sync.ui.home.HomeViewModel
 import com.bettermifitness.sync.ui.login.LoginViewModel
 import com.bettermifitness.sync.ui.settings.SettingsViewModel
 import com.bettermifitness.sync.ui.sync.SyncViewModel
+import com.bettermifitness.sync.zepp.*
 import com.mifitness.miclient.auth.MiAuth
 import org.koin.core.module.Module
 import org.koin.core.module.dsl.viewModelOf
@@ -33,11 +36,16 @@ fun commonAppModule(): Module = module {
     single { CredentialsStore(get()) }
     single<CredentialsPort> { get<CredentialsStore>() }
     single { SyncPreferences(get()) }
+    single { BodySyncLedger(get()) }
+    single { HealthImportLedger(get()) }
     single<SyncPreferencesPort> { get<SyncPreferences>() }
     single { TokenStore(get(), get(), get()) }
 
     single { MiAuth() }
     single { MiSessionManager(credentialsStore = get(), miAuth = get()) }
+    single { ZeppSessionStore(get()) }
+    single { ZeppCloudClient() }
+    single { ZeppSyncService(get(), get(), get(), get(), get()) }
     single<SyncSessionPort> { get<MiSessionManager>() }
     single { MiRegionDiscovery() }
 
@@ -48,7 +56,7 @@ fun commonAppModule(): Module = module {
     single<HealthAvailability> { get<HealthWriter>() }
     single<HealthPermissionRequester> { get<HealthWriter>() }
 
-    single { HealthRepository(get(), get<HealthStore>()) }
+    single { HealthRepository(get(), get<HealthStore>(), get(), get(), get(), get()) }
     single<HealthSyncRunner> { get<HealthRepository>() }
     single {
         SyncCoordinator(
@@ -58,6 +66,7 @@ fun commonAppModule(): Module = module {
             healthAvailability = get<HealthAvailability>(),
             healthPermissions = get<HealthPermissionRequester>(),
             repository = get<HealthSyncRunner>(),
+            zeppSync = get(),
         )
     }
 
@@ -72,4 +81,5 @@ fun commonAppModule(): Module = module {
     viewModelOf(::HomeViewModel)
     viewModelOf(::SyncViewModel)
     viewModelOf(::SettingsViewModel)
+    viewModelOf(::ZeppSettingsViewModel)
 }

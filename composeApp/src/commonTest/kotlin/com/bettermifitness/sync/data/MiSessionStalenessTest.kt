@@ -22,7 +22,7 @@ class MiSessionStalenessTest {
     @Test
     fun freshSession_isNotStale() {
         assertFalse(isSessionStale(now - 1.hours.inWholeSeconds, now))
-        assertFalse(isSessionStale(now - 23.hours.inWholeSeconds, now))
+        assertFalse(isSessionStale(now - 5.hours.inWholeSeconds, now))
         assertFalse(isSessionStale(now, now))
     }
 
@@ -52,7 +52,7 @@ class MiSessionStalenessTest {
     }
 
     @Test
-    fun defaultThresholdIsOneDay() {
-        assertTrue(PROACTIVE_REFRESH_AFTER == 1.days)
+    fun defaultThresholdIsSixHours() {
+        assertTrue(PROACTIVE_REFRESH_AFTER == 6.hours)
     }
 }

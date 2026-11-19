@@ -109,6 +109,7 @@ enum L10n {
     static var syncStatusDone: String { s(strings.sync_status_done) }
     static var outcomeNotSynced: String { s(strings.outcome_not_synced) }
     static var outcomeSuccessDetail: String { s(strings.outcome_success_detail) }
+    static var syncStatusWithExclusions: String { s(strings.sync_status_with_exclusions) }
     static var outcomeCouldNotFinish: String { s(strings.outcome_could_not_finish) }
     static var outcomeIdleDetail: String { s(strings.outcome_idle_detail) }
     static var syncStatusFailed: String { s(strings.sync_status_failed) }

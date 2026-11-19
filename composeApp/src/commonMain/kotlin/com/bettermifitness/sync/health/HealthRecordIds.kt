@@ -6,9 +6,10 @@ package com.bettermifitness.sync.health
  * Same logical Mi sample → same id on every sync so platforms **upsert** instead of duplicating.
  * Prefix `mifit-` is kept for backward compatibility with records already written.
  *
- * [version] must be a positive Long. Prefer content-derived versions so identical re-syncs
- * are no-ops; when source values change, a different version triggers an update (HC requires
- * greater-or-equal; HK prefers higher version — we always use a positive content fingerprint).
+ * [version] is a content fingerprint, not a monotonically increasing revision. Health
+ * Connect requires a strictly larger version for updates, so the Android writer combines
+ * its persisted revision clock with this fingerprint (see [stampedHealthRecordVersion]).
+ * Legacy iOS version handling is separate and has not been migrated by this Android build.
  */
 object HealthRecordIds {
 
@@ -83,8 +84,8 @@ object HealthRecordIds {
         (timestampSec / HEART_RATE_WINDOW_SEC) * HEART_RATE_WINDOW_SEC
 
     /**
-     * Stable positive content version for upsert metadata.
-     * Identical inputs → identical version (idempotent re-sync).
+     * Stable positive content fingerprint. Identical inputs produce the same value.
+     * Do not use it as a Health Connect revision: changed content may hash lower.
      */
     fun version(vararg parts: Any?): Long {
         var h = 0xcbf29ce484222325uL // FNV-1a 64 offset

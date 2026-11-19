@@ -5,7 +5,7 @@ package com.bettermifitness.sync
  * Kotlin Settings can schedule/cancel BGAppRefresh and read status.
  */
 actual object AutoSyncPlatform {
-    actual fun scheduleBackgroundRefresh() {
+    actual fun scheduleBackgroundRefresh(runImmediately: Boolean) {
         AutoSyncBridge.invokeSchedule()
     }
 

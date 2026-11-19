@@ -24,7 +24,7 @@ import kotlin.random.Random
 object MiCloudSigner {
 
     /**
-     * Builds the four encrypted form fields for a POST request.
+     * Builds the four encrypted fields for a GET or POST request.
      *
      * @param path      the URL path used for signing (e.g. "/user/get_miot_user_profile")
      * @param ssecurity the base64 ssecurity from Mi Account login
@@ -36,17 +36,19 @@ object MiCloudSigner {
         path: String,
         ssecurity: String,
         plaintext: String,
+        method: String = "POST",
     ): EncryptedRequest {
+        require(method == "POST" || method == "GET") { "Unsupported Mi cloud signing method" }
         val nonce = generateNonce()
         val signedNonce = computeSignedNonce(ssecurity, nonce)
 
-        val preHashInput = "POST&$path&data=$plaintext&$signedNonce"
+        val preHashInput = "$method&$path&data=$plaintext&$signedNonce"
         val rc4HashPlain = base64Encode(Hash.sha1(preHashInput.encodeToByteArray()))
         val rc4HashEncrypted = base64Encode(rc4Encrypt(signedNonce, rc4HashPlain.encodeToByteArray()))
 
         val encryptedData = base64Encode(rc4Encrypt(signedNonce, plaintext.encodeToByteArray()))
 
-        val signatureInput = "POST&$path&data=$encryptedData&rc4_hash__=$rc4HashEncrypted&$signedNonce"
+        val signatureInput = "$method&$path&data=$encryptedData&rc4_hash__=$rc4HashEncrypted&$signedNonce"
         val signature = base64Encode(Hash.sha1(signatureInput.encodeToByteArray()))
 
         return EncryptedRequest(
@@ -84,7 +86,7 @@ object MiCloudSigner {
         return base64Encode(buffer)
     }
 
-    internal fun computeSignedNonce(ssecurityBase64: String, nonceBase64: String): String {
+    fun computeSignedNonce(ssecurityBase64: String, nonceBase64: String): String {
         val ssecurity = base64Decode(ssecurityBase64)
         val nonce = base64Decode(nonceBase64)
         return base64Encode(Hash.sha256(ssecurity + nonce))

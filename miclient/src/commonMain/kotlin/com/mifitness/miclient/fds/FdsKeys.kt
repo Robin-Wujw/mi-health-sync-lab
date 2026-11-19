@@ -17,6 +17,9 @@ import kotlin.io.encoding.ExperimentalEncodingApi
  */
 @OptIn(ExperimentalEncodingApi::class)
 object FdsKeys {
+    fun contentFingerprint(bytes: ByteArray): String = Hash.sha256(bytes)
+        .joinToString("") { (it.toInt() and 255).toString(16).padStart(2, '0') }
+
     /** Android Base64 flags: URL_SAFE | NO_PADDING | NO_WRAP = 11. */
     private val urlSafeNoPad = Base64.UrlSafe.withPadding(Base64.PaddingOption.ABSENT)
 

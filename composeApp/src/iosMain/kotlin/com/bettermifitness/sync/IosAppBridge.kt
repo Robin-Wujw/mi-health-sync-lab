@@ -111,6 +111,7 @@ object IosAppBridge : KoinComponent {
             is SyncState.Idle -> "idle"
             is SyncState.InProgress -> "progress"
             is SyncState.Success -> "success"
+            is SyncState.NoData -> "no_data"
             is SyncState.Error -> "error"
         }
 
@@ -119,6 +120,7 @@ object IosAppBridge : KoinComponent {
             is SyncState.Idle -> L10n.text(L10n.syncStatusWaiting)
             is SyncState.InProgress -> L10n.text(L10n.syncStatusSyncing)
             is SyncState.Success -> if (s.count > 0) L10n.textFmt(L10n.syncRecords, s.count) else L10n.text(L10n.syncStatusDone)
+            is SyncState.NoData -> s.message
             is SyncState.Error -> s.message
         }
 

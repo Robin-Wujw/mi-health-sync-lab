@@ -5,7 +5,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-class SyncOutcomeLabelsTest {
+class SyncOutcomeLabelsTest : com.bettermifitness.sync.LocalizedTest() {
 
     @Test
     fun titles_forKnownStatuses() {
@@ -26,7 +26,7 @@ class SyncOutcomeLabelsTest {
                 .contains("try again", ignoreCase = true),
         )
         assertEquals(
-            "Mi Fitness synced to Health",
+            "The selected sync directions completed",
             SyncOutcomeLabels.detail(SyncOutcome.STATUS_SUCCESS, null),
         )
     }
@@ -38,5 +38,27 @@ class SyncOutcomeLabelsTest {
         // Skipped is neutral: a no-op run must never render as a partial sync.
         assertFalse(SyncOutcomeLabels.isWarning(SyncOutcome.STATUS_SKIPPED))
         assertFalse(SyncOutcomeLabels.isError(SyncOutcome.STATUS_SUCCESS))
+    }
+
+    @Test
+    fun completedWithSkipsHidesLegacyCountsAndUsesNormalSuccessPresentation() {
+        val outcome = SyncOutcome.CompletedWithSkips("Verified 760. Skipped 1.")
+        assertEquals("completed_with_skips", outcome.toStatusCode())
+        assertEquals("You're up to date", SyncOutcomeLabels.title(outcome.toStatusCode()))
+        assertEquals("The selected sync directions completed",
+            SyncOutcomeLabels.detail(outcome.toStatusCode(), outcome.summary))
+        assertFalse(SyncOutcomeLabels.isWarning(outcome.toStatusCode()))
+        assertFalse(SyncOutcomeLabels.isError(outcome.toStatusCode()))
+        assertFalse(outcome.shouldRetryBackground())
+    }
+
+    @Test
+    fun missingSourceDataIsNeutralWhileActualFailuresStillShowTheirError() {
+        assertFalse(SyncOutcomeLabels.isWarning(SyncOutcome.STATUS_NO_DATA))
+        assertFalse(SyncOutcomeLabels.isError(SyncOutcome.STATUS_NO_DATA))
+        assertEquals("No usable data", SyncOutcomeLabels.detail(SyncOutcome.STATUS_NO_DATA, "Old device-format warning"))
+        assertEquals("Readback failed", SyncOutcomeLabels.detail(SyncOutcome.STATUS_FAILED, "Readback failed"))
+        assertTrue(SyncOutcomeLabels.isError(SyncOutcome.STATUS_FAILED))
+        assertTrue(SyncOutcomeLabels.isWarning(SyncOutcome.STATUS_PARTIAL_SUCCESS))
     }
 }

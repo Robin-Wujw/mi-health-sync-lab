@@ -2,6 +2,7 @@ package com.bettermifitness.sync.ui.sync
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.bettermifitness.sync.data.MiSessionManager
 import com.bettermifitness.sync.data.preferences.SyncPreferences
 import com.bettermifitness.sync.data.repository.HealthRepository
 import com.bettermifitness.sync.data.repository.SyncProgress
@@ -12,6 +13,9 @@ import com.bettermifitness.sync.i18n.L10n
 import com.bettermifitness.sync.sync.SyncCoordinator
 import com.bettermifitness.sync.sync.SyncOutcome
 import com.bettermifitness.sync.ui.SyncMetric
+import com.bettermifitness.sync.ui.SyncSelection
+import com.bettermifitness.sync.zepp.ZeppSyncService
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -21,6 +25,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 data class SyncUiState(
+    val requiresSignIn: Boolean = false,
     val isSyncing: Boolean = false,
     val healthAvailable: Boolean = true,
     val availabilityHint: String? = null,
@@ -39,11 +44,17 @@ data class SyncUiState(
 ) {
     val visibleMetrics: List<SyncMetric>
         get() = SyncMetric.entries.filter { it.key in enabledMetrics }
+
+    val visibleInboundMetrics: List<String>
+        get() = (SyncPreferences.INBOUND_METRIC_KEYS + SyncPreferences.ZEPP_CLOUD_METRIC_KEYS).filter { it in enabledMetrics }
+
+    val hasSelectedSyncTasks: Boolean
+        get() = SyncSelection.selectedTaskKeys(enabledMetrics).isNotEmpty()
 }
 
 /**
  * Foreground sync UI: observes shared [SyncCoordinator] + repository progress.
- * Does **not** own single-flight — [SyncCoordinator.run] is the only gate.
+ * Does **not** own single-flight — normal sync and explicit recovery share the coordinator gate.
  */
 class SyncViewModel(
     private val repository: HealthRepository,
@@ -51,6 +62,8 @@ class SyncViewModel(
     private val healthPermissions: HealthPermissionRequester,
     private val syncPreferences: SyncPreferences,
     private val syncCoordinator: SyncCoordinator,
+    private val session: MiSessionManager,
+    private val zeppSync: ZeppSyncService,
 ) : ViewModel() {
 
     private val local = MutableStateFlow(
@@ -62,18 +75,41 @@ class SyncViewModel(
         repository.syncProgress,
         syncPreferences.snapshot,
         syncCoordinator.isRunning,
-    ) { local, progress, snap, running ->
+        combine(
+            syncCoordinator.lastOutcome,
+            combine(session.reauthenticationRequired, zeppSync.connected) { requiresSignIn, zeppConnected ->
+                requiresSignIn to zeppConnected
+            },
+        ) { lastOutcome, auth ->
+            lastOutcome to auth
+        },
+    ) { local, progress, snap, running, outcomeAndAuth ->
+        val lastOutcome = outcomeAndAuth.first
+        val auth = outcomeAndAuth.second
+        val requiresSignIn = auth.first
+        val zeppConnected = auth.second
+        val enabled = if (zeppConnected) {
+            snap.enabledMetrics + SyncPreferences.ZEPP_CLOUD_IMPORT_KEY
+        } else {
+            snap.enabledMetrics - SyncPreferences.ZEPP_CLOUD_IMPORT_KEY
+        }
         SyncUiState(
+            requiresSignIn = requiresSignIn,
             // App-wide: still true after leaving and re-entering Sync.
             isSyncing = running,
-            healthAvailable = local.healthAvailable,
+            healthAvailable = local.healthAvailable || !SyncSelection.requiresHealthConnect(enabled),
             availabilityHint = local.availabilityHint,
-            permissionError = local.permissionError,
+            permissionError = local.permissionError ?: when (lastOutcome) {
+                is SyncOutcome.Failed -> lastOutcome.message ?: L10n.text(L10n.syncFailed)
+                SyncOutcome.HealthUnavailable -> L10n.textFmt(L10n.syncHealthUnavailable, local.healthServiceName)
+                SyncOutcome.NotLoggedIn -> L10n.text(L10n.syncNotLoggedIn)
+                else -> null
+            },
             outcomeMessage = local.outcomeMessage,
             outcomeIsWarning = local.outcomeIsWarning,
             healthServiceName = local.healthServiceName,
             rangeDays = snap.syncRangeDays,
-            enabledMetrics = snap.enabledMetrics,
+            enabledMetrics = enabled,
             prefsReady = snap.ready,
             progress = progress,
             readinessChecked = local.readinessChecked,
@@ -101,6 +137,9 @@ class SyncViewModel(
         }
     }
 
+    /** Compatibility entry point: normal sync now handles every selected import. */
+    fun processUnfinishedData() = startSync()
+
     fun openHealthService() {
         viewModelScope.launch {
             try {
@@ -108,6 +147,7 @@ class SyncViewModel(
             } catch (_: Exception) {
                 // Denied / failed — open Settings or Health Connect below.
             }
+            requestSelectedInboundPermissions()
             if (!healthAvailability.hasWritePermissions()) {
                 healthAvailability.openHealthService()
             }
@@ -129,7 +169,38 @@ class SyncViewModel(
         "blood_pressure" -> progress.bloodPressure
         "temperature" -> progress.temperature
         "vo2_max" -> progress.vo2Max
+        SyncPreferences.HEART_RATE_IMPORT_KEY -> progress.heartRateImport
+        SyncPreferences.RESTING_HEART_RATE_IMPORT_KEY -> progress.restingHeartRateImport
+        SyncPreferences.SLEEP_IMPORT_KEY -> progress.sleepImport
+        SyncPreferences.HRV_IMPORT_KEY -> progress.hrvImport
+        SyncPreferences.SPO2_IMPORT_KEY -> progress.spo2Import
+        SyncPreferences.WORKOUTS_IMPORT_KEY -> progress.workoutsImport
+        SyncPreferences.VO2_MAX_IMPORT_KEY -> progress.vo2MaxImport
+        SyncPreferences.ZEPP_CLOUD_IMPORT_KEY -> progress.zeppCloudImport
         else -> SyncState.Idle
+    }
+
+    private suspend fun requestSelectedInboundPermissions() {
+        val snapshot = syncPreferences.snapshot.value
+        val requested = SyncSelection.inboundMetrics(snapshot.enabledMetrics)
+        if (requested.isEmpty()) return
+        try {
+            val granted = healthPermissions.requestReadPermissions(
+                requested, includeBackground = true, includeHistory = snapshot.syncRangeDays > 27)
+            val missing = requested - granted
+            local.update {
+                it.copy(
+                    permissionError = if (missing.isEmpty()) null else L10n.textFmt(
+                        L10n.settingsInboundPermissionsMissing,
+                        missing.joinToString(", ") { metric -> L10n.metric(metric.metricKey) },
+                    ),
+                )
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            local.update { it.copy(permissionError = L10n.text(L10n.settingsInboundPermissionsFailed)) }
+        }
     }
 
     /** Health check only — never auto-starts sync on screen enter (spam-safe). */
@@ -179,11 +250,7 @@ class SyncViewModel(
         }
         try {
             when (
-                val outcome = syncCoordinator.run(
-                    requestHealthPermissions = true,
-                    resetProgress = true,
-                    userInitiated = true,
-                )
+                val outcome = com.bettermifitness.sync.sync.runUserSync(syncCoordinator)
             ) {
                 SyncOutcome.AlreadyRunning -> {
                     // Another caller owns the run; UI already shows isSyncing via coordinator.
@@ -208,6 +275,12 @@ class SyncViewModel(
                     local.update {
                         it.copy(outcomeMessage = L10n.text(L10n.syncNothingToSync))
                     }
+                is SyncOutcome.NoData -> local.update {
+                    it.copy(outcomeMessage = null, outcomeIsWarning = false)
+                }
+                is SyncOutcome.CompletedWithSkips -> local.update {
+                    it.copy(outcomeMessage = null, outcomeIsWarning = false)
+                }
                 SyncOutcome.Success ->
                     local.update {
                         it.copy(

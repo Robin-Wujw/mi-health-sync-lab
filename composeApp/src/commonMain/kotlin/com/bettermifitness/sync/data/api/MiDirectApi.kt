@@ -1,18 +1,24 @@
 package com.bettermifitness.sync.data.api
 
+import com.bettermifitness.sync.health.HealthDataNormalizer
 import com.mifitness.miclient.api.MiDataClient
 import com.mifitness.miclient.fds.FdsClient
 import com.mifitness.miclient.fds.FdsKeys
 import com.mifitness.miclient.gps.GpsPoint
 import com.mifitness.miclient.gps.SportGpsBinary
 import com.mifitness.miclient.gps.SportRecordBinary
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.boolean
-import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.long
+import kotlinx.serialization.json.put
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
  * Direct-to-Mi implementation of the data API. Uses [MiDataClient] to make
@@ -22,8 +28,6 @@ import kotlinx.serialization.json.long
  * [HealthRepository] depends on, returning the same [FitnessResponse] shapes.
  */
 class MiDirectApi(private val client: MiDataClient) {
-    private val json = Json { ignoreUnknownKeys = true }
-
     /** Exposed for shared FDS downloads (session owns the underlying HTTP client). */
     fun dataClient(): MiDataClient = client
 
@@ -37,18 +41,9 @@ class MiDirectApi(private val client: MiDataClient) {
         to: String,
         nextKey: String? = null,
     ): FitnessResponse<HeartRateEntry> {
-        val payload = buildMap<String, Any?> {
-            put("key", key)
-            put("start_time", parseToUnix(from))
-            put("end_time", parseToUnix(to))
-            put("reverse", true)
-            if (!nextKey.isNullOrEmpty()) put("next_key", nextKey)
+        return readMiFitnessTimePage(key, parseToUnix(from), parseToUnix(to), nextKey) { payload ->
+            client.post(path = "/app/v1/data/get_fitness_data_by_time", payload = payload)
         }
-        val result = client.post(
-            path = "/app/v1/data/get_fitness_data_by_time",
-            payload = payload,
-        )
-        return parseDataListResponse(result)
     }
 
     /**
@@ -62,7 +57,7 @@ class MiDirectApi(private val client: MiDataClient) {
             path = "/app/v1/data/get_latest_fitness_data",
             payload = mapOf("params" to params),
         )
-        return parseLatestResponse(result)
+        return parseMiLatestResponse(result)
     }
 
     /**
@@ -86,7 +81,7 @@ class MiDirectApi(private val client: MiDataClient) {
             path = "/app/v1/data/get_medical_data_by_time",
             payload = payload,
         )
-        return parseDataListResponse(result)
+        return parseMiDataListResponse(result)
     }
 
     /**
@@ -100,7 +95,7 @@ class MiDirectApi(private val client: MiDataClient) {
             path = "/app/v1/data/get_latest_medical_data",
             payload = mapOf("params" to params),
         )
-        return parseLatestResponse(result)
+        return parseMiLatestResponse(result)
     }
 
     /**
@@ -112,44 +107,22 @@ class MiDirectApi(private val client: MiDataClient) {
         to: String,
         maxPages: Int = 40,
     ): List<SportRecordEntry> {
+        val fromSeconds = parseToUnix(from)
+        val untilSeconds = parseToUnix(to)
         val all = mutableListOf<SportRecordEntry>()
         var next: String? = null
-        var pages = 0
-        while (pages < maxPages) {
-            val payload = buildMap<String, Any?> {
-                put("start_time", parseToUnix(from))
-                put("end_time", parseToUnix(to))
-                put("limit", 50)
-                if (!next.isNullOrEmpty()) put("next_key", next)
-            }
+        val cursor = MiPageCursorGuard(maxPages)
+        do {
+            val payload = buildMiWorkoutReadPayload(fromSeconds, untilSeconds, next)
             val result = client.post(
                 path = "/app/v1/data/get_sport_records_by_time",
                 payload = payload,
             )
-            val resultObj = result.jsonObject["result"]?.jsonObject ?: break
-            val list = resultObj["sport_records"]?.jsonArray.orEmpty()
-            for (item in list) {
-                val obj = item.jsonObject
-                val valueEl = obj["value"]
-                val valueStr = when {
-                    valueEl == null -> ""
-                    valueEl.jsonPrimitive.isString -> valueEl.jsonPrimitive.content
-                    else -> valueEl.toString()
-                }
-                all += SportRecordEntry(
-                    key = obj["key"]?.jsonPrimitive?.content,
-                    time = obj["time"]?.jsonPrimitive?.long ?: 0,
-                    value = valueStr,
-                    category = obj["category"]?.jsonPrimitive?.content,
-                )
-            }
-            pages++
-            val hasMore = resultObj["has_more"]?.jsonPrimitive?.boolean ?: false
-            val nextKey = resultObj["next_key"]?.jsonPrimitive?.content
-            if (!hasMore || nextKey.isNullOrEmpty()) break
-            next = nextKey
-        }
-        return all
+            val page = parseMiSportRecordsPage(result)
+            all += page.dataList
+            next = cursor.nextCursor(page.hasMore, page.nextKey)
+        } while (next != null)
+        return all.filter { it.time >= fromSeconds && it.time < untilSeconds }
     }
 
     /**
@@ -268,26 +241,21 @@ class MiDirectApi(private val client: MiDataClient) {
      * Uploads a single weight measurement to Mi cloud (Health Connect / HealthKit -> Mi).
      * Uses `data/up_fitness_data` with `phone_id` from [MiDataClient.phoneId] and `sid=xiaomiwear_app_manually`.
      * Mirrors APK `FitnessDataRequest.uploadFitnessData` + `FitnessDataModel` shape.
+     * Body composition is opt-in: a successful response still requires a read-back
+     * check with [missingMiWeightUploadFields] to establish which fields survived.
      */
     suspend fun uploadWeight(
         measurement: WeightMeasurement,
         phoneIdOverride: String? = null,
+        includeBodyComposition: Boolean = false,
     ): Boolean {
         val phoneId = phoneIdOverride?.takeIf { it.isNotBlank() } ?: client.phoneId
         val sid = "xiaomiwear_app_manually"
-        val tzUnits = measurement.tzIn15Min
+        val tzUnits = measurement.tzIn15Min?.takeIf { it in -72..72 }
         val offsetSec = tzUnits?.let {
             com.bettermifitness.sync.data.time.MiTimezone.fromPayloadOrNull(it)?.offsetSeconds()
         } ?: 0
-        val valueJson = buildString {
-            append("{")
-            append("\"weight\":${measurement.weightKg}")
-            append(",\"time\":${measurement.timestamp}")
-            tzUnits?.let { append(",\"timezone\":$it") }
-            // Body-fat is not uploaded via weight-only sync (Mi has no standalone body-fat input);
-            // keep payload minimal weight + time + timezone.
-            append("}")
-        }
+        val valueJson = buildMiWeightUploadValue(measurement, includeBodyComposition).toString()
         val dataList = listOf(
             mapOf(
                 "sid" to sid,
@@ -305,9 +273,7 @@ class MiDirectApi(private val client: MiDataClient) {
                 "data_list" to dataList,
             ),
         )
-        val obj = result.jsonObject
-        val code = obj["code"]?.jsonPrimitive?.content?.toIntOrNull()
-        return code == null || code == 0
+        return isMiWeightUploadResponseSuccessful(result)
     }
 
     /**
@@ -325,46 +291,6 @@ class MiDirectApi(private val client: MiDataClient) {
             code = obj["code"]?.jsonPrimitive?.content?.toIntOrNull(),
             message = obj["message"]?.jsonPrimitive?.content,
             result = parseUserProfile(obj["result"]),
-        )
-    }
-
-    private fun parseDataListResponse(json: JsonElement): FitnessResponse<HeartRateEntry> {
-        val obj = json.jsonObject
-        val resultObj = obj["result"]?.jsonObject ?: return FitnessResponse()
-        val dataList = resultObj["data_list"]?.jsonArray?.map { item ->
-            val entry = item.jsonObject
-            HeartRateEntry(
-                key = entry["key"]?.jsonPrimitive?.content,
-                time = entry["time"]?.jsonPrimitive?.long ?: 0,
-                value = entry["value"]?.jsonPrimitive?.content ?: "",
-            )
-        } ?: emptyList()
-        return FitnessResponse(
-            result = FitnessResult(
-                dataList = dataList,
-                hasMore = resultObj["has_more"]?.jsonPrimitive?.boolean ?: false,
-                nextKey = resultObj["next_key"]?.jsonPrimitive?.content,
-            ),
-            code = obj["code"]?.jsonPrimitive?.content?.toIntOrNull(),
-            message = obj["message"]?.jsonPrimitive?.content,
-        )
-    }
-
-    private fun parseLatestResponse(json: JsonElement): FitnessResponse<SleepEntry> {
-        val obj = json.jsonObject
-        val resultObj = obj["result"]?.jsonObject ?: return FitnessResponse()
-        val dataList = resultObj["data_list"]?.jsonArray?.map { item ->
-            val entry = item.jsonObject
-            SleepEntry(
-                key = entry["key"]?.jsonPrimitive?.content,
-                time = entry["time"]?.jsonPrimitive?.long ?: 0,
-                value = entry["value"]?.jsonPrimitive?.content ?: "",
-            )
-        } ?: emptyList()
-        return FitnessResponse(
-            result = FitnessResult(dataList = dataList),
-            code = obj["code"]?.jsonPrimitive?.content?.toIntOrNull(),
-            message = obj["message"]?.jsonPrimitive?.content,
         )
     }
 
@@ -396,4 +322,93 @@ class MiDirectApi(private val client: MiDataClient) {
     }
 
     fun close() { client.close() }
+}
+
+/**
+ * Builds the inner `value` JSON for a Mi `key=weight` record without I/O.
+ *
+ * Schema evidence: Xiaomi WeightItem's serialized field names and the MIT
+ * SmartScaleConnect-S400 `weightToMiFitnessValue` implementation. These establish
+ * candidate fields, not proof that every server/app version retains them.
+ *
+ * Values remain in kg / percentage points / kcal per day. BMR is rounded to the
+ * integer expected by Mi's model. No missing values, muscle mass or visceral-fat
+ * levels are synthesized. `fat_free_body` is an experimental lean-mass mapping;
+ * it is never sent as `muscle_mass`.
+ */
+fun buildMiWeightUploadValue(
+    measurement: WeightMeasurement,
+    includeBodyComposition: Boolean = false,
+): JsonObject {
+    require(HealthDataNormalizer.isPlausibleEpochSeconds(measurement.timestamp)) {
+        "Weight upload requires a Unix timestamp in seconds"
+    }
+    require(measurement.weightKg.isFinite() && measurement.weightKg in 1.0..500.0) {
+        "Weight upload requires a finite weight in kilograms"
+    }
+    val clean = measurement.sanitizedComposition()
+    return buildJsonObject {
+        put("weight", clean.weightKg)
+        put("time", clean.timestamp)
+        clean.tzIn15Min?.takeIf { it in -72..72 }?.let { put("timezone", it) }
+        if (includeBodyComposition) {
+            clean.bodyFatPercent?.let { put("body_fat_rate", it) }
+            clean.boneMassKg?.let { put("bone_mass", it) }
+            clean.basalMetabolismKcal?.let { put("basal_metabolism", it.roundToInt()) }
+            clean.bodyWaterMassKg?.let { put("body_moisture_mass", it) }
+            clean.bodyWaterPercent?.let { put("moisture_rate", it) }
+            clean.leanBodyMassKg?.let { put("fat_free_body", it) }
+        }
+    }
+}
+
+/**
+ * A zero business code is required. The official upload path also returns a
+ * DataBooleanResult (`result.result`): an explicit false is a rejection.
+ * Older response shapes remain compatible, with actual retention checked by read-back.
+ */
+internal fun isMiWeightUploadResponseSuccessful(response: JsonElement): Boolean {
+    val obj = response as? JsonObject ?: return false
+    if ((obj["code"] as? JsonPrimitive)?.intOrNull != 0) return false
+    val result = obj["result"]
+    if ((result as? JsonPrimitive)?.booleanOrNull == false) return false
+    val nestedResult = (result as? JsonObject)?.get("result")
+    return (nestedResult as? JsonPrimitive)?.booleanOrNull != false
+}
+
+/**
+ * Returns Mi field names that an upload did not retain in the record read back.
+ * Only fields actually included by [buildMiWeightUploadValue] are compared.
+ * The caller must select the same account and source (`sid`) record; timestamp
+ * mismatch or an absent record means none of the requested fields is confirmed.
+ *
+ * Mass and percentage values allow 0.05 kg / percentage points, the maximum
+ * rounding error for a destination retaining one decimal place, plus a small
+ * floating-point epsilon. BMR is compared with the integer actually uploaded
+ * (roundToInt), within 1e-6 kcal/day; it is not rounded a second time on read-back.
+ */
+fun missingMiWeightUploadFields(
+    expected: WeightMeasurement,
+    readBack: WeightMeasurement?,
+    includeBodyComposition: Boolean = false,
+): Set<String> {
+    val requested = buildMiWeightUploadValue(expected, includeBodyComposition)
+        .filterKeys { it != "time" && it != "timezone" }
+    if (readBack == null || readBack.timestamp != expected.timestamp) return requested.keys
+
+    val actual: Map<String, Double?> = mapOf(
+        "weight" to readBack.weightKg,
+        "body_fat_rate" to readBack.bodyFatPercent,
+        "bone_mass" to readBack.boneMassKg,
+        "basal_metabolism" to readBack.basalMetabolismKcal,
+        "body_moisture_mass" to readBack.bodyWaterMassKg,
+        "moisture_rate" to readBack.bodyWaterPercent,
+        "fat_free_body" to readBack.leanBodyMassKg,
+    )
+    return requested.keys.filterTo(linkedSetOf()) { field ->
+        val sent = requested.getValue(field).jsonPrimitive.doubleOrNull
+        val received = actual[field]
+        val tolerance = if (field == "basal_metabolism") 1e-6 else 0.05 + 1e-9
+        sent == null || received == null || !received.isFinite() || abs(sent - received) > tolerance
+    }
 }

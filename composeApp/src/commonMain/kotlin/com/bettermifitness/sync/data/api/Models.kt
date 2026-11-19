@@ -49,6 +49,8 @@ data class HeartRateEntry(
     val key: String? = null,
     val time: Long = 0,
     val value: String = "",
+    /** Mi cloud source identity, distinct from an Android package name. */
+    val sid: String? = null,
 )
 
 @Serializable
@@ -57,6 +59,9 @@ data class HeartRateSample(
     val bpm: Int,
     /** Mi `timezone` field: offset in units of 15 minutes (28 → UTC+7). */
     val tzIn15Min: Int? = null,
+    /** Original Mi key/source retained for diagnostics, not a new measurement. */
+    val sourceKey: String? = null,
+    val sourceSid: String? = null,
 )
 
 // --- Sleep ---
@@ -66,6 +71,7 @@ data class SleepEntry(
     val key: String? = null,
     val time: Long = 0,
     val value: String = "",
+    val sid: String? = null,
 )
 
 @Serializable
@@ -76,8 +82,8 @@ data class SleepSession(
     val inBedEnd: Long = 0,
     val stages: List<SleepStage> = emptyList(),
     /**
-     * Overnight HRV from Mi sleep payload (ms). Present only on capable devices
-     * (e.g. Band 10 Pro); Band 10 and similar omit these fields.
+     * Overnight HRV from a Mi sleep payload (ms), when the source provides it.
+     * The field name alone does not identify RMSSD or SDNN.
      */
     val avgHrvMs: Int? = null,
     val minHrvMs: Int? = null,
@@ -96,8 +102,15 @@ data class SleepStage(
 )
 
 /**
- * Overnight HRV sample derived from Mi sleep JSON (`avg_hrv` in ms).
- * Not a separate Mi cloud key — only written when sleep payload includes HRV.
+ * Algorithm identity must come from a verified source contract. A generic HRV
+ * value cannot be converted between RMSSD and SDNN without beat intervals.
+ */
+@Serializable
+enum class HrvAlgorithm { UNKNOWN, RMSSD, SDNN }
+
+/**
+ * HRV sample in milliseconds. Mi's generic overnight `avg_hrv` is retained with
+ * UNKNOWN algorithm for diagnostics; it must not be exported as RMSSD or SDNN.
  */
 @Serializable
 data class HrvSample(
@@ -106,6 +119,12 @@ data class HrvSample(
     val hrvMs: Double,
     /** Mi sleep `timezone` (15-min units), when derived from a sleep session. */
     val tzIn15Min: Int? = null,
+    val algorithm: HrvAlgorithm = HrvAlgorithm.UNKNOWN,
+    val sourceKey: String? = null,
+    val sourceSid: String? = null,
+    val rawSourceJson: String? = null,
+    /** True for a report average, not an individual beat-interval observation. */
+    val isAggregate: Boolean = false,
 )
 
 // --- Steps ---
@@ -176,10 +195,56 @@ data class WeightMeasurement(
     val bodyFatPercent: Double? = null,
     val muscleMassKg: Double? = null,
     val boneMassKg: Double? = null,
+    /** Basal metabolic rate in kilocalories per day. */
     val basalMetabolismKcal: Double? = null,
     /** Mi `timezone` field: offset in units of 15 minutes. */
     val tzIn15Min: Int? = null,
+    val bodyWaterMassKg: Double? = null,
+    val bodyWaterPercent: Double? = null,
+    /** Fat-free body mass, not muscle mass. */
+    val leanBodyMassKg: Double? = null,
+    val skeletalMuscleMassKg: Double? = null,
+    val visceralFatLevel: Double? = null,
+    val proteinPercent: Double? = null,
+    val proteinMassKg: Double? = null,
+    val bmi: Double? = null,
+    val bodyAgeYears: Int? = null,
+    val bodyScore: Double? = null,
+    /** Original cloud value JSON; never treated as an upload payload. */
+    val rawSourceJson: String? = null,
+    /** Android data-origin package when a measurement came from Health Connect. */
+    val sourcePackage: String? = null,
 )
+
+/**
+ * Reject invalid optional values without inventing missing measurements. Used by
+ * both platform-write normalization and the Mi upload serializer. Bounds are
+ * deliberately broad; constituent masses must not exceed the measured weight.
+ */
+internal fun WeightMeasurement.sanitizedComposition(): WeightMeasurement {
+    fun Double?.within(range: ClosedFloatingPointRange<Double>): Double? =
+        this?.takeIf { it.isFinite() && it in range }
+
+    fun Double?.mass(range: ClosedFloatingPointRange<Double>): Double? =
+        within(range)?.takeIf { it <= weightKg }
+
+    return copy(
+        bodyFatPercent = bodyFatPercent.within(1.0..70.0),
+        muscleMassKg = muscleMassKg.mass(1.0..200.0),
+        boneMassKg = boneMassKg.mass(0.1..50.0),
+        basalMetabolismKcal = basalMetabolismKcal.within(200.0..10_000.0),
+        bodyWaterMassKg = bodyWaterMassKg.mass(0.1..500.0),
+        bodyWaterPercent = bodyWaterPercent.within(0.0..100.0),
+        leanBodyMassKg = leanBodyMassKg.mass(0.1..500.0),
+        skeletalMuscleMassKg = skeletalMuscleMassKg.mass(0.1..200.0),
+        visceralFatLevel = visceralFatLevel.within(1.0..100.0),
+        proteinPercent = proteinPercent.within(0.0..100.0),
+        proteinMassKg = proteinMassKg.mass(0.1..500.0),
+        bmi = bmi.within(1.0..200.0),
+        bodyAgeYears = bodyAgeYears?.takeIf { it in 1..150 },
+        bodyScore = bodyScore.within(0.0..100.0),
+    )
+}
 
 // --- Workouts ---
 
@@ -289,6 +354,9 @@ data class SportRecordEntry(
     val time: Long = 0,
     val value: String = "",
     val category: String? = null,
+    val sid: String? = null,
+    val zoneOffsetSeconds: Int? = null,
+    val deleted: Boolean = false,
 )
 
 // --- P2: from Mi FitnessPersistKey + item models (decompiled APK) ---

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- Xiaomi and Zepp sessions share this app-private preferences file. -->
+    <exclude domain="file" path="mi_fitness_prefs.preferences_pb" />
+</full-backup-content>

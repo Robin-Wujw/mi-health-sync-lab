@@ -5,6 +5,7 @@ import com.mifitness.miclient.createPlatformHttpClient
 import com.mifitness.miclient.crypto.MiCloudSigner
 import io.ktor.client.HttpClient
 import io.ktor.client.request.header
+import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
@@ -12,6 +13,7 @@ import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import io.ktor.http.formUrlEncode
 import kotlinx.serialization.json.Json
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -26,8 +28,12 @@ import kotlinx.serialization.json.jsonPrimitive
  */
 class MiDataClient(
     private val credentials: MiCredentials,
-    private val httpClient: HttpClient = createPlatformHttpClient(),
+    // A lost upload response must be reconciled by readback, not by the HTTP
+    // stack silently replaying the data POST. Injected clients must preserve
+    // equivalent body-replay protection when used for writes.
+    private val httpClient: HttpClient = createPlatformHttpClient(allowAutomaticReplay = false),
     private val userAgent: String = DEFAULT_USER_AGENT,
+    private val legacyIdentityCookie: Boolean = false,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -36,6 +42,9 @@ class MiDataClient(
 
     /** Device-scoped phone identifier for fitness data uploads (APK `phoneId`). */
     val phoneId: String get() = credentials.deviceId.ifBlank { "xiaomiwear_app_manually" }
+
+    /** Same saved session, alternate legacy healthapp cookie convention; never exports credentials. */
+    fun legacyHealthAppClient(): MiDataClient = MiDataClient(credentials, legacyIdentityCookie = true)
 
     /**
      * Sends an encrypted POST request and returns the decrypted JSON response.
@@ -51,11 +60,28 @@ class MiDataClient(
         path: String,
         signPath: String = path,
         payload: String,
+    ): JsonElement = encryptedRequest(host, path, signPath, payload, "POST")
+
+    /** Aggregated by-time reads use an encrypted, method-signed GET query. */
+    suspend fun encryptedGet(
+        host: String = healthHost,
+        path: String,
+        signPath: String = path,
+        payload: String,
+    ): JsonElement = encryptedRequest(host, path, signPath, payload, "GET")
+
+    private suspend fun encryptedRequest(
+        host: String,
+        path: String,
+        signPath: String,
+        payload: String,
+        method: String,
     ): JsonElement {
         val encrypted = MiCloudSigner.buildEncryptedRequest(
             path = signPath,
             ssecurity = credentials.ssecurity,
             plaintext = payload,
+            method = method,
         )
 
         val formBody = listOf(
@@ -66,13 +92,21 @@ class MiDataClient(
         ).formUrlEncode()
 
         val response = try {
-            httpClient.post("https://$host$path") {
-                contentType(ContentType.Application.FormUrlEncoded)
-                header("User-Agent", userAgent)
-                header("Cookie", buildCookieHeader())
-                setBody(formBody)
+            if (method == "GET") {
+                httpClient.get("https://$host$path?$formBody") {
+                    header("User-Agent", userAgent)
+                    header("Cookie", buildCookieHeader())
+                }
+            } else {
+                httpClient.post("https://$host$path") {
+                    contentType(ContentType.Application.FormUrlEncoded)
+                    header("User-Agent", userAgent)
+                    header("Cookie", buildCookieHeader())
+                    setBody(formBody)
+                }
             }
         } catch (e: Exception) {
+            if (e is CancellationException) throw e
             throw mapTransportException(e)
         }
 
@@ -171,10 +205,20 @@ class MiDataClient(
         return encryptedPost(host = host, path = path, signPath = signPath, payload = jsonPayload)
     }
 
+    suspend fun get(
+        path: String,
+        signPath: String = path,
+        payload: Map<String, Any?>,
+        host: String = healthHost,
+    ): JsonElement = encryptedGet(host = host, path = path, signPath = signPath, payload =
+        json.encodeToString(JsonElement.serializer(), mapToJsonElement(payload)))
+
     private fun buildCookieHeader(): String {
         // APK plantHealthCookie uses cUserId for .hlth.io.mi.com; fall back to userId for legacy sessions.
         // Official traffic also carries PassportDeviceId on health calls (Reqable record 2213).
-        val identityCookie = if (credentials.cUserId.isNotBlank()) {
+        val identityCookie = if (legacyIdentityCookie) {
+            "userId=${credentials.userId}"
+        } else if (credentials.cUserId.isNotBlank()) {
             "cUserId=${credentials.cUserId}"
         } else {
             "userId=${credentials.userId}"

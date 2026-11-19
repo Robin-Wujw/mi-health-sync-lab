@@ -13,8 +13,9 @@ import com.bettermifitness.sync.health.HealthPermissionRequester
 import com.bettermifitness.sync.health.HealthReadiness
 import com.bettermifitness.sync.sync.SyncCoordinator
 import com.bettermifitness.sync.sync.SyncOutcomeLabels
-import com.bettermifitness.sync.ui.SyncMetric
+import com.bettermifitness.sync.ui.SyncSelection
 import com.bettermifitness.sync.util.RelativeTime
+import com.bettermifitness.sync.zepp.ZeppSyncService
 import com.mifitness.miclient.api.MiApiException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -38,7 +39,9 @@ data class HomeUiState(
     val lastBackgroundIsError: Boolean = false,
     /** Empty until prefs load — do not assume all metrics on. */
     val enabledMetricsCount: Int = 0,
-    val totalMetricsCount: Int = SyncMetric.entries.size,
+    /** Effective task set; kept in state so source-specific readiness can be derived safely. */
+    val enabledMetrics: Set<String> = emptySet(),
+    val totalMetricsCount: Int = SyncSelection.taskKeys.size,
     val rangeDays: Int = 7,
     val autoSync: Boolean = false,
     val canSync: Boolean = false,
@@ -58,6 +61,7 @@ class HomeViewModel(
     private val healthPermissions: HealthPermissionRequester,
     private val syncCoordinator: SyncCoordinator,
     syncPreferences: SyncPreferences,
+    private val zeppSync: ZeppSyncService,
 ) : ViewModel() {
     /** Hot snapshot: single DataStore subscription, shared with all screens. */
     private val prefsSnapshot: StateFlow<UserPrefsSnapshot> = syncPreferences.snapshot
@@ -106,8 +110,7 @@ class HomeViewModel(
         )
     }
 
-    val uiState: StateFlow<HomeUiState> = combine(
-        combine(profileState, profileErrorState, prefs, loggedOutState, healthState) {
+    private val baseUiState: StateFlow<HomeUiState> = combine(profileState, profileErrorState, prefs, loggedOutState, healthState) {
                 profile, profileError, prefsSnap, loggedOut, health ->
             HomeUiState(
                 profile = profile,
@@ -127,11 +130,12 @@ class HomeViewModel(
                     prefsSnap.lastBgMessage,
                 ),
                 lastBackgroundIsError = SyncOutcomeLabels.isError(prefsSnap.lastBgStatus),
-                enabledMetricsCount = prefsSnap.enabled.size,
-                totalMetricsCount = SyncMetric.entries.size,
+                enabledMetricsCount = SyncSelection.selectedTaskKeys(prefsSnap.enabled).size,
+                enabledMetrics = prefsSnap.enabled,
+                totalMetricsCount = SyncSelection.taskKeys.size,
                 rangeDays = prefsSnap.rangeDays,
                 autoSync = prefsSnap.autoSync,
-                canSync = prefsSnap.enabled.isNotEmpty(),
+                canSync = SyncSelection.selectedTaskKeys(prefsSnap.enabled).isNotEmpty(),
                 healthServiceName = health.serviceName,
                 healthReady = health.isReady,
                 healthStatusTitle = health.statusTitle,
@@ -139,10 +143,30 @@ class HomeViewModel(
                 healthNeedsAction = !health.isReady,
                 loggedOut = loggedOut,
             )
-        },
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5_000),
+        initialValue = HomeUiState(healthServiceName = healthAvailability.healthServiceName()),
+    )
+
+    val uiState: StateFlow<HomeUiState> = combine(
+        baseUiState,
         syncCoordinator.isRunning,
-    ) { base, running ->
-        base.copy(isSyncing = running)
+        zeppSync.connected,
+    ) { base, running, zeppConnected ->
+        val enabled = if (zeppConnected) {
+            base.enabledMetrics + SyncPreferences.ZEPP_CLOUD_IMPORT_KEY
+        } else {
+            base.enabledMetrics - SyncPreferences.ZEPP_CLOUD_IMPORT_KEY
+        }
+        val selected = SyncSelection.selectedTaskKeys(enabled)
+        base.copy(
+            enabledMetricsCount = selected.size,
+            canSync = selected.isNotEmpty(),
+            // A Zepp-only run does not need Health Connect to be ready.
+            healthNeedsAction = !base.healthReady && SyncSelection.requiresHealthConnect(enabled),
+            isSyncing = running,
+        )
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
@@ -152,6 +176,7 @@ class HomeViewModel(
         ),
     )
 
+
     init {
         loadProfile()
         refreshHealthReadiness()
@@ -159,28 +184,34 @@ class HomeViewModel(
 
     fun loadProfile() {
         viewModelScope.launch {
-            if (!session.isActive) {
-                profileErrorState.value = L10n.text(L10n.homeSignedIn)
-                return@launch
-            }
-            try {
-                profileState.value = session.api.getMe()
-                profileErrorState.value = null
-            } catch (e: MiApiException.AuthExpired) {
-                val refresh = session.refreshSessionDetailed()
-                if (refresh.isSuccess) {
-                    try {
-                        profileState.value = session.api.getMe()
-                        profileErrorState.value = null
-                        return@launch
-                    } catch (retry: Exception) {
-                        profileErrorState.value = retry.message ?: L10n.text(L10n.homeSignedIn)
-                        return@launch
-                    }
+            syncCoordinator.runSessionMaintenance {
+                if (session.requiresReauthentication) {
+                    profileErrorState.value = L10n.text(L10n.sessionExpired)
+                    return@runSessionMaintenance
                 }
-                profileErrorState.value = refresh.userMessage
-            } catch (e: Exception) {
-                profileErrorState.value = e.message ?: L10n.text(L10n.homeSignedIn)
+                if (!session.isActive) {
+                    profileErrorState.value = L10n.text(L10n.homeSignedIn)
+                    return@runSessionMaintenance
+                }
+                try {
+                    profileState.value = session.api.getMe()
+                    profileErrorState.value = null
+                } catch (e: MiApiException.AuthExpired) {
+                    val refresh = session.refreshSessionDetailed()
+                    if (refresh.isSuccess) {
+                        try {
+                            profileState.value = session.api.getMe()
+                            profileErrorState.value = null
+                            return@runSessionMaintenance
+                        } catch (retry: Exception) {
+                            profileErrorState.value = retry.message ?: L10n.text(L10n.homeSignedIn)
+                            return@runSessionMaintenance
+                        }
+                    }
+                    profileErrorState.value = refresh.userMessage
+                } catch (e: Exception) {
+                    profileErrorState.value = e.message ?: L10n.text(L10n.homeSignedIn)
+                }
             }
         }
     }
@@ -225,11 +256,10 @@ class HomeViewModel(
     fun startSyncIfIdle() {
         viewModelScope.launch {
             if (syncCoordinator.isRunning.value) return@launch
-            syncCoordinator.run(
-                requestHealthPermissions = true,
-                resetProgress = true,
-                userInitiated = true,
-            )
+            // Use the same platform-owned path as the Sync screen. On Android this
+            // hands the work to UserSyncService, so leaving Home or backgrounding
+            // the Activity cannot cancel the actual sync job.
+            com.bettermifitness.sync.sync.runUserSync(syncCoordinator)
         }
     }
 

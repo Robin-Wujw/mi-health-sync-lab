@@ -5,6 +5,7 @@ package com.bettermifitness.sync.health
  * which lives outside the Activity lifecycle.
  */
 object HealthConnectPermissionBridge {
+    var requestRoute: (suspend (String) -> androidx.health.connect.client.records.ExerciseRoute?)? = null
     /**
      * Launches the system Health Connect permission UI and returns the granted set.
      * Set from [com.bettermifitness.sync.MainActivity] in onCreate.

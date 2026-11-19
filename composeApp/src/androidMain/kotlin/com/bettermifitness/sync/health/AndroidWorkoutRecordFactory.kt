@@ -11,7 +11,6 @@ import androidx.health.connect.client.records.PowerRecord
 import androidx.health.connect.client.records.SpeedRecord
 import androidx.health.connect.client.records.StepsCadenceRecord
 import androidx.health.connect.client.records.StepsRecord as HcStepsRecord
-import androidx.health.connect.client.records.metadata.Metadata
 import androidx.health.connect.client.units.Energy
 import androidx.health.connect.client.units.Length
 import androidx.health.connect.client.units.Power
@@ -25,23 +24,27 @@ import java.time.ZoneOffset
  */
 class AndroidWorkoutRecordFactory {
 
-    fun buildRecords(session: WorkoutSession): List<androidx.health.connect.client.records.Record> {
+    fun buildRecords(
+        session: WorkoutSession,
+        revision: Long,
+        includeRoute: Boolean = true,
+    ): List<androidx.health.connect.client.records.Record> {
+        require(revision > 0L) { "Workout records require a persisted positive revision." }
         val zo = zoneOffsetOf(session)
         val start = Instant.ofEpochSecond(session.startTime)
         val end = Instant.ofEpochSecond(session.endTime)
         val mapping = SportTypeMapper.map(session.activityType)
         val notes = WorkoutNotes.build(session)
-        val version = WorkoutFormSeries.contentVersion(
-            session,
-            mapping.title,
-            mapping.healthConnectType,
-        )
-        val meta = Metadata.manualEntry(
-            clientRecordId = HealthRecordIds.workout(session.startTime),
-            clientRecordVersion = version,
+        val route = if (includeRoute) exerciseRouteOrNull(session) else null
+        val meta = stampedMetadata(
+            HealthRecordIds.workout(session.startTime), revision,
+            session.endTime, zo, mapping.healthConnectType, mapping.title, notes,
+            route?.route?.map {
+                "${it.time.epochSecond}:${it.latitude}:${it.longitude}:" +
+                    "${it.altitude?.inMeters}:${it.horizontalAccuracy?.inMeters}"
+            },
         )
         val out = ArrayList<androidx.health.connect.client.records.Record>()
-        val route = exerciseRouteOrNull(session)
         out += if (route != null) {
             ExerciseSessionRecord(
                 startTime = start,
@@ -74,9 +77,9 @@ class AndroidWorkoutRecordFactory {
                 startZoneOffset = zo,
                 endZoneOffset = zo,
                 distance = Length.meters(d),
-                metadata = Metadata.manualEntry(
-                    clientRecordId = HealthRecordIds.workout(session.startTime) + ":dist",
-                    clientRecordVersion = version,
+                metadata = stampedMetadata(
+                    HealthRecordIds.workout(session.startTime) + ":dist", revision,
+                    session.endTime, zo, d,
                 ),
             )
         }
@@ -87,9 +90,9 @@ class AndroidWorkoutRecordFactory {
                 startZoneOffset = zo,
                 endZoneOffset = zo,
                 energy = Energy.kilocalories(c),
-                metadata = Metadata.manualEntry(
-                    clientRecordId = HealthRecordIds.workout(session.startTime) + ":kcal",
-                    clientRecordVersion = version,
+                metadata = stampedMetadata(
+                    HealthRecordIds.workout(session.startTime) + ":kcal", revision,
+                    session.endTime, zo, c,
                 ),
             )
         }
@@ -100,9 +103,9 @@ class AndroidWorkoutRecordFactory {
                 startZoneOffset = zo,
                 endZoneOffset = zo,
                 count = steps.toLong(),
-                metadata = Metadata.manualEntry(
-                    clientRecordId = HealthRecordIds.workout(session.startTime) + ":steps",
-                    clientRecordVersion = version,
+                metadata = stampedMetadata(
+                    HealthRecordIds.workout(session.startTime) + ":steps", revision,
+                    session.endTime, zo, steps,
                 ),
             )
         }
@@ -114,17 +117,17 @@ class AndroidWorkoutRecordFactory {
                     startZoneOffset = zo,
                     endZoneOffset = zo,
                     elevation = Length.meters(gain),
-                    metadata = Metadata.manualEntry(
-                        clientRecordId = HealthRecordIds.workout(session.startTime) + ":elev",
-                        clientRecordVersion = version,
+                    metadata = stampedMetadata(
+                        HealthRecordIds.workout(session.startTime) + ":elev", revision,
+                        session.endTime, zo, gain,
                     ),
                 )
             } catch (_: Exception) { /* optional */ }
         }
-        addHeartRate(out, session, zo, version)
-        addSpeed(out, session, zo, version)
-        addCadence(out, session, zo, version)
-        addPower(out, session, zo, version)
+        addHeartRate(out, session, zo, revision)
+        addSpeed(out, session, zo, revision)
+        addCadence(out, session, zo, revision)
+        addPower(out, session, zo, revision)
         return out
     }
 
@@ -132,7 +135,7 @@ class AndroidWorkoutRecordFactory {
         out: MutableList<androidx.health.connect.client.records.Record>,
         session: WorkoutSession,
         zo: ZoneOffset,
-        version: Long,
+        revision: Long,
     ) {
         if (session.heartRateSeries.size < 2) return
         val samples = session.heartRateSeries.map {
@@ -150,9 +153,9 @@ class AndroidWorkoutRecordFactory {
             startZoneOffset = zo,
             endZoneOffset = zo,
             samples = samples,
-            metadata = Metadata.manualEntry(
-                clientRecordId = HealthRecordIds.workout(session.startTime) + ":hr",
-                clientRecordVersion = version,
+            metadata = stampedMetadata(
+                HealthRecordIds.workout(session.startTime) + ":hr", revision,
+                zo, session.heartRateSeries.map { "${it.timeSec}:${it.value}" },
             ),
         )
     }
@@ -161,7 +164,7 @@ class AndroidWorkoutRecordFactory {
         out: MutableList<androidx.health.connect.client.records.Record>,
         session: WorkoutSession,
         zo: ZoneOffset,
-        version: Long,
+        revision: Long,
     ) {
         val series = WorkoutFormSeries.speed(session)
         if (series.size < 2) return
@@ -181,9 +184,9 @@ class AndroidWorkoutRecordFactory {
                 startZoneOffset = zo,
                 endZoneOffset = zo,
                 samples = samples,
-                metadata = Metadata.manualEntry(
-                    clientRecordId = HealthRecordIds.workout(session.startTime) + ":spd",
-                    clientRecordVersion = version,
+                metadata = stampedMetadata(
+                    HealthRecordIds.workout(session.startTime) + ":spd", revision,
+                    zo, series.map { "${it.timeSec}:${it.value}" },
                 ),
             )
         } catch (_: Exception) { /* optional */ }
@@ -199,7 +202,7 @@ class AndroidWorkoutRecordFactory {
         out: MutableList<androidx.health.connect.client.records.Record>,
         session: WorkoutSession,
         zo: ZoneOffset,
-        version: Long,
+        revision: Long,
     ) {
         val series = WorkoutFormSeries.cadence(session)
         if (series.size < 2) return
@@ -221,9 +224,9 @@ class AndroidWorkoutRecordFactory {
                     startZoneOffset = zo,
                     endZoneOffset = zo,
                     samples = samples,
-                    metadata = Metadata.manualEntry(
-                        clientRecordId = HealthRecordIds.workout(session.startTime) + ":pcad",
-                        clientRecordVersion = version,
+                    metadata = stampedMetadata(
+                        HealthRecordIds.workout(session.startTime) + ":pcad", revision,
+                        zo, series.map { "${it.timeSec}:${it.value}" },
                     ),
                 )
             } else {
@@ -239,9 +242,9 @@ class AndroidWorkoutRecordFactory {
                     startZoneOffset = zo,
                     endZoneOffset = zo,
                     samples = samples,
-                    metadata = Metadata.manualEntry(
-                        clientRecordId = HealthRecordIds.workout(session.startTime) + ":cad",
-                        clientRecordVersion = version,
+                    metadata = stampedMetadata(
+                        HealthRecordIds.workout(session.startTime) + ":cad", revision,
+                        zo, series.map { "${it.timeSec}:${it.value}" },
                     ),
                 )
             }
@@ -252,7 +255,7 @@ class AndroidWorkoutRecordFactory {
         out: MutableList<androidx.health.connect.client.records.Record>,
         session: WorkoutSession,
         zo: ZoneOffset,
-        version: Long,
+        revision: Long,
     ) {
         val series = session.powerWattsSeries
         if (series.size < 2) return
@@ -272,9 +275,9 @@ class AndroidWorkoutRecordFactory {
                 startZoneOffset = zo,
                 endZoneOffset = zo,
                 samples = samples,
-                metadata = Metadata.manualEntry(
-                    clientRecordId = HealthRecordIds.workout(session.startTime) + ":pow",
-                    clientRecordVersion = version,
+                metadata = stampedMetadata(
+                    HealthRecordIds.workout(session.startTime) + ":pow", revision,
+                    zo, series.map { "${it.timeSec}:${it.value}" },
                 ),
             )
         } catch (_: Exception) { /* optional */ }
