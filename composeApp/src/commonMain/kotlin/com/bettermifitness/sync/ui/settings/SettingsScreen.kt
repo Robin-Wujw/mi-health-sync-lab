@@ -21,7 +21,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -36,7 +35,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -56,7 +54,6 @@ import com.bettermifitness.sync.ui.components.StatusBanner
 import com.bettermifitness.sync.ui.components.StatusTone
 import com.bettermifitness.sync.ui.icons.AppIcon
 import com.bettermifitness.sync.ui.icons.AppIcons
-import kotlinx.datetime.TimeZone
 
 private const val CREDIT_URL = "https://github.com/ilyasaftr"
 
@@ -148,7 +145,6 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit, onLogout: (
                     onToggle = viewModel::setMetricEnabled,
                     onPermissions = viewModel::openInboundPermissions,
                     onRoutes = viewModel::authorizeWorkoutRoutes,
-                    onCalendarZone = viewModel::setSourceCalendarZone,
                 )
                 com.bettermifitness.sync.zepp.ZeppSettingsCard()
             } else {
@@ -279,7 +275,6 @@ private fun InboundSyncCard(
     onToggle: (String, Boolean) -> Unit,
     onPermissions: () -> Unit,
     onRoutes: () -> Unit,
-    onCalendarZone: (String?) -> Unit,
 ) {
     val keys = SyncPreferences.INBOUND_METRIC_KEYS.toList()
     SettingsGroup(title = L10n.string(L10n.syncInboundTitle)) {
@@ -303,7 +298,6 @@ private fun InboundSyncCard(
             }
         }
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            SourceCalendarSetting(state.sourceCalendarZoneId, onCalendarZone)
             OutlinedButton(
                 onClick = onPermissions,
                 enabled = state.enabledMetrics.any { it in SyncPreferences.INBOUND_METRIC_KEYS },
@@ -320,21 +314,6 @@ private fun InboundSyncCard(
             }
             Text(L10n.string(L10n.settingsZeppCapabilityDetail), style = MaterialTheme.typography.bodySmall)
         }
-    }
-}
-
-@Composable
-private fun SourceCalendarSetting(saved: String?, onSave: (String?) -> Unit) {
-    var draft by remember(saved) { mutableStateOf(saved.orEmpty()) }
-    val candidate = draft.trim()
-    val valid = candidate.isEmpty() || runCatching { TimeZone.of(candidate) }.isSuccess
-    OutlinedTextField(value = draft, onValueChange = { if (it.length <= 80) draft = it },
-        modifier = Modifier.fillMaxWidth(), singleLine = true,
-        label = { Text(L10n.string(L10n.sourceCalendarZoneLabel)) },
-        placeholder = { Text("America/New_York") }, isError = !valid,
-        supportingText = { Text(L10n.string(if (valid) L10n.sourceCalendarZoneDetail else L10n.sourceCalendarZoneInvalid)) })
-    OutlinedButton(onClick = { onSave(candidate.ifEmpty { null }) }, enabled = valid && candidate != saved.orEmpty()) {
-        Text(L10n.string(L10n.sourceCalendarZoneSave))
     }
 }
 
