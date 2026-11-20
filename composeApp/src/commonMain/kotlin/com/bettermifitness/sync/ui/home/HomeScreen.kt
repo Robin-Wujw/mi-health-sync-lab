@@ -122,6 +122,10 @@ fun HomeScreen(
                             }
                         }
                     },
+                    // Loading (syncing) must disable the button too; otherwise the label
+                    // reads "Syncing…" while the control stays clickable and a tap fires a
+                    // second run that the single-flight lock then has to reject.
+                    enabled = !state.isSyncing,
                     loading = state.isSyncing,
                     icon = if (!canUpdate && !state.healthNeedsAction) null else AppIcons.Sync,
                 )

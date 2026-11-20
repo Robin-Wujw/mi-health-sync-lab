@@ -96,7 +96,8 @@ class SyncViewModel(
         SyncUiState(
             requiresSignIn = requiresSignIn,
             // App-wide: still true after leaving and re-entering Sync.
-            isSyncing = running,
+            // Also true during the brief prepare→service hand-off gap.
+            isSyncing = running || local.optimisticSyncing,
             healthAvailable = local.healthAvailable || !SyncSelection.requiresHealthConnect(enabled),
             availabilityHint = local.availabilityHint,
             permissionError = local.permissionError ?: when (lastOutcome) {
@@ -133,7 +134,15 @@ class SyncViewModel(
         viewModelScope.launch {
             // Fast path — coordinator still enforces single-flight.
             if (syncCoordinator.isRunning.value) return@launch
-            runSync()
+            // Set a local optimistic flag so the UI shows "Syncing" immediately,
+            // before the coordinator's isRunning flow emission catches up after the
+            // prepare → service hand-off gap.
+            local.update { it.copy(optimisticSyncing = true) }
+            try {
+                runSync()
+            } finally {
+                local.update { it.copy(optimisticSyncing = false) }
+            }
         }
     }
 
@@ -276,10 +285,18 @@ class SyncViewModel(
                         it.copy(outcomeMessage = L10n.text(L10n.syncNothingToSync))
                     }
                 is SyncOutcome.NoData -> local.update {
-                    it.copy(outcomeMessage = null, outcomeIsWarning = false)
+                    it.copy(
+                        outcomeMessage = outcome.message.takeIf { m -> m.isNotBlank() }
+                            ?: L10n.text(L10n.syncNoUsableData),
+                        outcomeIsWarning = false,
+                    )
                 }
                 is SyncOutcome.CompletedWithSkips -> local.update {
-                    it.copy(outcomeMessage = null, outcomeIsWarning = false)
+                    it.copy(
+                        outcomeMessage = outcome.summary.takeIf { m -> m.isNotBlank() }
+                            ?: L10n.text(L10n.syncAllMetricsSynced),
+                        outcomeIsWarning = false,
+                    )
                 }
                 SyncOutcome.Success ->
                     local.update {
@@ -297,24 +314,35 @@ class SyncViewModel(
                     }
             }
         } finally {
-            // Refresh Health Connect / HealthKit readiness after a permission prompt.
-            try {
-                val available = healthAvailability.isAvailable()
-                val hint = healthAvailability.availabilityHint()
-                val perms = healthAvailability.hasWritePermissions()
-                local.update {
-                    it.copy(
-                        healthAvailable = available,
-                        availabilityHint = when {
-                            !available -> hint
-                            !perms -> hint
-                                ?: L10n.text(L10n.healthPermissionsIncomplete)
-                            else -> null
-                        },
-                    )
+            // Refresh Health Connect / HealthKit readiness only after a known failure
+            // that might have been caused by a permission change — not on every run,
+            // which can flip the button's enabled state and cause a visible flicker.
+            val shouldRecheck = when (val outcome = syncCoordinator.lastOutcome.value) {
+                is SyncOutcome.Failed,
+                SyncOutcome.HealthUnavailable,
+                -> true
+                is SyncOutcome.PartialSuccess -> outcome.failed > 0
+                else -> false
+            }
+            if (shouldRecheck) {
+                try {
+                    val available = healthAvailability.isAvailable()
+                    val hint = healthAvailability.availabilityHint()
+                    val perms = healthAvailability.hasWritePermissions()
+                    local.update {
+                        it.copy(
+                            healthAvailable = available,
+                            availabilityHint = when {
+                                !available -> hint
+                                !perms -> hint
+                                    ?: L10n.text(L10n.healthPermissionsIncomplete)
+                                else -> null
+                            },
+                        )
+                    }
+                } catch (_: Exception) {
+                    // Keep previous readiness.
                 }
-            } catch (_: Exception) {
-                // Keep previous readiness.
             }
         }
     }
@@ -327,5 +355,7 @@ class SyncViewModel(
         val outcomeIsWarning: Boolean = false,
         val healthServiceName: String = "",
         val readinessChecked: Boolean = false,
+        /** True from the moment the user taps sync until the coordinator's isRunning catches up. */
+        val optimisticSyncing: Boolean = false,
     )
 }

@@ -138,6 +138,10 @@ fun StickyCtaBar(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Surface(
+        // Explicit z-plane over the scrollable content. In edge-to-edge the Scaffold
+        // bottomBar slot is already above the content, but an opaque fill plus
+        // shadow keeps the CTA visually on its own layer even while content scrolls
+        // behind it (no transparent-gap "floating off the app" look).
         modifier = modifier.fillMaxWidth(),
         shadowElevation = 8.dp,
         tonalElevation = 1.dp,

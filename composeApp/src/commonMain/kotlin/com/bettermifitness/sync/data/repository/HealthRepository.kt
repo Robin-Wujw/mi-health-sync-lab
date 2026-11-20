@@ -114,6 +114,7 @@ private fun SyncProgress.withMetric(metric: String, state: SyncState): SyncProgr
     "spo2Import" -> copy(spo2Import = state)
     "workoutsImport" -> copy(workoutsImport = state)
     "vo2MaxImport" -> copy(vo2MaxImport = state)
+    "zeppCloudImport" -> copy(zeppCloudImport = state)
     else -> this
 }
 

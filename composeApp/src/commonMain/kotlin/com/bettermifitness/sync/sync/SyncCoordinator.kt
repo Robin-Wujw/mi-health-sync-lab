@@ -208,7 +208,9 @@ class SyncCoordinator(
         }
     }
 
-    /** Foreground permission UI only; the Android service rechecks all run gates itself. */
+    /**
+     * Foreground permission UI only; the Android service rechecks all run gates itself.
+     */
     suspend fun prepareUserSync(): SyncOutcome? {
         if (LiveTestSessionGate.isActive) return SyncOutcome.Skipped
         if (!runMutex.tryLock()) return SyncOutcome.AlreadyRunning
