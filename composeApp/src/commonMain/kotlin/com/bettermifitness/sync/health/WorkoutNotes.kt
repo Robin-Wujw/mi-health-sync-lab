@@ -12,6 +12,20 @@ object WorkoutNotes {
     /** How many details a built note carries, so a less detailed copy can be told apart. */
     fun partCount(notes: String?): Int = notes?.split(PART_SEPARATOR)?.size ?: 0
 
+    internal fun detailFields(notes: String?): Set<String> = notes.orEmpty().split(PART_SEPARATOR).flatMap { part ->
+        when {
+            part.isBlank() -> emptyList()
+            part.startsWith("avg pace ") -> listOf("avg pace")
+            part.endsWith(" km splits") -> listOf("km splits")
+            HR_ZONE.matches(part) -> part.split('/').map { it.take(2) }
+            part.substringBefore(' ') in NUMERIC_FIELDS -> listOf(part.substringBefore(' '))
+            else -> listOf(part)
+        }
+    }.toSet()
+
+    private val HR_ZONE = Regex("(?:WU|FB|AE|AN|EX)\\d+s(?:/(?:WU|FB|AE|AN|EX)\\d+s)*")
+    private val NUMERIC_FIELDS = setOf("cadence", "stride", "max", "power", "GCT", "VO", "TE", "load", "recover", "VO2")
+
     fun build(session: WorkoutSession): String? {
         val parts = mutableListOf<String>()
         session.avgPaceSecPerKm?.let { parts += "avg pace ${formatPace(it)}/km" }

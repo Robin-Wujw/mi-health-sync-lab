@@ -13,6 +13,7 @@ import com.bettermifitness.sync.health.HealthPermissionRequester
 import com.bettermifitness.sync.health.HealthReadiness
 import com.bettermifitness.sync.sync.SyncCoordinator
 import com.bettermifitness.sync.sync.SyncOutcomeLabels
+import com.bettermifitness.sync.sync.observeRecoverableUserSync
 import com.bettermifitness.sync.ui.SyncSelection
 import com.bettermifitness.sync.util.RelativeTime
 import com.bettermifitness.sync.zepp.ZeppSyncService
@@ -20,6 +21,7 @@ import com.mifitness.miclient.api.MiApiException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -46,13 +48,16 @@ data class HomeUiState(
     val autoSync: Boolean = false,
     val canSync: Boolean = false,
     val isSyncing: Boolean = false,
+    val hasQueuedSync: Boolean = false,
     val healthServiceName: String = "",
     val healthReady: Boolean = true,
     val healthStatusTitle: String = "",
     val healthStatusDetail: String = "",
     val healthNeedsAction: Boolean = false,
     val loggedOut: Boolean = false,
-)
+) {
+    val hasSyncToView: Boolean get() = isSyncing || hasQueuedSync
+}
 
 class HomeViewModel(
     private val session: MiSessionManager,
@@ -153,7 +158,11 @@ class HomeViewModel(
         baseUiState,
         syncCoordinator.isRunning,
         zeppSync.connected,
-    ) { base, running, zeppConnected ->
+        combine(syncCoordinator.isStopping, syncCoordinator.replacementRequest,
+            observeRecoverableUserSync().catch { emit(null) }) { stopping, replacing, recoverable ->
+            stopping || replacing != null || recoverable != null
+        },
+    ) { base, running, zeppConnected, queued ->
         val enabled = if (zeppConnected) {
             base.enabledMetrics + SyncPreferences.ZEPP_CLOUD_IMPORT_KEY
         } else {
@@ -164,8 +173,9 @@ class HomeViewModel(
             enabledMetricsCount = selected.size,
             canSync = selected.isNotEmpty(),
             // A Zepp-only run does not need Health Connect to be ready.
-            healthNeedsAction = !base.healthReady && SyncSelection.requiresHealthConnect(enabled),
+            healthNeedsAction = !base.healthReady && !zeppConnected && SyncSelection.requiresHealthConnect(enabled),
             isSyncing = running,
+            hasQueuedSync = queued,
         )
     }.stateIn(
         scope = viewModelScope,
@@ -255,7 +265,7 @@ class HomeViewModel(
      */
     fun startSyncIfIdle() {
         viewModelScope.launch {
-            if (syncCoordinator.isRunning.value) return@launch
+            if (uiState.value.hasSyncToView || syncCoordinator.isRunning.value || syncCoordinator.isStopping.value) return@launch
             // Use the same platform-owned path as the Sync screen. On Android this
             // hands the work to UserSyncService, so leaving Home or backgrounding
             // the Activity cannot cancel the actual sync job.
@@ -265,8 +275,9 @@ class HomeViewModel(
 
     fun logout() {
         viewModelScope.launch {
-            tokenStore.clear()
-            session.clear()
+            session.signOut()
+            syncCoordinator.clearAfterSignOut()
+            tokenStore.sync.clearSyncHistory()
             loggedOutState.value = true
         }
     }

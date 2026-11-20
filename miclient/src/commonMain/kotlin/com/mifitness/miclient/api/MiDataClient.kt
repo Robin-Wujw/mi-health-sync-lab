@@ -39,6 +39,7 @@ class MiDataClient(
 
     /** The regional data host for this user (e.g. "sg.hlth.io.mi.com"). */
     val healthHost: String = buildHealthHost(credentials.region)
+    val sourceUserId: String get() = credentials.userId
 
     /** Device-scoped phone identifier for fitness data uploads (APK `phoneId`). */
     val phoneId: String get() = credentials.deviceId.ifBlank { "xiaomiwear_app_manually" }
@@ -111,18 +112,18 @@ class MiDataClient(
         }
 
         val status = response.status.value
+        if (status == 401 || status == 403) {
+            throw MiApiException.AuthExpired("Mi cloud rejected session (HTTP $status)", definitelyRejected = true)
+        }
+        if (status == 429) {
+            throw MiApiException.RateLimited("Mi cloud rate limited (HTTP 429)")
+        }
         val responseBase64 = response.bodyAsText().trim()
-
-        when {
-            status == 401 || status == 403 ->
-                throw MiApiException.AuthExpired("Mi cloud rejected session (HTTP $status)")
-            status == 429 ->
-                throw MiApiException.RateLimited("Mi cloud rate limited (HTTP 429)")
-            status !in 200..299 ->
-                throw MiApiException.Server(
-                    httpOrBusinessCode = status,
-                    message = "Mi cloud HTTP $status: ${responseBase64.take(160)}",
-                )
+        if (status !in 200..299) {
+            throw MiApiException.Server(
+                httpOrBusinessCode = status,
+                message = "Mi cloud HTTP $status: ${responseBase64.take(160)}",
+            )
         }
 
         val decrypted = try {
@@ -159,6 +160,7 @@ class MiDataClient(
             if (MiApiException.isAuthBusinessCode(code) || MiApiException.looksLikeAuthMessage(message)) {
                 throw MiApiException.AuthExpired(
                     message = message?.takeIf { it.isNotBlank() } ?: "Mi auth error (code $code)",
+                    definitelyRejected = MiApiException.isAuthBusinessCode(code),
                 )
             }
         } else if (message != null && MiApiException.looksLikeAuthMessage(message)) {

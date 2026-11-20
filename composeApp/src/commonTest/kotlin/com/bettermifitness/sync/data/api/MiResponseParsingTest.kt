@@ -60,6 +60,16 @@ class MiResponseParsingTest {
         assertEquals("{\"duration\":100}", page.dataList.single().value)
     }
 
+    @Test fun resumableSportPagesRequireAnExplicitListAndTerminalStatus() {
+        for (invalid in listOf("""{"has_more":false}""", """{"sport_records":[]}""")) {
+            assertFailsWith<MiApiException.Unexpected> {
+                parseMiSportRecordsPage(json("""{"code":0,"result":$invalid}"""), strict = true)
+            }
+        }
+        val page = parseMiSportRecordsPage(json("""{"code":0,"result":{"sport_records":[],"has_more":false}}"""), strict = true)
+        assertEquals(emptyList(), page.dataList)
+    }
+
     @Test
     fun malformedRowsDoNotDisappearAsAnEmptySuccessfulExport() {
         assertFailsWith<MiApiException.Unexpected> {

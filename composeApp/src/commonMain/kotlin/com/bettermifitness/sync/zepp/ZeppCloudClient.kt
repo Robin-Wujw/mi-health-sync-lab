@@ -30,6 +30,10 @@ import kotlin.time.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 
+private const val EVENT_REQUEST_LIMIT = 48
+private const val STRESS_SPLIT_PROBE_LIMIT = 8
+private const val MIN_STRESS_LOGICAL_SPLIT_SECONDS = 3 * 3600L
+
 /** Dedicated client without logging, redirects, automatic replay, or arbitrary authenticated URLs. */
 class ZeppCloudClient(
     private val http: HttpClient = createPlatformHttpClient(allowAutomaticReplay = false).config {
@@ -90,38 +94,29 @@ class ZeppCloudClient(
     }
 
     suspend fun fetch(session: ZeppSession, from: Long, until: Long,
-        metrics: Set<ZeppSyncMetric> = ZeppSyncMetric.entries.toSet()): ZeppSourceSnapshot {
+        metrics: Set<ZeppSyncMetric> = ZeppSyncMetric.entries.toSet(),
+        deferEventSplit: Boolean = false, requiredEvents: Set<ZeppStream> = emptySet()): ZeppSourceSnapshot {
         require(from > 0 && until > from && until - from <= 31 * 86_400)
         val observations = mutableListOf<ZeppObservation>()
         val scores = mutableListOf<ZeppWorkoutScores>()
         val unavailable = mutableSetOf<String>()
         val incomplete = mutableSetOf<String>()
+        val presentEvents = mutableSetOf<ZeppStream>()
         var invalid = 0
         for (stream in metrics.flatMap { it.streams }.distinct()) {
-            var start = from
-            while (start < until) {
-                val end = minOf(start + 7 * 86_400, until)
-                try {
-                    // Zepp's merged daily-stress headers may straddle the requested window.
-                    val pad = if (stream == ZeppStream.STRESS) 86_400 else 0
-                    val payload = get(session, if (stream.userSurface) "/users/${session.userId}/events" else "/v2/users/me/events",
-                        buildMap {
-                            put("eventType", stream.eventType); stream.subType?.let { put("subType", it) }
-                            put("from", ((start - pad) * 1000).toString()); put("to", ((end + pad) * 1000).toString())
-                            put("limit", "1000"); put("reverse", "1")
-                            if (stream.userSurface) put("userId", session.userId)
-                        })
-                    val page = page(payload, 1000)
-                    if (page.full) incomplete += stream.name
-                    val decoded = ZeppDecoder.decode(stream, page.items, now())
-                    observations += decoded.observations.filter { it.observedSeconds in from until until }
-                    invalid += decoded.invalidItems
-                } catch (e: ZeppException) {
-                    if (e.failure != ZeppFailure.UNAVAILABLE) throw e
-                    unavailable += stream.name
-                    break
+            try {
+                val events = readEventStream(session, stream, from, until, deferEventSplit)
+                presentEvents += stream
+                if (stream != ZeppStream.STRESS || events.complete && events.invalidItems == 0) {
+                    observations += events.observations
                 }
-                start = end
+                invalid += events.invalidItems
+                if (!events.complete) incomplete += stream.name
+            } catch (split: ZeppEventWindowSplitRequired) {
+                throw ZeppEventWindowSplitRequired(presentEvents + split.requiredEvents)
+            } catch (e: ZeppException) {
+                if (e.failure != ZeppFailure.UNAVAILABLE) throw e
+                if (stream in requiredEvents) incomplete += stream.name else unavailable += stream.name
             }
         }
         if (ZeppSyncMetric.TRAINING_LOAD in metrics) try {
@@ -164,6 +159,95 @@ class ZeppCloudClient(
         }
         return ZeppSourceSnapshot(observations.distinct(), scores.distinct(), unavailable, incomplete, invalid)
     }
+
+    private suspend fun readEventStream(session: ZeppSession, stream: ZeppStream, from: Long, until: Long,
+        deferEventSplit: Boolean): EventStreamRead {
+        val pad = if (stream == ZeppStream.STRESS) 86_400L else 0L
+        val probeStressSplit = pad > 0 && deferEventSplit && until - from > MIN_STRESS_LOGICAL_SPLIT_SECONDS
+        val requestLimit = if (probeStressSplit) STRESS_SPLIT_PROBE_LIMIT else EVENT_REQUEST_LIMIT
+        val windows = ArrayDeque<EventWindow>()
+        var start = (from - pad).coerceAtLeast(1L)
+        while (start < until + pad) {
+            val end = minOf(start + 7 * 86_400, until + pad)
+            windows.addLast(EventWindow(start, end))
+            start = end
+        }
+        val observations = mutableListOf<ZeppObservation>()
+        var invalid = 0
+        var complete = true
+        var splitBudgetExhausted = false
+        var successfulPages = 0
+        var unavailablePages = 0
+        val fetchedAt = now()
+        var remaining = requestLimit
+        while (windows.isNotEmpty() && remaining > 0) {
+            val window = windows.removeFirst()
+            remaining--
+            val result = try {
+                val payload = getEventPage(session, stream, window)
+                val parsed = page(payload, 1000)
+                successfulPages++
+                parsed.copy(full = parsed.full || eventPageSignalsMore(payload))
+            } catch (error: ZeppException) {
+                when (error.failure) {
+                    ZeppFailure.UNAVAILABLE -> { unavailablePages++; complete = false; continue }
+                    ZeppFailure.INCOMPLETE -> ZeppPage(emptyList(), full = true)
+                    else -> throw error
+                }
+            }
+            val width = window.until - window.from
+            if (result.full && pad == 0L && deferEventSplit && width > 60) {
+                throw ZeppEventWindowSplitRequired(setOf(stream))
+            }
+            if (result.full && width > 60 && remaining >= windows.size + 2) {
+                val mid = window.from + width / 2
+                windows.addLast(EventWindow(window.from, mid))
+                windows.addLast(EventWindow(mid, window.until))
+            } else {
+                if (result.full) {
+                    complete = false
+                    splitBudgetExhausted = splitBudgetExhausted || width > 60
+                } else {
+                    val decoded = ZeppDecoder.decode(stream, result.items, fetchedAt)
+                    observations += decoded.observations.filter {
+                        it.observedSeconds in from until until &&
+                            (stream == ZeppStream.STRESS || it.observedSeconds in window.from until window.until)
+                    }
+                    invalid += decoded.invalidItems
+                }
+            }
+        }
+        if (successfulPages == 0 && unavailablePages > 0 && unavailablePages == requestLimit - remaining && windows.isEmpty()) {
+            throw ZeppException(ZeppFailure.UNAVAILABLE)
+        }
+        if (probeStressSplit && (splitBudgetExhausted || windows.isNotEmpty())) {
+            throw ZeppEventWindowSplitRequired(setOf(stream))
+        }
+        return EventStreamRead(observations, invalid, complete && windows.isEmpty())
+    }
+
+    private suspend fun getEventPage(session: ZeppSession, stream: ZeppStream, window: EventWindow): JsonElement =
+        get(session, if (stream.userSurface) "/users/${session.userId}/events" else "/v2/users/me/events", buildMap {
+            put("eventType", stream.eventType); stream.subType?.let { put("subType", it) }
+            put("from", (window.from * 1_000).toString()); put("to", (window.until * 1_000).toString())
+            put("limit", "1000"); put("reverse", "1")
+            if (stream.userSurface) put("userId", session.userId)
+        })
+
+    private fun eventPageSignalsMore(payload: JsonElement): Boolean {
+        val outer = payload as? JsonObject ?: return false
+        return listOfNotNull(outer, outer["data"] as? JsonObject).any { envelope ->
+            listOf("has_more", "hasMore").any { key ->
+                val value = envelope[key]
+                value != null && value != JsonNull && (value as? JsonPrimitive)?.contentOrNull !in setOf("false", "0")
+            } || envelope["next"].let { next ->
+                next != null && next != JsonNull && (next as? JsonPrimitive)?.contentOrNull !in setOf("", "0", "-1", "false")
+            }
+        }
+    }
+
+    private data class EventWindow(val from: Long, val until: Long)
+    private data class EventStreamRead(val observations: List<ZeppObservation>, val invalidItems: Int, val complete: Boolean)
 
     /** Token rotation is a separate read-only auth exchange; it never replays a Xiaomi write. */
     suspend fun workoutHeartRate(session: ZeppSession, start: Long, end: Long,

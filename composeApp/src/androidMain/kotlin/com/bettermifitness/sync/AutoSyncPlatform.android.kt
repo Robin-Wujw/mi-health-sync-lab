@@ -38,12 +38,13 @@ actual object AutoSyncPlatform {
         // OS minimum for periodic work is 15 minutes; 1 hour is a battery-friendly default
         // (still not exact-time — Doze / app standby may delay).
         val request = PeriodicWorkRequestBuilder<MiSyncWorker>(1, TimeUnit.HOURS)
+            .setInitialDelay(1, TimeUnit.HOURS)
             .setConstraints(constraints)
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15, TimeUnit.MINUTES)
             .build()
         WorkManager.getInstance(ctx).enqueueUniquePeriodicWork(
             MiSyncWorker.UNIQUE_WORK_NAME,
-            ExistingPeriodicWorkPolicy.KEEP,
+            ExistingPeriodicWorkPolicy.UPDATE,
             request,
         )
         if (runImmediately) {

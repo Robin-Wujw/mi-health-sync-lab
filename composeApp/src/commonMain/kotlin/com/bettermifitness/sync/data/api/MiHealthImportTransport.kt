@@ -63,7 +63,7 @@ class MiDirectHealthImportCloud(
             all += page.rows.filter { it.time >= fromEpochSeconds && it.time < untilEpochSeconds }
             next = cursor.nextCursor(page.hasMore, page.nextKey)
         } while (next != null)
-        return all.distinct()
+        return if (channel == MiHealthImportChannel.DAILY_AGGREGATE) all else all.distinct()
     }
 
     override suspend fun readRawRowsWithoutStart(
@@ -279,6 +279,7 @@ internal fun parseMiHealthImportReadPage(
             else -> null
         } ?: if (deleted) JsonObject(emptyMap()) else throw MiApiException.Unexpected("Mi import readback value is not a JSON object")
         val key = row.stringOrNull("key") ?: requestedKey
+        val tag = row.stringOrNull("tag")
         val utcDay = time >= 0 && time % 86_400 == 0L &&
             (value["date_time"] as? JsonPrimitive)?.longOrNull == time
         MiHealthImportCloudRow(
@@ -287,7 +288,7 @@ internal fun parseMiHealthImportReadPage(
             time = time,
             // The aggregate request is already restricted to this tag. The
             // source SID is never inferred: it must be returned to verify.
-            tag = row.stringOrNull("tag") ?: if (channel == MiHealthImportChannel.DAILY_AGGREGATE) "daily_report" else null,
+            tag = tag ?: if (channel == MiHealthImportChannel.DAILY_AGGREGATE) "daily_report" else null,
             value = value,
             deleted = deleted,
             zoneOffsetSeconds = when (val offset = row["zone_offset"]) {
@@ -300,6 +301,7 @@ internal fun parseMiHealthImportReadPage(
                 is JsonPrimitive -> offset.intOrNull ?: throw MiApiException.Unexpected("Mi import readback zone_offset is invalid")
                 else -> throw MiApiException.Unexpected("Mi import readback zone_offset is invalid")
             },
+            tagInferred = tag == null && channel == MiHealthImportChannel.DAILY_AGGREGATE,
         )
     }
     val flag = result["has_more"]

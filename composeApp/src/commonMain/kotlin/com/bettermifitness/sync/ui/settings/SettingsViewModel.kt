@@ -11,6 +11,7 @@ import com.bettermifitness.sync.data.preferences.UserPrefsSnapshot
 import com.bettermifitness.sync.health.HealthAvailability
 import com.bettermifitness.sync.health.HealthPermissionRequester
 import com.bettermifitness.sync.health.HealthReadiness
+import com.bettermifitness.sync.sync.SyncCoordinator
 import com.bettermifitness.sync.sync.SyncOutcomeLabels
 import com.bettermifitness.sync.ui.SyncSelection
 import com.bettermifitness.sync.util.RelativeTime
@@ -21,6 +22,9 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.CancellationException
 
 data class SettingsUiState(
@@ -51,6 +55,7 @@ data class SettingsUiState(
     val loggedOut: Boolean = false,
     val inboundPermissionMessage: String? = null,
     val inboundPermissionNeedsAction: Boolean = false,
+    val sourceCalendarZoneId: String? = null,
 )
 
 class SettingsViewModel(
@@ -59,6 +64,7 @@ class SettingsViewModel(
     private val healthPermissions: HealthPermissionRequester,
     private val tokenStore: TokenStore,
     private val session: MiSessionManager,
+    private val syncCoordinator: SyncCoordinator,
 ) : ViewModel() {
 
     /** Hot snapshot: single DataStore subscription, shared with all screens. */
@@ -122,6 +128,7 @@ class SettingsViewModel(
             loggedOut = local.loggedOut,
             inboundPermissionMessage = local.inboundPermissionMessage,
             inboundPermissionNeedsAction = local.inboundPermissionNeedsAction,
+            sourceCalendarZoneId = config.sourceCalendarZoneId,
         )
     }.stateIn(
         scope = viewModelScope,
@@ -233,29 +240,43 @@ class SettingsViewModel(
         }
     }
 
+    fun setSourceCalendarZone(zone: String?) {
+        viewModelScope.launch {
+            val saved = syncCoordinator.runSessionMaintenance { syncPreferences.setSourceCalendarZoneId(zone) }
+            localState.update { it.copy(inboundPermissionMessage = if (saved) null else L10n.text(L10n.outcomeInProgress),
+                inboundPermissionNeedsAction = !saved) }
+        }
+    }
+
     fun setSyncRangeDays(days: Int) {
         viewModelScope.launch {
             syncPreferences.setSyncRangeDays(days)
         }
     }
 
+    private val autoSyncChanges = Mutex()
+
     fun setAutoSync(enabled: Boolean) {
         viewModelScope.launch {
-            syncPreferences.setAutoSync(enabled)
-            if (enabled) {
-                AutoSyncPlatform.scheduleBackgroundRefresh(runImmediately = true)
-            } else {
-                AutoSyncPlatform.cancelBackgroundRefresh()
-                // Staying logged in must not depend on the data-sync toggle.
-                AutoSyncPlatform.scheduleSessionRefresh()
+            autoSyncChanges.withLock {
+                if (syncPreferences.autoSync.first() == enabled) return@withLock
+                syncPreferences.setAutoSync(enabled)
+                if (enabled) {
+                    AutoSyncPlatform.scheduleBackgroundRefresh(runImmediately = true)
+                } else {
+                    syncCoordinator.cancelAutomaticRunAndAwait()
+                    AutoSyncPlatform.cancelBackgroundRefresh()
+                    AutoSyncPlatform.scheduleSessionRefresh()
+                }
             }
         }
     }
 
     fun logout() {
         viewModelScope.launch {
-            tokenStore.clear()
-            session.clear()
+            session.signOut()
+            syncCoordinator.clearAfterSignOut()
+            tokenStore.sync.clearSyncHistory()
             localState.update { it.copy(loggedOut = true) }
         }
     }

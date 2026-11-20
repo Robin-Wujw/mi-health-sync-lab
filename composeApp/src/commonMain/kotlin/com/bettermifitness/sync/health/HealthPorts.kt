@@ -13,6 +13,9 @@ import com.bettermifitness.sync.data.api.TemperatureSample
 import com.bettermifitness.sync.data.api.Vo2MaxSample
 import com.bettermifitness.sync.data.api.WeightMeasurement
 import com.bettermifitness.sync.data.api.WorkoutSession
+import kotlin.time.Instant
+
+enum class WorkoutContributionMetric { STEPS, DISTANCE, CALORIES }
 
 /**
  * ISP: write-only surface for metric samples (used by [com.bettermifitness.sync.data.repository.HealthRepository]).
@@ -94,6 +97,7 @@ interface HealthAvailability {
  */
 interface HealthPermissionRequester {
     suspend fun requestWorkoutRoutes(request: HealthInboundReadRequest): Int = 0
+    fun clearCachedWorkoutRoutes() = Unit
     suspend fun requestPermissions()
 
     /** Ask only after the user enables these inbound metrics; never grants writes. */
@@ -146,4 +150,23 @@ interface HealthMetricReader {
 
 /** Full platform health façade, including explicit experimental metric reads. */
 interface HealthStore : HealthSampleWriter, HealthWeightReader, HealthMetricReader,
-    HealthAvailability, HealthPermissionRequester
+    HealthAvailability, HealthPermissionRequester {
+    suspend fun blockedSyncMetrics(enabled: Set<String>, from: Instant): Map<String, HealthAccessBlock> = emptyMap()
+    suspend fun readOwnWorkoutContributions(metric: WorkoutContributionMetric, from: Instant, until: Instant):
+        List<WorkoutSession>? = null
+}
+
+enum class HealthAccessBlock {
+    UNAVAILABLE, WRITE_PERMISSION, READ_PERMISSION, BACKGROUND_UNAVAILABLE, BACKGROUND_PERMISSION, HISTORY_PERMISSION,
+    CHECK_FAILED;
+
+    fun message(): String = L10n.text(when (this) {
+        UNAVAILABLE -> L10n.outcomeHealthDetail
+        WRITE_PERMISSION -> L10n.syncWritePermissionMissing
+        READ_PERMISSION -> L10n.syncReadPermissionMissing
+        BACKGROUND_UNAVAILABLE -> L10n.syncBackgroundReadUnsupported
+        BACKGROUND_PERMISSION -> L10n.syncBackgroundReadPermissionMissing
+        HISTORY_PERMISSION -> L10n.inboundHistoryRequired
+        CHECK_FAILED -> L10n.healthPermissionsIncomplete
+    })
+}

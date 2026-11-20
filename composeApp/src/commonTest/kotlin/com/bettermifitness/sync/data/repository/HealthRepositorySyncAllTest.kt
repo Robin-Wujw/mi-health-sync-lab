@@ -22,9 +22,12 @@ import com.bettermifitness.sync.data.preferences.BodySyncLedger
 import com.bettermifitness.sync.data.preferences.HealthImportLedger
 import com.bettermifitness.sync.data.preferences.SyncPreferences
 import com.bettermifitness.sync.health.HealthStore
+import com.bettermifitness.sync.health.HealthAccessBlock
 import com.bettermifitness.sync.health.HealthInboundReadRequest
 import com.bettermifitness.sync.health.HealthRecordOrigin
 import com.bettermifitness.sync.health.InboundWorkout
+import com.bettermifitness.sync.sync.ActiveSyncSelection
+import com.bettermifitness.sync.sync.UserSyncRequest
 import com.mifitness.miclient.api.MiDataClient
 import com.mifitness.miclient.auth.MiCredentials
 import com.mifitness.miclient.crypto.MiCloudSigner
@@ -40,11 +43,15 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import kotlin.time.Instant
+import kotlin.uuid.ExperimentalUuidApi
+import kotlin.uuid.Uuid
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
@@ -57,12 +64,54 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import okio.FileSystem
 
 /**
  * Runs the real [HealthRepository.syncAll] against a fake Mi cloud behind Ktor's mock engine:
  * only the HTTP transport and the platform health store are replaced.
  */
 class HealthRepositorySyncAllTest : LocalizedTest() {
+    @Test
+    fun brokenPaginationNeverWritesPartialRowsOrConfirmsTheMetric() = runBlocking {
+        val cloud = FakeMiCloud().withSampleData()
+        cloud.repeatingPages += "time:steps"
+        val store = RecordingHealthStore()
+        val repository = cloud.repository(store)
+        val failed = repository.syncAll(FROM, TO, setOf("steps", "sleep"))
+
+        assertTrue(failed.isPartialSuccess)
+        assertEquals(setOf("sleep"), failed.confirmedMetricKeys)
+        assertEquals(setOf("sleep"), store.written.keys)
+        assertEquals(4, cloud.requestCount("time:steps"))
+        assertIs<SyncState.Error>(repository.syncProgress.value.steps)
+
+        cloud.repeatingPages.clear()
+        val retried = repository.syncAll(FROM, TO, setOf("steps"))
+        assertEquals(setOf("steps"), retried.confirmedMetricKeys)
+        assertEquals(5, cloud.requestCount("time:steps"))
+        assertEquals(1, store.written["steps"])
+    }
+
+    @Test
+    fun permissionBlocksOnlyTheAffectedDirectionAndDoesNotConfirmItsWindow() = runBlocking {
+        val cloud = FakeMiCloud().withSampleData()
+        val store = RecordingHealthStore().apply {
+            blocked = mapOf(SyncPreferences.SLEEP_IMPORT_KEY to HealthAccessBlock.BACKGROUND_PERMISSION,
+                "heart_rate" to HealthAccessBlock.WRITE_PERMISSION)
+        }
+        val repository = cloud.repository(store)
+        val result = repository.syncAll(FROM, TO, setOf("sleep", "heart_rate", SyncPreferences.SLEEP_IMPORT_KEY))
+
+        assertTrue(result.isPartialSuccess)
+        assertEquals(2, result.failed)
+        assertEquals(0, result.noData)
+        assertEquals(setOf("sleep"), result.confirmedMetricKeys)
+        assertEquals(setOf("sleep"), store.written.keys)
+        assertEquals(HealthAccessBlock.BACKGROUND_PERMISSION,
+            assertIs<SyncState.Error>(repository.syncProgress.value.sleepImport).accessBlock)
+        assertEquals(HealthAccessBlock.WRITE_PERMISSION,
+            assertIs<SyncState.Error>(repository.syncProgress.value.heartRate).accessBlock)
+    }
 
     @Test
     fun expiredSession_everyMetricRecoversAfterOneRefresh() = runBlocking<Unit> {
@@ -248,6 +297,34 @@ class HealthRepositorySyncAllTest : LocalizedTest() {
         assertEquals(1, cloud.requestCount("sport"))
     }
 
+    @OptIn(ExperimentalUuidApi::class)
+    @Test fun realWorkoutExportResumesItsSourceIndexBeforeWritingAnySummary() = runBlocking {
+        val cloud = FakeMiCloud().withSampleData().apply { paginateSport = true }
+        val store = RecordingHealthStore()
+        val directory = FileSystem.SYSTEM_TEMPORARY_DIRECTORY / "healthlab-index-${Uuid.random()}"
+        val request = UserSyncRequest("same-run", 7, ActiveSyncSelection(1, setOf("workouts"), Instant.parse(FROM), Instant.parse(TO)))
+        val secondPageEntered = CompletableDeferred<Unit>()
+        cloud.beforeResponse = { route ->
+            if (route == "sport" && cloud.requestCount("sport") == 2) {
+                secondPageEntered.complete(Unit)
+                kotlinx.coroutines.awaitCancellation()
+            }
+        }
+        try {
+            val interrupted = async { cloud.repository(store, FitnessPageCache(directory)).syncUserRequest(request) }
+            try { withTimeout(15_000) { secondPageEntered.await() } } finally { interrupted.cancelAndJoin() }
+            assertFalse("workouts" in store.written)
+            cloud.beforeResponse = {}
+            val result = cloud.repository(store, FitnessPageCache(directory)).syncUserRequest(request)
+            assertTrue(result.isFullSuccess, result.errorMessages.toString())
+            assertEquals(listOf(null, "sport-next", "sport-next"), cloud.sportCursors)
+            assertEquals(2, store.written["workouts"])
+        } finally {
+            FitnessPageCache(directory).clear()
+            FileSystem.SYSTEM.delete(directory)
+        }
+    }
+
     @Test
     fun normalSyncImportsBatchBeforeExportAndFreshRepositoryDoesNotDuplicateOrEchoIt() = runBlocking<Unit> {
         val cloud = FakeMiCloud()
@@ -310,10 +387,13 @@ class HealthRepositorySyncAllTest : LocalizedTest() {
         private val dataStore = MemoryStore()
 
         var beforeResponse: suspend (String) -> Unit = {}
+        var paginateSport = false
+        val sportCursors = mutableListOf<String?>()
         var sessionValid = true
         var refreshCalls = 0
             private set
         val failingRoutes = mutableMapOf<String, HttpStatusCode>()
+        val repeatingPages = mutableSetOf<String>()
         val expiredRoutesUntilRefresh = mutableSetOf<String>()
         val alwaysRejectedRoutes = mutableSetOf<String>()
         var refreshResult: SessionRefreshResult = SessionRefreshResult.Success
@@ -329,7 +409,10 @@ class HealthRepositorySyncAllTest : LocalizedTest() {
                             MiCloudSigner.decryptResponse(signedNonce, form["data"].orEmpty()).decodeToString(),
                         ).jsonObject
                         val route = routeOf(request.url.encodedPath, payload)
-                        lock.withLock { requests += route }
+                        lock.withLock {
+                            requests += route
+                            if (route == "sport") sportCursors += payload["next_key"]?.jsonPrimitive?.content
+                        }
                         beforeResponse(route)
                         val failure = failingRoutes[route]
                         when {
@@ -343,7 +426,7 @@ class HealthRepositorySyncAllTest : LocalizedTest() {
             ),
         )
 
-        fun repository(store: HealthStore) = HealthRepository(
+        fun repository(store: HealthStore, pageCache: FitnessPageCache? = null) = HealthRepository(
             apiProvider = { api },
             currentUserId = { credentials.userId },
             ensureSession = { true },
@@ -359,6 +442,7 @@ class HealthRepositorySyncAllTest : LocalizedTest() {
             bodyLedger = BodySyncLedger(dataStore),
             importLedger = HealthImportLedger(dataStore),
             syncPreferences = SyncPreferences(dataStore),
+            pageCache = pageCache,
         )
 
         fun requestCount(route: String): Int = requests.count { it == route }
@@ -400,23 +484,30 @@ class HealthRepositorySyncAllTest : LocalizedTest() {
                 return "{\"code\":0,\"result\":{\"result\":true}}"
             }
             val listName = if (route == "sport") "sport_records" else "data_list"
+            val firstSportPage = route == "sport" && paginateSport && payload["next_key"] == null
+            val responseRows = if (route == "sport" && paginateSport && !firstSportPage) {
+                val time = SAMPLE_TIME - 600
+                rowsOf("outdoor_running", """{"start_time":$time,"duration":300,"distance":500}""", time)
+            } else rows[route] ?: JsonArray(emptyList())
             return buildJsonObject {
                 put("code", 0)
                 put(
                     "result",
                     buildJsonObject {
-                        put(listName, rows[route] ?: JsonArray(emptyList()))
-                        put("has_more", false)
+                        put(listName, responseRows)
+                        put("has_more", route in repeatingPages || firstSportPage)
+                        if (firstSportPage) put("next_key", "sport-next")
+                        else if (route in repeatingPages) put("next_key", "repeated-cursor")
                     },
                 )
             }.toString()
         }
 
-        private fun rowsOf(key: String, value: String): JsonArray = buildJsonArray {
+        private fun rowsOf(key: String, value: String, time: Long = SAMPLE_TIME): JsonArray = buildJsonArray {
             add(
                 buildJsonObject {
                     put("key", key)
-                    put("time", SAMPLE_TIME)
+                    put("time", time)
                     put("value", JsonPrimitive(value))
                 },
             )
@@ -437,6 +528,9 @@ class HealthRepositorySyncAllTest : LocalizedTest() {
     private class RecordingHealthStore : HealthStore {
         private val lock = Mutex()
         val written = mutableMapOf<String, Int>()
+        var blocked: Map<String, HealthAccessBlock> = emptyMap()
+        override suspend fun blockedSyncMetrics(enabled: Set<String>, from: kotlin.time.Instant) =
+            blocked.filterKeys { it in enabled }
         var inboundWorkouts: List<InboundWorkout> = emptyList()
         override suspend fun readWorkouts(request: HealthInboundReadRequest) = inboundWorkouts
 

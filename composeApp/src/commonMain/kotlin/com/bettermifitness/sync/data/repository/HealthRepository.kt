@@ -10,7 +10,11 @@ import com.bettermifitness.sync.data.api.WorkoutSession
 import com.bettermifitness.sync.data.parse.MiFitnessParsers
 import com.bettermifitness.sync.data.parse.toRaw
 import com.bettermifitness.sync.data.preferences.SyncPreferences
+import com.bettermifitness.sync.sync.UserSyncRequest
+import com.bettermifitness.sync.sync.UserSyncSources
+import com.bettermifitness.sync.zepp.ZeppSourceMismatch
 import com.bettermifitness.sync.data.preferences.BodySyncLedger
+import com.bettermifitness.sync.data.preferences.BodyUploadDecision
 import com.bettermifitness.sync.data.preferences.HealthImportLedger
 import com.bettermifitness.sync.data.api.MiDirectApi
 import com.bettermifitness.sync.data.api.MiDirectHealthImportCloud
@@ -18,6 +22,7 @@ import com.bettermifitness.sync.data.api.MiHealthImportChannel
 import com.bettermifitness.sync.data.api.MiHealthImportIdentity
 import com.bettermifitness.sync.data.api.MiHealthImportDiagnostic
 import com.bettermifitness.sync.data.api.MiHealthImportPlan
+import com.bettermifitness.sync.data.api.MiPaginationIssue
 import com.bettermifitness.sync.data.api.MiHealthImportCloud
 import com.bettermifitness.sync.data.api.MiPendingImportProbe
 import com.bettermifitness.sync.sync.LiveTestSessionGate
@@ -30,6 +35,7 @@ import com.bettermifitness.sync.data.parse.RawFitnessEntry
 import com.bettermifitness.sync.health.BodySyncConflictException
 import com.bettermifitness.sync.health.HealthWeightReadUnavailableException
 import com.bettermifitness.sync.health.HealthWriteIncompleteException
+import com.bettermifitness.sync.health.HealthAccessBlock
 import com.bettermifitness.sync.health.UnsupportedHrvAlgorithmException
 import com.bettermifitness.sync.health.HealthRecordIds
 import com.bettermifitness.sync.health.bodyExportFingerprint
@@ -38,6 +44,7 @@ import com.bettermifitness.sync.i18n.L10n
 import kotlinx.coroutines.delay
 import kotlin.time.Instant
 import com.bettermifitness.sync.health.HealthDataNormalizer
+import com.bettermifitness.sync.health.WorkoutContributionMetric
 import com.bettermifitness.sync.health.HealthStore
 import com.bettermifitness.sync.health.HealthInboundMetric
 import com.bettermifitness.sync.health.HealthInboundReadRequest
@@ -46,9 +53,14 @@ import com.bettermifitness.sync.health.HealthTimePolicy
 import com.mifitness.miclient.api.MiApiException
 import com.mifitness.miclient.fds.FdsClient
 import kotlin.time.Clock
+import kotlin.coroutines.AbstractCoroutineContextElement
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
+import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -90,7 +102,9 @@ sealed class SyncState {
     data class Success(val count: Int, val detail: String? = null, val diagnostic: MiHealthImportDiagnostic? = null) : SyncState()
     data class NoData(val message: String, val detail: String? = null, val diagnostic: MiHealthImportDiagnostic? = null) : SyncState()
     data class Error(val message: String, val diagnostic: MiHealthImportDiagnostic? = null,
-        val verifiedCount: Int = 0, val authenticationRequired: Boolean = false) : SyncState()
+        val verifiedCount: Int = 0, val authenticationRequired: Boolean = false,
+        val accessBlock: HealthAccessBlock? = null,
+        val zeppEventSplit: Set<com.bettermifitness.sync.zepp.ZeppStream> = emptySet()) : SyncState()
 }
 
 private fun SyncProgress.withMetric(metric: String, state: SyncState): SyncProgress = when (metric) {
@@ -118,6 +132,14 @@ private fun SyncProgress.withMetric(metric: String, state: SyncState): SyncProgr
     else -> this
 }
 
+private fun SyncProgress.withAccessBlocks(blocked: Map<String, HealthAccessBlock>): SyncProgress =
+    blocked.entries.fold(this) { progress, (metric, reason) ->
+        val progressKey = metric.removeSuffix("_experimental").split('_').let { parts ->
+            parts.first() + parts.drop(1).joinToString("") { it.replaceFirstChar(Char::uppercaseChar) }
+        }
+        progress.withMetric(progressKey, SyncState.Error(reason.message(), accessBlock = reason))
+    }
+
 /**
  * Orchestrates Mi fetch → parse → platform health write.
  * Each metric fails independently; one bad metric does not abort the rest.
@@ -137,6 +159,7 @@ class HealthRepository internal constructor(
     private val importLedger: HealthImportLedger,
     private val syncPreferences: SyncPreferences,
     private val zeppSync: com.bettermifitness.sync.zepp.ZeppSyncService? = null,
+    private val pageCache: FitnessPageCache? = null,
 ) : HealthSyncRunner {
     constructor(
         session: MiSessionManager,
@@ -145,6 +168,7 @@ class HealthRepository internal constructor(
         importLedger: HealthImportLedger,
         syncPreferences: SyncPreferences,
         zeppSync: com.bettermifitness.sync.zepp.ZeppSyncService? = null,
+        pageCache: FitnessPageCache? = null,
     ) : this(
         apiProvider = { session.api },
         currentUserId = { session.currentUserId },
@@ -155,6 +179,7 @@ class HealthRepository internal constructor(
         importLedger = importLedger,
         syncPreferences = syncPreferences,
         zeppSync = zeppSync,
+        pageCache = pageCache,
     )
 
     override val syncProgress: StateFlow<SyncProgress>
@@ -401,15 +426,18 @@ class HealthRepository internal constructor(
 
     private suspend fun prepareInboundPlan(
         metric: HealthInboundMetric, from: String, to: String, liveTestWindow: Boolean = false,
+        sources: UserSyncSources? = null,
     ): MiHealthImportPlan {
         val window = SyncWindow.parse(from, to)
         if (liveTestWindow) require(window.to - window.from <= 27 * 86_400L) {
             "Select at most 27 days for a live-test inbound read."
         }
-        val request = HealthInboundReadRequest(window.from, window.to, setOf(ZEPP_SOURCE_PACKAGE))
+        val calendarZoneId = if (sources == null) syncPreferences.readSourceCalendarZoneId() else sources.calendarZoneId
+        val calendarZone = calendarZoneId?.let { kotlinx.datetime.TimeZone.of(it) }
+        val request = HealthInboundReadRequest(window.from, window.to, setOf(ZEPP_SOURCE_PACKAGE), calendarZone)
         return withContext(Dispatchers.Default) {
             prepareMiHealthImportPlan(metric, healthWriter, request, ZEPP_SOURCE_PACKAGE,
-                sleepBreath = { sleeps -> zeppSync?.sleepBreath(sleeps).orEmpty() }).withNativeSleepSource()
+                sleepBreath = { sleeps -> zeppSync?.sleepBreath(sleeps, sources).orEmpty() }).withNativeSleepSource()
         }
     }
 
@@ -432,7 +460,28 @@ class HealthRepository internal constructor(
         }
     }
 
-    override suspend fun syncAll(from: String, to: String, enabled: Set<String>): SyncRunResult = withContext(Dispatchers.Default) {
+    override suspend fun syncAll(from: String, to: String, enabled: Set<String>): SyncRunResult =
+        syncAutomaticSlice(from, to, enabled, null)
+
+    override suspend fun syncAutomaticSlice(from: String, to: String, enabled: Set<String>, zeppRead: AutomaticZeppRead?):
+        SyncRunResult = syncWindow(from, to, enabled, zeppRead, null)
+
+    override suspend fun syncCheckpointedSlice(from: String, to: String, enabled: Set<String>, zeppRead: AutomaticZeppRead?,
+        scope: SyncPageScope): SyncRunResult = syncWindow(from, to, enabled, zeppRead, null, scope)
+
+    override suspend fun pageCheckpointRevision(): Long = pageCache?.revision() ?: -1
+    override suspend fun discardPageCheckpoints(scope: SyncPageScope) { pageCache?.discard(scope) }
+    override suspend fun clearPageCheckpoints() { pageCache?.clear() }
+
+    override suspend fun syncUserRequest(request: UserSyncRequest): SyncRunResult = with(request.selection) {
+        val sources = request.sources ?: UserSyncSources(null, null)
+        syncWindow(from.toString(), to.toString(), enabled, AutomaticZeppRead(false, emptySet(), sources.zeppIdentity), sources,
+            SyncPageScope(request.runId, request.accountGeneration))
+    }
+
+    private suspend fun syncWindow(from: String, to: String, enabled: Set<String>, zeppRead: AutomaticZeppRead?,
+        sources: UserSyncSources?, pageScope: SyncPageScope? = null):
+        SyncRunResult = withContext(Dispatchers.Default + pageReadContext(pageScope)) {
         try {
             sharedRefresh.reset()
             rowCache.clear()
@@ -443,14 +492,16 @@ class HealthRepository internal constructor(
             sessionRejected = false
             retryableFailures.clear()
             verifiedImportFingerprints = importLedger.verifiedFingerprints(accountKey())
-            correctWorkoutOverlap = "workouts" in enabled
-            syncProgress.value = SyncProgress()
+            val blocked = healthWriter.blockedSyncMetrics(enabled, Instant.parse(from))
+            val allowed = enabled - blocked.keys
+            correctWorkoutOverlap = "workouts" in allowed
+            syncProgress.value = SyncProgress().withAccessBlocks(blocked)
             // Import first so verified Zepp workouts can be excluded from our reverse export in this same run.
-            if (SyncPreferences.WORKOUTS_IMPORT_KEY in enabled) syncWorkoutImports(from, to)
+            if (SyncPreferences.WORKOUTS_IMPORT_KEY in allowed) syncWorkoutImports(from, to, sources)
             // Reads are cached only after success, so an auth retry can really refetch.
             // Each metric owns its failure; a failed shared Deferred cannot abort the run.
             supervisorScope {
-                workoutCompletion = if ("workouts" in enabled) async { syncWorkouts(from, to) } else null
+                workoutCompletion = if ("workouts" in allowed) async { syncWorkouts(from, to) } else null
                 val actions = linkedMapOf<String, suspend () -> Unit>(
                     "heart_rate" to { syncHeartRate(from, to) },
                     "resting_heart_rate" to { syncRestingHeartRate(from, to) },
@@ -465,27 +516,29 @@ class HealthRepository internal constructor(
                     "temperature" to { syncTemperature(from, to) },
                     "vo2_max" to { syncVo2Max(from, to) },
                 )
-                actions.filterKeys { it in enabled }.values.map { action -> async { action() } }.forEach { it.await() }
+                actions.filterKeys { it in allowed }.values.map { action -> async { action() } }.forEach { it.await() }
                 workoutCompletion?.await()
             }
             // Import after exports: fresh cloud reads verify mutations, and a single
             // source direction cannot race its own current-run export cache.
-            if (SyncPreferences.HEART_RATE_IMPORT_KEY in enabled) syncInbound(HealthInboundMetric.HEART_RATE, from, to)
-            if (SyncPreferences.RESTING_HEART_RATE_IMPORT_KEY in enabled) syncInbound(HealthInboundMetric.RESTING_HEART_RATE, from, to)
-            if (SyncPreferences.SLEEP_IMPORT_KEY in enabled) syncInbound(HealthInboundMetric.SLEEP, from, to)
-            if (SyncPreferences.SPO2_IMPORT_KEY in enabled) syncInbound(HealthInboundMetric.OXYGEN_SATURATION, from, to)
+            if (SyncPreferences.HEART_RATE_IMPORT_KEY in allowed) syncInbound(HealthInboundMetric.HEART_RATE, from, to, sources)
+            if (SyncPreferences.RESTING_HEART_RATE_IMPORT_KEY in allowed) {
+                syncInbound(HealthInboundMetric.RESTING_HEART_RATE, from, to, sources)
+            }
+            if (SyncPreferences.SLEEP_IMPORT_KEY in allowed) syncInbound(HealthInboundMetric.SLEEP, from, to, sources)
+            if (SyncPreferences.SPO2_IMPORT_KEY in allowed) syncInbound(HealthInboundMetric.OXYGEN_SATURATION, from, to, sources)
             // Sleep runs first so an optional HRV pass may enrich the just-verified
             // sleep record, subject to the journal and missing-field checks.
-            if (SyncPreferences.HRV_IMPORT_KEY in enabled) syncInbound(HealthInboundMetric.HRV, from, to)
-            if (SyncPreferences.VO2_MAX_IMPORT_KEY in enabled) syncInbound(HealthInboundMetric.VO2_MAX, from, to)
-            if (SyncPreferences.ZEPP_CLOUD_IMPORT_KEY in enabled) syncZeppCloud(from, to)
+            if (SyncPreferences.HRV_IMPORT_KEY in allowed) syncInbound(HealthInboundMetric.HRV, from, to, sources)
+            if (SyncPreferences.VO2_MAX_IMPORT_KEY in allowed) syncInbound(HealthInboundMetric.VO2_MAX, from, to, sources)
+            if (SyncPreferences.ZEPP_CLOUD_IMPORT_KEY in allowed) syncZeppCloud(from, to, zeppRead)
             SyncRunResult.from(syncProgress.value, enabled, retryableFailures.toList(), sawAuthFailure)
         } finally {
             syncProgress.value = syncProgress.value.finishActiveTasks(L10n.text(L10n.syncInterrupted))
         }
     }
 
-    private suspend fun syncZeppCloud(from: String, to: String) {
+    private suspend fun syncZeppCloud(from: String, to: String, read: AutomaticZeppRead?) {
         if (stateMutex.withLock { sessionRejected }) {
             syncProgress.value = syncProgress.value.copy(zeppCloudImport = SyncState.Error(
                 L10n.text(L10n.sessionExpired), authenticationRequired = true))
@@ -493,8 +546,10 @@ class HealthRepository internal constructor(
         }
         syncProgress.value = syncProgress.value.copy(zeppCloudImport = SyncState.InProgress)
         val state = try {
+            if (read != null && read.sourceIdentity == null) throw ZeppSourceMismatch()
             val result = com.bettermifitness.sync.zepp.runBoundedZeppSync {
-                checkNotNull(zeppSync).sync(accountKey(), Instant.parse(from).epochSeconds, Instant.parse(to).epochSeconds)
+                checkNotNull(zeppSync).sync(accountKey(), Instant.parse(from).epochSeconds, Instant.parse(to).epochSeconds,
+                    read?.deferEventSplit == true, read?.requiredEvents.orEmpty(), read?.sourceIdentity)
             }
             val detail = buildList {
                 add(L10n.textFmt(L10n.zeppSyncCounts, result.verified, result.unresolved))
@@ -510,6 +565,12 @@ class HealthRepository internal constructor(
             else if (result.verified == 0) SyncState.NoData(if (result.workouts.skipped > 0) detail else L10n.text(L10n.zeppNoMappableData))
             else SyncState.Success(result.verified, detail)
         } catch (e: CancellationException) { throw e }
+        catch (_: ZeppSourceMismatch) {
+            SyncState.Error(L10n.text(L10n.syncZeppSourceChanged))
+        }
+        catch (e: com.bettermifitness.sync.zepp.ZeppEventWindowSplitRequired) {
+            SyncState.Error(L10n.text(L10n.zeppIncompleteError), zeppEventSplit = e.requiredEvents)
+        }
         catch (_: com.bettermifitness.sync.zepp.ZeppSyncTimeoutException) {
             retryableFailures += true
             SyncState.Error(L10n.text(L10n.zeppSyncTimeout))
@@ -564,7 +625,7 @@ class HealthRepository internal constructor(
         else -> "UNFINISHED"
     }
 
-    private suspend fun syncWorkoutImports(from: String, to: String) {
+    private suspend fun syncWorkoutImports(from: String, to: String, sources: UserSyncSources?) {
         if (stateMutex.withLock { sessionRejected }) {
             setState("workoutsImport", SyncState.Error(L10n.text(L10n.sessionExpired), authenticationRequired = true))
             return
@@ -576,7 +637,7 @@ class HealthRepository internal constructor(
             val cloud = com.bettermifitness.sync.data.api.MiDirectWorkoutImportCloud(
                 readWithAuthRetry = { read -> executeWithAuthRetry(read) }, api = { api })
             val ledger = syncPreferences.workoutImportLedger()
-            val heartRateReader = zeppSync?.workoutHeartRateReader(source)
+            val heartRateReader = zeppSync?.workoutHeartRateReader(source, sources)
             val result = MiWorkoutSyncRunner(cloud, ledger, { FdsClient(api.dataClient()) },
                 originalHeartRate = { heartRateReader?.invoke(it) },
                 legacyRestoration = syncPreferences.workoutRestoreLedger()).run(accountKey(), source)
@@ -592,7 +653,8 @@ class HealthRepository internal constructor(
         catch (error: Exception) {
             recordFailure(error)
             setState("workoutsImport", SyncState.Error(friendlyMessage(error),
-                authenticationRequired = error is MiApiException.AuthExpired && sessionRejected))
+                authenticationRequired = error is MiApiException.AuthExpired && sessionRejected,
+                accessBlock = (error as? HealthInboundReadUnavailableException)?.accessBlock))
         }
     }
 
@@ -608,7 +670,7 @@ class HealthRepository internal constructor(
         return expected == HealthRecordIds.version(actual).toString()
     }
 
-    private suspend fun syncInbound(metric: HealthInboundMetric, from: String, to: String) {
+    private suspend fun syncInbound(metric: HealthInboundMetric, from: String, to: String, sources: UserSyncSources? = null) {
         val progressKey = when (metric) {
             HealthInboundMetric.HEART_RATE -> "heartRateImport"
             HealthInboundMetric.RESTING_HEART_RATE -> "restingHeartRateImport"
@@ -621,7 +683,7 @@ class HealthRepository internal constructor(
         var detail: String? = null
         var diagnostic: MiHealthImportDiagnostic? = null
         runMetric(progressKey, successDetail = { detail }, successDiagnostic = { diagnostic }) {
-            val plan = prepareInboundFiles(prepareInboundPlan(metric, from, to))
+            val plan = prepareInboundFiles(prepareInboundPlan(metric, from, to, sources = sources))
             if (plan.inputRecordCount == 0) throw NoMetricDataException()
             val cloud = MiDirectHealthImportCloud(apiProvider = { api })
             val result = try {
@@ -757,9 +819,12 @@ class HealthRepository internal constructor(
         }
     }
 
-    private suspend fun overlapWorkouts(from: String, to: String): List<WorkoutSession> {
-        if (!correctWorkoutOverlap) return emptyList()
+    private suspend fun overlapWorkouts(metric: WorkoutContributionMetric, from: String, to: String): List<WorkoutSession> {
         workoutCompletion?.await()
+        healthWriter.readOwnWorkoutContributions(metric, Instant.parse(hourQueryFrom(from, to)), Instant.parse(to))?.let {
+            return it
+        }
+        if (!correctWorkoutOverlap) return emptyList()
         if (syncProgress.value.workouts is SyncState.Error) {
             throw IllegalStateException(L10n.text(L10n.syncCounterDependencyFailed))
         }
@@ -773,10 +838,19 @@ class HealthRepository internal constructor(
         workoutCache.get("$from|$to") {
             val window = SyncWindow.parse(from, to)
             val owned = syncPreferences.workoutImportLedger().targetsForLoopPrevention(accountKey())
-            val rows = fetchSemaphore.withPermit { api.getSportRecordsByTime(from, to) }.filterNot { row ->
-                row.deleted || com.bettermifitness.sync.data.api.isVerifiedWorkoutImport(row, owned)
+            val paging = coroutineContext[PagingContext]
+            val checkpoints = paging?.let {
+                pageCache?.bind(it.lease, it.scope, it.account, it.host, workoutSourceStream(owned),
+                    window, WorkoutSourceIndexRow.serializer())
             }
-            HealthDataNormalizer.normalizeWorkouts(MiFitnessParsers.parseWorkouts(rows))
+            val rows = collectFitnessWindow(window, 40, WorkoutSourceIndexRow::time, checkpoints = checkpoints) { bounds, cursor ->
+                val page = fetchSemaphore.withPermit {
+                    checkedPageApi(paging).getSportRecordPage(bounds.from, bounds.to, cursor, strict = checkpoints != null)
+                }
+                projectWorkoutSourcePage(page, owned)
+            }
+            if (paging != null) checkedPageApi(paging)
+            HealthDataNormalizer.normalizeWorkouts(rows.map { it.summary })
                 .filter { window.overlaps(it.startTime, it.endTime) }
         }
 
@@ -785,7 +859,7 @@ class HealthRepository internal constructor(
             val records = HealthDataNormalizer.normalizeSteps(
                 MiFitnessParsers.parseHourlySteps(rawRows("steps", hourQueryFrom(from, to), to)),
             )
-            val adjusted = HealthDataNormalizer.subtractWorkoutSteps(records, overlapWorkouts(from, to))
+            val adjusted = HealthDataNormalizer.subtractWorkoutSteps(records, overlapWorkouts(WorkoutContributionMetric.STEPS, from, to))
             if (adjusted.isNotEmpty()) healthWriter.writeSteps(adjusted)
             adjusted.size
         }
@@ -796,7 +870,8 @@ class HealthRepository internal constructor(
             val records = HealthDataNormalizer.normalizeDistance(
                 MiFitnessParsers.parseHourlyDistanceFromSteps(rawRows("steps", hourQueryFrom(from, to), to)),
             )
-            val adjusted = HealthDataNormalizer.subtractWorkoutDistance(records, overlapWorkouts(from, to))
+            val workouts = overlapWorkouts(WorkoutContributionMetric.DISTANCE, from, to)
+            val adjusted = HealthDataNormalizer.subtractWorkoutDistance(records, workouts)
             if (adjusted.isNotEmpty()) healthWriter.writeDistance(adjusted)
             adjusted.size
         }
@@ -807,7 +882,8 @@ class HealthRepository internal constructor(
             val records = HealthDataNormalizer.normalizeActiveCalories(
                 MiFitnessParsers.parseHourlyActiveCalories(rawRows("calories", hourQueryFrom(from, to), to)),
             )
-            val adjusted = HealthDataNormalizer.subtractWorkoutCalories(records, overlapWorkouts(from, to))
+            val workouts = overlapWorkouts(WorkoutContributionMetric.CALORIES, from, to)
+            val adjusted = HealthDataNormalizer.subtractWorkoutCalories(records, workouts)
             if (adjusted.isNotEmpty()) healthWriter.writeActiveCalories(adjusted)
             adjusted.size
         }
@@ -830,7 +906,8 @@ class HealthRepository internal constructor(
             val hc = try {
                 healthWriter.readLatestWeight()
             } catch (e: HealthWeightReadUnavailableException) {
-                if (mi != null) writeBodyToHealth(mi)
+                val exported = mi?.let { writeBodyToHealth(it) } ?: 0
+                if (exported > 0) throw HealthWriteIncompleteException(exported, listOf(e.message.orEmpty()), cause = e)
                 throw e // A blocked reverse read is not evidence that Health Connect is empty.
             }
             val plan = planBodySync(mi, hc, allowBodyImport)
@@ -859,8 +936,8 @@ class HealthRepository internal constructor(
     private suspend fun uploadBodyAndVerify(measurement: WeightMeasurement, includeBody: Boolean): Int {
         val account = accountKey()
         val fingerprint = HealthRecordIds.version(buildMiWeightUploadValue(measurement, includeBody).toString()).toString()
-        val previous = bodyLedger.attempt(account, fingerprint)
-        if (previous != null) {
+        val decision = bodyLedger.beginUpload(account, fingerprint)
+        if (decision == BodyUploadDecision.VerifyOnly) {
             val missing = missingMiWeightUploadFields(measurement, readBackMiWeight(measurement), includeBody)
             if (missing.isEmpty()) {
                 bodyLedger.noteAttempt(account, fingerprint, "verified")
@@ -868,12 +945,20 @@ class HealthRepository internal constructor(
             }
             throw BodyImportVerificationException(L10n.textFmt(L10n.bodyImportNotVerified, missing.joinToString()))
         }
-        // Journal before POST: after a timeout, verify rather than blindly insert again.
-        bodyLedger.noteAttempt(account, fingerprint, "pending")
+        val send = when (decision) {
+            is BodyUploadDecision.Send -> decision
+            BodyUploadDecision.CoolingDown -> throw MiApiException.RateLimited("Weight upload is waiting for retry cooldown")
+            BodyUploadDecision.RetryLimit -> throw BodyImportVerificationException("Weight upload stopped after repeated rate limits.")
+            BodyUploadDecision.AtCapacity -> throw BodyImportVerificationException("Weight upload paused: unresolved journal is full.")
+            BodyUploadDecision.VerifyOnly -> error("Verification branch already handled")
+        }
         val accepted = try {
             api.uploadWeight(measurement, includeBodyComposition = includeBody)
+        } catch (e: MiApiException.RateLimited) {
+            withContext(NonCancellable) { bodyLedger.noteRateLimit(account, fingerprint, send.attempt) }
+            throw e
         } catch (e: MiApiException.AuthExpired) {
-            bodyLedger.forgetAttempt(account, fingerprint) // Definite auth refusal can be retried after refresh.
+            if (e.definitelyRejected) withContext(NonCancellable) { bodyLedger.forgetAttempt(account, fingerprint) }
             throw e
         }
         if (!accepted) {
@@ -1043,16 +1128,52 @@ class HealthRepository internal constructor(
     }
 
     private suspend fun fetchAllByTime(key: String, from: String, to: String, maxPages: Int = 60): List<HeartRateEntry> =
-        rowCache.get("fitness|$key|$from|$to") {
-            collectFitnessPages(maxPages) { next -> fetchSemaphore.withPermit { api.getDataByTime(key, from, to, next) } }
-                .distinctBy { listOf(it.key, it.sid, it.time, it.value) }
-        }
+        readByTime(key, from, to, maxPages, medical = false)
 
     private suspend fun fetchAllMedicalByTime(key: String, from: String, to: String, maxPages: Int = 60): List<HeartRateEntry> =
-        rowCache.get("medical|$key|$from|$to") {
-            collectFitnessPages(maxPages) { next -> fetchSemaphore.withPermit { api.getMedicalDataByTime(key, from, to, next) } }
-                .distinctBy { listOf(it.key, it.sid, it.time, it.value) }
+        readByTime(key, from, to, maxPages, medical = true)
+
+    private suspend fun readByTime(key: String, from: String, to: String, maxPages: Int, medical: Boolean): List<HeartRateEntry> {
+        val stream = "${if (medical) "medical" else "fitness"}|$key"
+        return rowCache.get("$stream|$from|$to") {
+            val paging = coroutineContext[PagingContext]
+            val query = SyncWindow.parse(from, to)
+            val checkpoints = paging?.let { pageCache?.bind(it.lease, it.scope, it.account, it.host, stream, query) }
+            val timestamp = if (medical) null else HeartRateEntry::time
+            val rows = collectFitnessWindow(query, maxPages, timestamp, checkpoints = checkpoints) { window, next ->
+                fetchSemaphore.withPermit {
+                    val active = checkedPageApi(paging)
+                    val start = window.from.toString()
+                    val end = window.to.toString()
+                    if (medical) active.getMedicalDataByTime(key, start, end, next) else active.getDataByTime(key, start, end, next)
+                }
+            }
+            if (paging != null) checkedPageApi(paging)
+            rows.distinctBy { listOf(it.key, it.sid, it.time, it.value) }
         }
+    }
+
+    private suspend fun pageReadContext(scope: SyncPageScope?): CoroutineContext {
+        val cache = pageCache ?: return EmptyCoroutineContext
+        if (scope == null) return EmptyCoroutineContext
+        cache.prepare()
+        val client = api.dataClient()
+        return PagingContext(scope, cache.lease(), client.sourceUserId, client.healthHost)
+    }
+
+    private fun checkedPageApi(paging: PagingContext?): MiDirectApi = api.also { active ->
+        if (paging != null) {
+            val client = active.dataClient()
+            if (client.sourceUserId != paging.account || client.healthHost != paging.host) {
+                throw MiApiException.Unexpected("Xiaomi source changed during the read")
+            }
+        }
+    }
+
+    private class PagingContext(val scope: SyncPageScope, val lease: Long, val account: String, val host: String) :
+        AbstractCoroutineContextElement(PagingContext) {
+        companion object Key : CoroutineContext.Key<PagingContext>
+    }
 
     private class NoMetricDataException : IllegalStateException()
 
@@ -1077,7 +1198,14 @@ class HealthRepository internal constructor(
         } catch (e: Exception) {
             recordFailure(e)
             setState(metric, SyncState.Error(friendlyMessage(e), (e as? MiHealthImportRunException)?.diagnostic,
-                authenticationRequired = e is MiApiException.AuthExpired && sessionRejected))
+                verifiedCount = (e as? HealthWriteIncompleteException)?.writtenRecordCount ?: 0,
+                authenticationRequired = e is MiApiException.AuthExpired && sessionRejected,
+                accessBlock = when (e) {
+                    is HealthInboundReadUnavailableException -> e.accessBlock
+                    is HealthWeightReadUnavailableException -> e.accessBlock
+                    is HealthWriteIncompleteException -> (e.cause as? HealthWeightReadUnavailableException)?.accessBlock
+                    else -> null
+                }))
         }
     }
 
@@ -1128,6 +1256,8 @@ class HealthRepository internal constructor(
                     sawAuthFailure = sawAuthFailure || sessionRejected
                     retryableFailures += lastRefreshRetryable
                 }
+                is MiApiException.Unexpected -> retryableFailures += (e.paginationIssue != MiPaginationIssue.PAGE_LIMIT &&
+                    e.paginationIssue != MiPaginationIssue.REQUEST_BUDGET)
                 is MiApiException -> retryableFailures += e.isRetryable
                 is BodyImportVerificationException, is BodySyncConflictException,
                 is HealthWeightReadUnavailableException, is HealthWriteIncompleteException,

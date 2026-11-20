@@ -1,25 +1,44 @@
-# Mi Health Sync Lab
+# <img src="branding/app-icon.svg" alt="" width="40" height="40" align="absmiddle" /> Better Mi Fitness Sync
 
-[Better Mi Fitness Sync](https://github.com/ilyasaftr/better-mi-fitness-sync) 的非官方实验性 fork，当前源码版本为 `1.0.6-healthlab.40`（版本号 `1000046`）。
+Sync your **Mi Fitness** data to **Health Connect** (Android) or **Apple Health** (iOS): steps, heart rate, sleep, workouts, and more.
 
-## 这个分支有什么不同？
+## Download
 
-- 以 Android 为主要验证平台，扩展小米运动健康与 Health Connect 的双向同步，以及连接 Zepp 后的同步流程。
-- 调整睡眠和运动记录的处理、后台同步与小米登录会话续期。
-- 各类数据、地区和平台的支持程度不同；双向同步不等于所有指标都能完整读写。iOS 源码保留，但此实验版本未验证 iOS 构建。
+[![Download Android APK](https://img.shields.io/github/v/release/ilyasaftr/better-mi-fitness-sync?label=Download%20APK&logo=android&color=3DDC84)](https://github.com/ilyasaftr/better-mi-fitness-sync/releases/latest/download/BetterMiFitnessSync.apk)
+[![Download iOS IPA](https://img.shields.io/github/v/release/ilyasaftr/better-mi-fitness-sync?label=Download%20IPA&logo=apple&color=000000)](https://github.com/ilyasaftr/better-mi-fitness-sync/releases/latest/download/BetterMiFitnessSync.ipa)
+[![All releases](https://img.shields.io/github/v/release/ilyasaftr/better-mi-fitness-sync?label=All%20releases&logo=github)](https://github.com/ilyasaftr/better-mi-fitness-sync/releases/latest)
 
-## 构建 Android
+| | Latest build |
+|--|--|
+| **Android** | [BetterMiFitnessSync.apk](https://github.com/ilyasaftr/better-mi-fitness-sync/releases/latest/download/BetterMiFitnessSync.apk) |
+| **iOS** | [BetterMiFitnessSync.ipa](https://github.com/ilyasaftr/better-mi-fitness-sync/releases/latest/download/BetterMiFitnessSync.ipa) |
 
-安装 JDK 17 和项目所需的 Android SDK，然后在仓库根目录执行：
+## Install on Android
 
-```sh
-./gradlew :androidApp:assembleDebug
-```
+1. Download the APK above.
+2. Install it (allow **Install unknown apps** if asked).
+3. Open the app, grant **Health Connect** access, sign in with your Mi account, then sync.
 
-Windows 上可用 `gradlew.bat :androidApp:assembleDebug`。APK 输出到 `androidApp/build/outputs/apk/debug/`。安装后按需登录服务并授权 Health Connect；在验证同步前，先确认方向和数据范围。
+Needs [Health Connect](https://play.google.com/store/apps/details?id=com.google.android.apps.healthdata) (or the built-in version on newer phones).
 
-这是实验版源码，不是上游官方发行包。此仓库未随源码上传 APK 或真机验证资料。
+## Install on iOS
 
-## 上游与许可
+1. Download the IPA above.
+2. Re-sign and install on your iPhone (e.g. [Sideloadly](https://sideloadly.io/) or Xcode).
+3. Allow **Health** access, sign in with your Mi account, then sync.
 
-基于 Ilyasa Fathur Rahman 的 [Better Mi Fitness Sync](https://github.com/ilyasaftr/better-mi-fitness-sync)，保留原始 [MIT 许可](LICENSE)。第三方声明见 [`androidApp/src/main/assets/`](androidApp/src/main/assets/)。
+**Note:** The IPA is unsigned. You need a **paid Apple Developer** account with **HealthKit** enabled. A free Apple ID is not enough.
+
+## What it does
+
+- Signs in to your Mi Fitness account
+- Syncs steps, heart rate, sleep, SpO₂, weight, workouts (including GPS routes when available), and other metrics
+- Writes data to Health Connect or Apple Health
+- Optional auto-sync on a schedule
+- Keeps login and health data on your device only
+
+## Privacy
+
+- Your Mi login stays on the phone.
+- Health data goes from Mi Fitness → your phone’s health app.
+- Everything stays on your phone.

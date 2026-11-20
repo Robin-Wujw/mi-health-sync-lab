@@ -1,0 +1,93 @@
+{
+  "checked_at": "2026-11-03",
+  "target_version": "1.0.6-healthlab.7 (1000013)",
+  "kind": "Local implementation and automated-test evidence for cloud-read-only pending SpO2 reconciliation; no real-account execution",
+  "latest_user_evidence": {
+    "version": "1.0.6-healthlab.5 (1000011)",
+    "input_records": 195,
+    "already_present_raw_rows": 63,
+    "blocked_pending_rows": 132,
+    "attempted_raw_rows": 0,
+    "newly_verified_raw_rows": 0,
+    "no_later_device_report_received": true
+  },
+  "purpose": "One explicit action reconciles all actually observed, nonconflicting pending SpO2 targets in the currently selected source plan. It never submits missing health records.",
+  "implementation": {
+    "runner": "composeApp/src/commonMain/kotlin/com/bettermifitness/sync/data/repository/MiPendingSpO2Reconciler.kt",
+    "ledger": "composeApp/src/commonMain/kotlin/com/bettermifitness/sync/data/preferences/HealthImportLedger.kt",
+    "network_before_local_commit": true,
+    "health_upload_calls": 0,
+    "maximum_broad_day_groups": 32,
+    "maximum_native_pages": 32,
+    "native_if_all_broad_matched": false,
+    "partial_history": "Visible positive matches can reconcile; absent targets remain unqueried unless traversal explicitly completed.",
+    "conflict_priority": "All observations are combined before classification. A tombstone, other/missing SID or content conflict in any returned view blocks that target even if another view matched.",
+    "local_commit": "One DataStore.edit compares exact pending tokens and recovery metadata, preserves consumed budgets and latest business metadata, records observed fingerprints and removes only matching pending entries.",
+    "ownership": "Observed matches cannot become newly owned uploads. Existing equal-content ownership/legacy provenance may be retained.",
+    "failure": "CAS changes are distinct from local persistence failure. Neither is counted as reconciled. Authentication-shaped persistence exceptions do not trigger whole-operation auth replay.",
+    "count_partition": "Each candidate has exactly one outcome. unresolved is candidate minus reconciled, not a global pending count.",
+    "account_and_selection_scope": "Current account and source plan only. Unselected pending entries and unavailable source history are outside this action."
+  },
+  "entry_points": {
+    "phone": "核对全部待确认血氧",
+    "repository": "HealthRepository.reconcilePendingSpO2(from,to,userRequested=true)",
+    "instrumentation_mode": "reconcile-pending",
+    "metric": "spo2",
+    "allow_cloud_write": false,
+    "phone_and_instrumentation_same_runner": true,
+    "ordinary_sync_statistics_separate": true,
+    "existing_inspect_remains_no_local_journal_mutation": true,
+    "single_recovery_not_automatically_called": true
+  },
+  "local_tests": {
+    "status": "PASSED_ROOT_COORDINATED_BUILD_AND_TEST",
+    "runner_suite": "com.bettermifitness.sync.data.repository.MiPendingSpO2ReconcilerTest",
+    "runner_cases": 18,
+    "ledger_suite": "com.bettermifitness.sync.data.preferences.HealthImportLedgerReconciliationTest",
+    "ledger_cases": 10,
+    "disk_suite": "com.bettermifitness.sync.data.preferences.HealthImportLedgerDiskReconciliationTest",
+    "disk_cases": 1,
+    "formatter_new_cases": 2,
+    "disk_scope": "Actual temporary PreferencesDataStore file, close coroutine scope and join before reopening. Not a process kill, device reboot, disk-corruption or power-loss experiment.",
+    "executed_by_root": true,
+    "total_project_tests": 519,
+    "added_cases": 31,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "reports": [
+      {
+        "suite": "com.bettermifitness.sync.data.repository.MiPendingSpO2ReconcilerTest",
+        "tests": 18,
+        "report": "composeApp/build/test-results/testAndroidHostTest/TEST-com.bettermifitness.sync.data.repository.MiPendingSpO2ReconcilerTest.xml"
+      },
+      {
+        "suite": "com.bettermifitness.sync.data.preferences.HealthImportLedgerReconciliationTest",
+        "tests": 10,
+        "report": "composeApp/build/test-results/testAndroidHostTest/TEST-com.bettermifitness.sync.data.preferences.HealthImportLedgerReconciliationTest.xml"
+      },
+      {
+        "suite": "com.bettermifitness.sync.data.preferences.HealthImportLedgerDiskReconciliationTest",
+        "tests": 1,
+        "report": "composeApp/build/test-results/testAndroidHostTest/TEST-com.bettermifitness.sync.data.preferences.HealthImportLedgerDiskReconciliationTest.xml"
+      }
+    ]
+  },
+  "validation": {
+    "device_run": false,
+    "user_account_read_or_write": false,
+    "windows_powershell_run": false,
+    "adb_observation": "No attached devices in the current cloud environment; this says nothing about whether the user PC has an attached phone.",
+    "main_apk_binary_version_verified": true,
+    "same_signer_as_healthlab6": true,
+    "main_and_test_apk_built": true,
+    "actual_test_results": "validation.json"
+  },
+  "limitations": [
+    "This changes local reconciliation workflow; it is not evidence that any of the user 132 pending targets is visible to the new read path.",
+    "Cloud match proves observation of mapped fields at query time, not official Mi Fitness chart display or future retention.",
+    "Zero upload applies to this explicit reconciliation action; normal sync and explicit single recovery retain their existing separate behavior.",
+    "Rejected source material with unknown target attribution currently blocks reconciliation of that selected plan.",
+    "Missing after a completed endpoint traversal does not prove historical non-persistence or authorize automatic resubmission."
+  ]
+}

@@ -1,3 +1,7 @@
+import org.gradle.api.provider.Property
+import org.gradle.api.tasks.Input
+import org.gradle.api.tasks.TaskAction
+
 plugins {
     alias(libs.plugins.androidApplication)
     alias(libs.plugins.composeCompiler)
@@ -12,6 +16,12 @@ fun appVersionProp(name: String, envKey: String, default: String): String =
 
 val appVersionName: String = appVersionProp("versionName", "VERSION_NAME", "1.0.6-healthlab.41")
 val appVersionCode: Int = appVersionProp("versionCode", "VERSION_CODE", "1000047").toInt()
+val releaseStorePath = providers.environmentVariable("ANDROID_RELEASE_STORE_FILE").orNull.orEmpty()
+val releaseStorePassword = providers.environmentVariable("ANDROID_RELEASE_STORE_PASSWORD").orNull.orEmpty()
+val releaseKeyAlias = providers.environmentVariable("ANDROID_RELEASE_KEY_ALIAS").orNull.orEmpty()
+val releaseKeyPassword = providers.environmentVariable("ANDROID_RELEASE_KEY_PASSWORD").orNull.orEmpty()
+val hasReleaseSigning = listOf(releaseStorePath, releaseStorePassword, releaseKeyAlias, releaseKeyPassword)
+    .all { it.isNotBlank() }
 
 android {
     namespace = "com.bettermifitness.sync"
@@ -47,23 +57,23 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    // Release variant for tagged GitHub releases; PR builds stay on debug.
-    // Signed with the committed debug keystore below (public debug credentials,
-    // stable across CI runners) so updates install without uninstall; the release
-    // build type still applies the real release flags (non-debuggable)
-    // so public downloads never ship a debuggable APK.
     signingConfigs {
-        getByName("debug") {
-            storeFile = file("debug.keystore")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
+        create("release") {
+            if (hasReleaseSigning) {
+                storeFile = file(releaseStorePath)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
         }
     }
     buildTypes {
         getByName("release") {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
+        }
+        getByName("debug") {
+            applicationIdSuffix = ".debug"
         }
     }
 
@@ -73,6 +83,25 @@ android {
             enableSplit = false
         }
     }
+}
+
+abstract class RequireAndroidReleaseSigning : DefaultTask() {
+    @get:Input abstract val signingConfigured: Property<Boolean>
+
+    @TaskAction
+    fun requireSigning() {
+        check(signingConfigured.get()) { "Release signing requires all ANDROID_RELEASE_* environment variables." }
+    }
+}
+
+tasks.register<RequireAndroidReleaseSigning>("requireReleaseSigning") {
+    signingConfigured.set(hasReleaseSigning)
+}
+
+tasks.matching { task ->
+    task.name in setOf("preReleaseBuild", "preReleaseAndroidTestBuild", "validateSigningRelease")
+}.configureEach {
+    dependsOn("requireReleaseSigning")
 }
 
 // AGP 9 built-in Kotlin: configure JVM target without kotlin-android plugin.

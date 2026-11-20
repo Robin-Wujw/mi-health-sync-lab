@@ -29,7 +29,7 @@ actual object AutoSyncPlatform {
             onDone("skipped")
             return
         }
-        // Same path as BGAppRefreshTask (last 1 day, requires auto-sync ON).
+        // Same automatic data path as BGProcessingTask.
         BackgroundSync.runOpportunisticBackgroundSync(onDone)
     }
 

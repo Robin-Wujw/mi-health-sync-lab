@@ -113,17 +113,17 @@ class MiDirectApi(private val client: MiDataClient) {
         var next: String? = null
         val cursor = MiPageCursorGuard(maxPages)
         do {
-            val payload = buildMiWorkoutReadPayload(fromSeconds, untilSeconds, next)
-            val result = client.post(
-                path = "/app/v1/data/get_sport_records_by_time",
-                payload = payload,
-            )
-            val page = parseMiSportRecordsPage(result)
+            val page = getSportRecordPage(fromSeconds, untilSeconds, next)
             all += page.dataList
             next = cursor.nextCursor(page.hasMore, page.nextKey)
         } while (next != null)
         return all.filter { it.time >= fromSeconds && it.time < untilSeconds }
     }
+
+    internal suspend fun getSportRecordPage(from: Long, until: Long, next: String?, strict: Boolean = false):
+        FitnessResult<SportRecordEntry> = parseMiSportRecordsPage(client.post(
+            path = "/app/v1/data/get_sport_records_by_time", payload = buildMiWorkoutReadPayload(from, until, next),
+        ), strict)
 
     /**
      * Downloads FDS sport files (GPS + record + recover) and merges into [base].

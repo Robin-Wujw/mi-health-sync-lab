@@ -9,6 +9,7 @@ import com.bettermifitness.sync.data.preferences.HealthImportLedger
 import com.bettermifitness.sync.data.preferences.SyncPreferences
 import com.bettermifitness.sync.health.HealthInboundSleepRecord
 import com.bettermifitness.sync.health.HealthRecordOrigin
+import com.bettermifitness.sync.sync.UserSyncSources
 import com.mifitness.miclient.auth.MiAuth
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
@@ -67,6 +68,17 @@ class ZeppSleepSourceTest {
         preferences.setMetricEnabled(SyncPreferences.SLEEP_IMPORT_KEY, false)
         assertTrue(service.sleepBreath(listOf(sleep)).isEmpty())
         assertEquals(0, requests)
+    }
+
+    @Test fun acceptedSleepImportUsesOnlyItsFrozenAccountEvenAfterSettingsChange() = runTest {
+        sessions.save(ZeppSession("123", "synthetic-app", "synthetic-login", "api-mifitcn.zepp.com"))
+        val sources = UserSyncSources(checkNotNull(service.automaticSourceIdentity()), "UTC")
+        preferences.setMetricEnabled(SyncPreferences.SLEEP_IMPORT_KEY, false)
+        assertEquals(listOf(start, start + 120), service.sleepBreath(listOf(sleep), sources).map { it.time })
+        sessions.save(ZeppSession("123", "synthetic-app", "synthetic-login", "api-mifitde.zepp.com"))
+        assertTrue(service.sleepBreath(listOf(sleep), sources).isEmpty())
+        assertTrue(service.sleepBreath(listOf(sleep), UserSyncSources(null, "UTC")).isEmpty())
+        assertEquals(2, requests)
     }
 
     private class MemoryStore : DataStore<Preferences> {

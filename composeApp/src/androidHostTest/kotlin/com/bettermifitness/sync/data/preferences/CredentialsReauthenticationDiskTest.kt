@@ -2,6 +2,8 @@ package com.bettermifitness.sync.data.preferences
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import com.bettermifitness.sync.data.api.MiWorkoutImportTarget
+import com.bettermifitness.sync.sync.AutomaticSkip
+import com.bettermifitness.sync.sync.AutomaticSkipReason
 import com.mifitness.miclient.auth.MiCredentials
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -18,11 +20,44 @@ import org.robolectric.annotation.Config
 import java.nio.file.Files
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class CredentialsReauthenticationDiskTest {
+    @Test fun lastAutomaticSkipSurvivesReopenAndRejectsLateWritesFromPreviousAccount(): Unit = runBlocking {
+        val directory = Files.createTempDirectory("mi-automatic-skip-")
+        val file = directory.resolve("session.preferences_pb")
+        val firstJob = SupervisorJob()
+        val first = PreferenceDataStoreFactory.createWithPath(scope = CoroutineScope(firstJob + Dispatchers.IO),
+            produceFile = { file.toString().toPath() })
+        val account = MiCredentials("account", "security", "service", "pass", "device", "sg")
+        try {
+            val generation = CredentialsStore(first).saveNewAccount(account)
+            val skipped = AutomaticSkip(AutomaticSkipReason.NOT_DUE, "2026-11-19T12:00:00Z", generation)
+            SyncPreferences(first).storeAutomaticSkip(skipped)
+            firstJob.cancelAndJoin()
+            val secondJob = SupervisorJob()
+            val reopened = PreferenceDataStoreFactory.createWithPath(scope = CoroutineScope(secondJob + Dispatchers.IO),
+                produceFile = { file.toString().toPath() })
+            try {
+                val preferences = SyncPreferences(reopened)
+                assertEquals(skipped, preferences.lastAutomaticSkip.first())
+                val replacement = CredentialsStore(reopened).saveNewAccount(account.copy(userId = "different"))
+                assertNull(preferences.lastAutomaticSkip.first())
+                val current = skipped.copy(reason = AutomaticSkipReason.DISABLED, generation = replacement)
+                preferences.storeAutomaticSkip(current)
+                preferences.storeAutomaticSkip(skipped)
+                assertEquals(current, preferences.lastAutomaticSkip.first())
+            } finally { secondJob.cancelAndJoin() }
+        } finally {
+            firstJob.cancelAndJoin()
+            Files.deleteIfExists(file)
+            Files.deleteIfExists(directory)
+        }
+    }
+
     @Test fun rejectionSurvivesDiskReopenAndFreshLoginKeepsSettingsAndRecoveryBackup(): Unit = runBlocking {
         val directory = Files.createTempDirectory("mi-reauthentication-")
         val file = directory.resolve("session.preferences_pb")

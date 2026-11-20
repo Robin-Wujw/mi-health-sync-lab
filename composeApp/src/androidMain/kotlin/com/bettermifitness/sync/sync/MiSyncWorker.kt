@@ -8,17 +8,19 @@ import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.bettermifitness.sync.data.MiSessionManager
 import com.bettermifitness.sync.data.SessionRefreshResult
+import com.bettermifitness.sync.data.preferences.CredentialsStore
 import com.bettermifitness.sync.di.initKoin
+import kotlinx.coroutines.flow.first
 import org.koin.core.context.GlobalContext
 import org.koin.mp.KoinPlatform
 
 /**
  * Opportunistic background sync (WorkManager).
- * Uses the selected sync range, requires Auto-sync ON, and never presents permission UI.
+ * Uses the incremental plan, requires Auto-sync ON, and never presents permission UI.
  *
  * Retry policy:
  * - Success / partial success / skipped / not logged in / health unavailable → [Result.success]
- * - Transient [SyncOutcome.Failed] → [Result.retry] (WorkManager exponential backoff)
+ * - A durable retry owned by this worker → [Result.retry] (WorkManager exponential backoff)
  * - Non-retryable failures (auth without refresh, permanent) → [Result.failure]
  */
 class MiSyncWorker(
@@ -34,7 +36,17 @@ class MiSyncWorker(
         }
         return try {
             ensureKoin()
-            val coordinator = KoinPlatform.getKoin().get<SyncCoordinator>()
+            val koin = KoinPlatform.getKoin()
+            val coordinator = koin.get<SyncCoordinator>()
+            val attempt = AutomaticWorkAttempt(id.toString(), runAttemptCount)
+            val journal = koin.get<UserSyncJournal>()
+            journal.reconcileAutomatic(androidSyncProcessId)
+            val queued = journal.recoverable.first()
+            if (queued != null && queued.accountGeneration == koin.get<CredentialsStore>().accountGeneration()) {
+                coordinator.recordAutomaticSkip(AutomaticSkipReason.MANUAL_BUSY, queued.accountGeneration)
+                return if (coordinator.hasPendingAutomaticRetry(attempt.owner)) Result.retry()
+                else completed(SyncOutcome.STATUS_ALREADY_RUNNING, "queued_user_sync")
+            }
             val outcome = coordinator.run(
                 rangeDaysOverride = 0,
                 requireAutoSync = true,
@@ -42,14 +54,25 @@ class MiSyncWorker(
                 recordAsBackground = true,
                 resetProgress = false,
                 userInitiated = false,
+                automaticAttempt = attempt,
+                onTaskAccepted = { task -> journal.beginAutomatic(task, androidSyncProcessId) },
+                onTaskFinished = { summary ->
+                    try {
+                        journal.recordAutomatic(summary)
+                    } catch (_: Exception) {
+                        Log.w(TAG, "background sync history unavailable")
+                    }
+                },
             )
-            Log.i(TAG, "background sync finished: $outcome")
+            Log.i(TAG, "background sync finished: ${outcome.toStatusCode()}")
+            if (coordinator.hasPendingAutomaticRetry(attempt.owner)) return Result.retry()
             when (outcome) {
                 SyncOutcome.Success,
                 is SyncOutcome.CompletedWithSkips,
                 is SyncOutcome.NoData,
                 is SyncOutcome.PartialSuccess,
                 SyncOutcome.Skipped,
+                SyncOutcome.Cancelled,
                 SyncOutcome.HealthUnavailable,
                 // Another path owns the run; do not queue retries that stack more work.
                 SyncOutcome.AlreadyRunning,
@@ -60,18 +83,17 @@ class MiSyncWorker(
                 // WorkManager bookkeeping (and any observers) see it instead of success.
                 // The next periodic tick still runs, so a later sign-in recovers on its own.
                 SyncOutcome.NotLoggedIn,
-                is SyncOutcome.Failed,
-                -> if (outcome is SyncOutcome.Failed && outcome.shouldRetryBackground()) {
-                    Result.retry()
-                } else {
-                    Result.failure()
-                }
+                is SyncOutcome.Failed -> Result.failure()
             }
+        } catch (_: UserSyncStopped) {
+            val coordinator = KoinPlatform.getKoin().get<SyncCoordinator>()
+            if (coordinator.hasPendingAutomaticRetry(id.toString())) Result.retry()
+            else completed(SyncOutcome.STATUS_CANCELLED)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "background sync error", e)
-            Result.retry()
+            Log.e(TAG, "background sync error (${e::class.simpleName})")
+            Result.failure()
         }
     }
 

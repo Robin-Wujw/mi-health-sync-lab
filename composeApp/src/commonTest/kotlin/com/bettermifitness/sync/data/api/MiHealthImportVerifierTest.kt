@@ -47,6 +47,30 @@ class MiHealthImportVerifierTest {
         assertFalse("next_key" in daily)
     }
 
+    @Test fun identicalDailyRowsAndCompetingSameDayReportsAreNotVerification() {
+        val report = row.copy(identity = row.identity.copy(channel = MiHealthImportChannel.DAILY_AGGREGATE,
+            time = 1_728_000_000, tag = "daily_report"), zoneOffsetSeconds = 0)
+        val stored = MiHealthImportCloudRow("default", "heart_rate", report.identity.time, "daily_report", report.value,
+            zoneOffsetSeconds = 0)
+        val adjacentAnchor = stored.copy(sid = "watch", time = stored.time + 3_600)
+        assertEquals(MiHealthImportVerificationStatus.VERIFIED, MiHealthImportObservationIndex(listOf(stored)).verify(report).status)
+        for (other in listOf(stored, adjacentAnchor, stored.copy(deleted = true))) {
+            val result = MiHealthImportObservationIndex(listOf(stored, other)).verify(report)
+            assertEquals(MiHealthImportVerificationStatus.AMBIGUOUS, result.status)
+            assertEquals(setOf("duplicate_daily_report"), result.mismatchedFields)
+        }
+    }
+
+    @Test fun scopedDailyReadDistinguishesExplicitTagFromRequestInferredTag() {
+        val response = json("""{"code":0,"result":{"data_list":[
+            {"sid":"default","time":1728000000,"value":{},"tag":"daily_report"},
+            {"sid":"default","time":1728000000,"value":{}}
+        ],"has_more":false}}""")
+        val rows = parseMiHealthImportReadPage(response, MiHealthImportChannel.DAILY_AGGREGATE, "heart_rate").rows
+        assertEquals(listOf("daily_report", "daily_report"), rows.map { it.tag })
+        assertEquals(listOf(false, true), rows.map { it.tagInferred })
+    }
+
     @Test fun exclusiveRawStartIncludesTheFirstTargetWithoutNegativeEpochs() {
         for (key in listOf("pai", "stress", "training_load")) {
             val request = buildMiHealthImportReadPayload(MiHealthImportChannel.RAW, key, 100, 101, null)

@@ -494,13 +494,11 @@ class LoginViewModel(
             }
             return
         }
-        credentialsStore.saveCredentials(effective)
-        sessionManager.activate(effective)
+        val generation = sessionManager.signIn(effective)
         // Pick the health cloud shard that actually holds the newest samples.
         try {
             val discovered = regionDiscovery.discover(effective)
-            credentialsStore.setDiscoveredRegion(discovered)
-            sessionManager.reloadFromStore()
+            sessionManager.applyDiscoveredRegion(generation, discovered)
         } catch (_: Exception) {
             // Keep STS provisional region if probing fails entirely.
         }

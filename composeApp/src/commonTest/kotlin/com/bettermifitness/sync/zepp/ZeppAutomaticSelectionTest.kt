@@ -18,6 +18,7 @@ import com.bettermifitness.sync.health.HealthInboundMetric
 import com.bettermifitness.sync.health.HealthPermissionRequester
 import com.bettermifitness.sync.sync.SyncCoordinator
 import com.bettermifitness.sync.sync.SyncOutcome
+import com.bettermifitness.sync.sync.UserSyncRequest
 import com.mifitness.miclient.auth.MiAuth
 import com.mifitness.miclient.auth.MiCredentials
 import io.ktor.client.HttpClient
@@ -28,7 +29,9 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertTrue
+import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
+import kotlin.test.assertNull
 
 /** Exercises production connection state, not the coordinator's optional legacy fallback. */
 class ZeppAutomaticSelectionTest : LocalizedTest() {
@@ -83,14 +86,79 @@ class ZeppAutomaticSelectionTest : LocalizedTest() {
         } finally { http.close() }
     }
 
-    @Test fun automaticCloudSourceDoesNotBypassHealthConnectForOtherSelectedTasks() = runBlocking {
+    @Test fun unavailableHealthConnectDoesNotDiscardTheIndependentCloudDirection() = runBlocking {
         try {
             select(setOf(SyncPreferences.SLEEP_IMPORT_KEY))
             connect()
-            assertEquals(SyncOutcome.HealthUnavailable, coordinator.prepareUserSync())
-            assertEquals(SyncOutcome.HealthUnavailable, coordinator.run(requestHealthPermissions = false))
-            assertEquals(null, runner.enabled)
-            assertTrue(health.availabilityChecks > 0)
+            assertEquals(null, coordinator.prepareUserSync())
+            coordinator.run(requestHealthPermissions = false)
+            assertEquals(setOf(SyncPreferences.SLEEP_IMPORT_KEY, SyncPreferences.ZEPP_CLOUD_IMPORT_KEY), runner.enabled)
+        } finally { http.close() }
+    }
+
+    @Test fun changingZeppRegionInvalidatesAReservedReadBeforeItMakesRequests() = runBlocking<Unit> {
+        try {
+            connect()
+            val expected = checkNotNull(service.automaticSourceIdentity())
+            sessions.save(ZeppSession("123", "synthetic-app", "synthetic-login", "api-mifitde.zepp.com"))
+            assertFailsWith<ZeppSourceMismatch> {
+                service.sync("synthetic-destination", 1_795_000_000, 1_795_003_600, expectedSource = expected)
+            }
+        } finally { http.close() }
+    }
+
+    @Test fun acceptedManualRequestCannotRunAgainstAReplacementZeppAccount() = runBlocking {
+        try {
+            select(emptySet())
+            connect()
+            val request = coordinator.captureUserSyncRequest()
+            assertEquals(service.automaticSourceIdentity(), request.sources?.zeppIdentity)
+            assertNull(coordinator.prepareUserSync(request))
+            assertIs<SyncOutcome.Failed>(coordinator.prepareUserSync(request.copy(sources = null)))
+            sessions.save(ZeppSession("456", "synthetic-app", "synthetic-login", "api-mifitcn.zepp.com"))
+            assertEquals(false, assertIs<SyncOutcome.Failed>(coordinator.run(request = request)).retryable)
+            assertIs<SyncOutcome.Failed>(coordinator.prepareUserSync(request))
+            assertNull(runner.enabled)
+            assertEquals(0, health.permissionRequests)
+        } finally { http.close() }
+    }
+
+    @Test fun sourceChangeWhileNativePermissionRequestIsSuspendedRejectsPreparedDispatch() = runBlocking {
+        try {
+            select(setOf(SyncPreferences.SLEEP_IMPORT_KEY))
+            connect()
+            preferences.setSyncRangeDays(30)
+            val request = coordinator.captureUserSyncRequest()
+            health.duringReadPermissions = { history ->
+                assertEquals(true, history)
+                preferences.setSyncRangeDays(1)
+                select(emptySet())
+                sessions.save(ZeppSession("123", "synthetic-app", "synthetic-login", "api-mifitde.zepp.com"))
+            }
+            assertIs<SyncOutcome.Failed>(coordinator.prepareUserSync(request))
+            assertEquals(1, health.permissionRequests)
+            assertNull(runner.enabled)
+            assertEquals(30, request.selection.rangeDays)
+        } finally { http.close() }
+    }
+
+    @Test fun manualRequestKeepsItsOriginalZoneAndDoesNotAdoptANewlyConnectedSource() = runBlocking {
+        try {
+            select(setOf("steps"))
+            health.available = true
+            preferences.setSyncRangeDays(30)
+            preferences.setSourceCalendarZoneId("Asia/Singapore")
+            val request = coordinator.captureUserSyncRequest()
+            connect()
+            select(setOf("sleep"))
+            preferences.setSyncRangeDays(1)
+            preferences.setSourceCalendarZoneId("UTC")
+            assertEquals(SyncOutcome.Success, coordinator.run(request = request, requestHealthPermissions = false))
+            assertEquals(request, runner.request)
+            assertEquals(setOf("steps"), runner.enabled)
+            assertEquals(30, runner.request?.selection?.rangeDays)
+            assertEquals("Asia/Singapore", runner.request?.sources?.calendarZoneId)
+            assertNull(runner.request?.sources?.zeppIdentity)
         } finally { http.close() }
     }
 
@@ -112,6 +180,11 @@ class ZeppAutomaticSelectionTest : LocalizedTest() {
     private class Runner : HealthSyncRunner {
         override val syncProgress = MutableStateFlow(SyncProgress())
         var enabled: Set<String>? = null
+        var request: UserSyncRequest? = null
+        override suspend fun syncUserRequest(request: UserSyncRequest): SyncRunResult {
+            this.request = request
+            return super.syncUserRequest(request)
+        }
         override suspend fun syncAll(from: String, to: String, enabled: Set<String>): SyncRunResult {
             this.enabled = enabled
             return SyncRunResult(1, 1, 0, 1, false, false, emptyList())
@@ -120,15 +193,21 @@ class ZeppAutomaticSelectionTest : LocalizedTest() {
     }
 
     private class Health : HealthAvailability, HealthPermissionRequester {
+        var available = false
+        var duringReadPermissions: suspend (Boolean) -> Unit = {}
         var availabilityChecks = 0
         var permissionRequests = 0
-        override suspend fun isAvailable(): Boolean { availabilityChecks++; return false }
+        override suspend fun isAvailable(): Boolean { availabilityChecks++; return available }
         override suspend fun availabilityHint(): String? = null
         override fun healthServiceName() = "Test Health"
         override fun openHealthService() = Unit
         override suspend fun hasWritePermissions() = false
         override suspend fun requestPermissions() { permissionRequests++ }
         override suspend fun requestReadPermissions(metrics: Set<HealthInboundMetric>, includeBackground: Boolean,
-            includeHistory: Boolean): Set<HealthInboundMetric> { permissionRequests++; return emptySet() }
+            includeHistory: Boolean): Set<HealthInboundMetric> {
+            permissionRequests++
+            duringReadPermissions(includeHistory)
+            return emptySet()
+        }
     }
 }

@@ -81,10 +81,10 @@ fun HomeScreen(
     val canUpdate = state.prefsReady && state.enabledMetricsCount > 0
 
     val primaryLabel = when {
+        state.hasSyncToView -> L10n.string(L10n.homeViewSync)
         !state.prefsReady -> L10n.string(L10n.homeSyncOptions)
         state.healthNeedsAction -> L10n.string(L10n.healthAllowAccess)
         !canUpdate -> L10n.string(L10n.homeOpenSettings)
-        state.isSyncing -> L10n.string(L10n.homeSyncing)
         else -> L10n.string(L10n.homeSyncNow)
     }
 
@@ -114,10 +114,11 @@ fun HomeScreen(
                     text = primaryLabel,
                     onClick = {
                         when {
+                            state.hasSyncToView -> onSyncClick()
                             state.healthNeedsAction -> viewModel.openHealthService()
                             !canUpdate -> onSettingsClick()
                             else -> {
-                                if (!state.isSyncing) viewModel.startSyncIfIdle()
+                                viewModel.startSyncIfIdle()
                                 onSyncClick()
                             }
                         }
@@ -127,7 +128,7 @@ fun HomeScreen(
                     // second run that the single-flight lock then has to reject.
                     enabled = !state.isSyncing,
                     loading = state.isSyncing,
-                    icon = if (!canUpdate && !state.healthNeedsAction) null else AppIcons.Sync,
+                    icon = if (!canUpdate && !state.healthNeedsAction && !state.hasSyncToView) null else AppIcons.Sync,
                 )
             }
         },

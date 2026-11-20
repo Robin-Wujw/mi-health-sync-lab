@@ -7,14 +7,14 @@ name: Build APK and IPA
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, healthlab]
     paths-ignore:
       - "**/*.md"
       - "LICENSE"
       - "LICENSE.*"
       - "docs/**"
   pull_request:
-    branches: [main, master]
+    branches: [main, master, healthlab]
     types: [opened, synchronize, reopened, ready_for_review]
     paths-ignore:
       - "**/*.md"
@@ -134,6 +134,23 @@ jobs:
       - name: Unit tests (miclient JVM)
         run: ./gradlew :miclient:androidTest --stacktrace --build-cache --configuration-cache
 
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Run Android host tests
+        run: |
+          sdkmanager "platforms;android-37.0" "build-tools;37.0.0"
+          bash scripts/test-resolve-version.sh
+          bash scripts/verify-backup-exclusions.sh
+          ./gradlew :composeApp:testAndroidHostTest --stacktrace --build-cache --configuration-cache
+
+      - name: Archive Android host test reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: android-host-tests-push
+          path: composeApp/build/test-results/testAndroidHostTest/TEST-*.xml
+
   android-apk:
     name: Android APK
     # Full build: PR, manual, reusable call, or v* tag (tag push keeps event_name=push).
@@ -223,37 +240,86 @@ jobs:
       - name: Detekt
         run: ./gradlew detekt --stacktrace --build-cache --configuration-cache
 
-      # commonTest in composeApp runs on K/N iOS sim (macOS job); miclient has a JVM target.
+      # commonTest in composeApp also runs on K/N iOS sim (macOS job); miclient has a JVM target.
       - name: Unit tests (miclient JVM)
         run: ./gradlew :miclient:androidTest --stacktrace --build-cache --configuration-cache
 
-      # PR/manual/dispatch builds stay on debug (fast, debuggable);
-      # v* tag builds ship assembleRelease (non-debuggable, debug-signed).
-      - name: Build APK (debug for PR, release for tags)
+      - name: Unit tests (composeApp Android host)
         run: |
+          bash scripts/test-resolve-version.sh
+          bash scripts/verify-backup-exclusions.sh
+          ./gradlew :composeApp:testAndroidHostTest --stacktrace --build-cache --configuration-cache
+
+      - name: Archive Android host test reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: android-host-tests-build
+          path: composeApp/build/test-results/testAndroidHostTest/TEST-*.xml
+
+      - name: Prepare release signing
+        if: steps.version.outputs.is_release == 'true'
+        env:
+          STORE_BASE64: ${{ secrets.ANDROID_RELEASE_STORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          test "$VERSION_CODE" -gt 1000046 || { echo 'Release must be newer than HealthLab .40'; exit 1; }
+          test -n "$STORE_BASE64" || { echo 'Missing Android release keystore'; exit 1; }
+          umask 077
+          STORE_FILE="$RUNNER_TEMP/healthlab-release.keystore"
+          printf '%s' "$STORE_BASE64" | base64 --decode > "$STORE_FILE"
+          echo "ANDROID_RELEASE_STORE_FILE=$STORE_FILE" >> "$GITHUB_ENV"
+
+      - name: Build APK (debug for PR, release for tags)
+        env:
+          ANDROID_RELEASE_STORE_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.ANDROID_RELEASE_STORE_PASSWORD || '' }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.ANDROID_RELEASE_KEY_ALIAS || '' }}
+          ANDROID_RELEASE_KEY_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.ANDROID_RELEASE_KEY_PASSWORD || '' }}
+          EXPECTED_CERT_SHA256: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/37.0.0"
           if [ "${{ steps.version.outputs.is_release }}" = "true" ]; then
             TASK=:androidApp:assembleRelease
+            VARIANT=release
           else
             TASK=:androidApp:assembleDebug
+            VARIANT=debug
           fi
           ./gradlew "$TASK" \
             -PversionName=${{ env.VERSION_NAME }} \
             -PversionCode=${{ env.VERSION_CODE }} \
             --stacktrace --build-cache --configuration-cache
-          # Sanity: PR artifacts must be debuggable, tag artifacts must not be.
-          APK=$(find androidApp/build/outputs/apk -name "*.apk" | head -1)
+          APK="androidApp/build/outputs/apk/$VARIANT/androidApp-$VARIANT.apk"
+          "$BUILD_TOOLS/aapt" dump badging "$APK" > apk-badging.txt
+          grep -F "versionCode='$VERSION_CODE' versionName='$VERSION_NAME'" apk-badging.txt
           if [ "${{ steps.version.outputs.is_release }}" = "true" ]; then
-            if "$ANDROID_HOME/build-tools/37.0.0/aapt" dump badging "$APK" | grep -q "application-debuggable"; then
+            if grep -q '^application-debuggable' apk-badging.txt; then
               echo "ERROR: release APK is debuggable: $APK"
               exit 1
             fi
+            "$BUILD_TOOLS/apksigner" verify --print-certs "$APK" > apk-certs.txt
+            ACTUAL_CERT_SHA256=$(sed -n 's/^.*[Ss]igner.* certificate SHA-256 digest: //p' apk-certs.txt | sort -u)
+            [[ "$EXPECTED_CERT_SHA256" =~ ^[[:xdigit:]]{64}$ && "$ACTUAL_CERT_SHA256" == "${EXPECTED_CERT_SHA256,,}" ]] || {
+              echo 'APK signer did not match the configured release certificate'
+              exit 1
+            }
+            [[ "$ACTUAL_CERT_SHA256" != 77bfa8d392de05f06643b045e6f9de3364269992816293efaa57fb0c20a580ab ]] || {
+              echo 'The old public HealthLab signing certificate is not allowed for releases'
+              exit 1
+            }
           fi
+          echo "BUILT_APK=$APK" >> "$GITHUB_ENV"
+
+      - name: Remove release keystore
+        if: always() && steps.version.outputs.is_release == 'true'
+        run: rm -f -- "$RUNNER_TEMP/healthlab-release.keystore"
 
       - name: Stage artifact
         run: |
           mkdir -p dist
-          APK=$(find androidApp/build/outputs/apk -name "*.apk" | head -1)
-          test -n "$APK"
+          APK="$BUILT_APK"
+          test -f "$APK"
           # Stable name for releases/latest/download/BetterMiFitnessSync.apk
           cp "$APK" "dist/BetterMiFitnessSync.apk"
           if [ "${{ steps.version.outputs.is_release }}" = "true" ]; then
@@ -274,10 +340,10 @@ jobs:
   ios-ipa:
     name: iOS IPA
     if: >-
-      github.event_name == 'pull_request' ||
-      github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'workflow_call' ||
-      startsWith(github.ref, 'refs/tags/v')
+      (!startsWith(github.ref, 'refs/tags/') &&
+       (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call')) ||
+      (startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-healthlab.') &&
+       vars.IOS_HEALTHKIT_VERIFIED_COMMIT == github.sha)
     runs-on: macos-latest
     timeout-minutes: 90
     # Release K/N link needs more heap than debug (CI failed with "Java heap space").
@@ -305,6 +371,7 @@ jobs:
           echo "is_release=$IS_RELEASE" >> "$GITHUB_OUTPUT"
           echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
           echo "VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
+          echo "IOS_MARKETING_VERSION=$IOS_MARKETING_VERSION" >> "$GITHUB_ENV"
           echo "Resolved VERSION_NAME=$VERSION_NAME VERSION_CODE=$VERSION_CODE IS_RELEASE=$IS_RELEASE"
 
       - name: Set up JDK ${{ env.JAVA_VERSION }}
@@ -349,6 +416,8 @@ jobs:
         run: |
           java -version
           xcodebuild -version
+          bash scripts/verify-ci-gates.sh
+          bash scripts/verify-ios-healthkit-gate.sh
           echo "JAVA_HOME=$JAVA_HOME"
           echo "KONAN_DATA_DIR=$KONAN_DATA_DIR"
 
@@ -384,7 +453,7 @@ jobs:
         run: |
           set -euo pipefail
           PLIST="iosApp/iosApp/Info.plist"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION_NAME}" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${IOS_MARKETING_VERSION}" "$PLIST"
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${VERSION_CODE}" "$PLIST"
           echo "Info.plist version:"
           /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$PLIST"
@@ -498,8 +567,16 @@ jobs:
   publish-release:
     name: Publish GitHub Release
     needs: [android-apk, ios-ipa]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      !cancelled() && startsWith(github.ref, 'refs/tags/v') &&
+      needs.android-apk.result == 'success' &&
+      (needs.ios-ipa.result == 'success' ||
+       (needs.ios-ipa.result == 'skipped' &&
+        (contains(github.ref_name, '-healthlab.') || vars.IOS_HEALTHKIT_VERIFIED_COMMIT != github.sha)))
     runs-on: ubuntu-latest
+    concurrency:
+      group: android-release-publish-${{ github.repository }}
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:
@@ -514,7 +591,17 @@ jobs:
           set -euo pipefail
           source scripts/resolve-version.sh
           echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
           echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Reject duplicate or older Android releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          published_tags=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq \
+            '.[] | select(.draft == false) | select(any(.assets[]; .name | ascii_downcase | endswith(".apk"))) | .tag_name')
+          bash scripts/verify-release-order.sh "$GITHUB_REF_NAME" <<< "$published_tags"
 
       - name: Download APK
         uses: actions/download-artifact@v7
@@ -523,6 +610,7 @@ jobs:
           path: dist
 
       - name: Download IPA
+        if: needs.ios-ipa.result == 'success'
         uses: actions/download-artifact@v7
         with:
           name: BetterMiFitnessSync-ios-ipa
@@ -538,8 +626,10 @@ jobs:
             echo ""
             echo "### Install"
             echo ""
-            echo "- **Android:** [BetterMiFitnessSync.apk](https://github.com/${{ github.repository }}/releases/latest/download/BetterMiFitnessSync.apk) — enable install from unknown sources, then install."
-            echo "- **iOS:** [BetterMiFitnessSync.ipa](https://github.com/${{ github.repository }}/releases/latest/download/BetterMiFitnessSync.ipa) — **unsigned**; re-sign with a **paid Apple Developer** team that includes the **HealthKit** entitlement (free Apple ID sideloading is **not** enough)."
+            echo "- **Android:** Download the APK under Assets. An installation signed with the old public HealthLab key cannot be upgraded in place with the new signing key."
+            if [ "${{ needs.ios-ipa.result }}" = "success" ]; then
+              echo "- **iOS:** Download the unsigned IPA under Assets and re-sign it with a team that has the HealthKit entitlement."
+            fi
             echo ""
             if [ -n "$PREV" ]; then
               echo "### Changes since \`$PREV\`"
@@ -562,10 +652,9 @@ jobs:
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           name: Better Mi Fitness Sync ${{ steps.version.outputs.version_name }}
+          prerelease: ${{ steps.version.outputs.prerelease == 'true' }}
           body_path: release-notes.md
-          files: |
-            dist/*.apk
-            dist/*.ipa
+          files: dist/*
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

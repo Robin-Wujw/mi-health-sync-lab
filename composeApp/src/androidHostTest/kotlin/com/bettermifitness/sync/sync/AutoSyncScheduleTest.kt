@@ -63,6 +63,7 @@ class AutoSyncScheduleTest : LocalizedTest() {
         drainScheduler()
         assertTrue(work(MiSyncWorker.UNIQUE_IMMEDIATE_NAME).isEmpty())
         val periodicId = work(MiSyncWorker.UNIQUE_WORK_NAME).single().id
+        assertEquals(TimeUnit.HOURS.toMillis(1), work(MiSyncWorker.UNIQUE_WORK_NAME).single().initialDelayMillis)
         AutoSyncPlatform.scheduleBackgroundRefresh(runImmediately = true)
         drainScheduler()
         val immediateId = work(MiSyncWorker.UNIQUE_IMMEDIATE_NAME).single().id
@@ -70,6 +71,21 @@ class AutoSyncScheduleTest : LocalizedTest() {
         drainScheduler()
         assertEquals(periodicId, work(MiSyncWorker.UNIQUE_WORK_NAME).single().id)
         assertEquals(immediateId, work(MiSyncWorker.UNIQUE_IMMEDIATE_NAME).single().id)
+    }
+
+    @Test fun restoringLegacyDataScheduleUpdatesItsPeriodWithoutAddingAnotherJob() {
+        val previousImmediate = work(MiSyncWorker.UNIQUE_IMMEDIATE_NAME).map { it.id }.toSet()
+        val legacy = PeriodicWorkRequestBuilder<MiSyncWorker>(15, TimeUnit.MINUTES)
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .build()
+        manager.enqueueUniquePeriodicWork(MiSyncWorker.UNIQUE_WORK_NAME,
+            ExistingPeriodicWorkPolicy.KEEP, legacy).result.get(20, TimeUnit.SECONDS)
+        AutoSyncPlatform.scheduleBackgroundRefresh()
+        drainScheduler()
+        val updated = work(MiSyncWorker.UNIQUE_WORK_NAME).single()
+        assertEquals(legacy.id, updated.id)
+        assertEquals(TimeUnit.HOURS.toMillis(1), updated.periodicityInfo!!.repeatIntervalMillis)
+        assertEquals(previousImmediate, work(MiSyncWorker.UNIQUE_IMMEDIATE_NAME).map { it.id }.toSet())
     }
 
     @Test fun disablingAutoSyncCancelsBothDataJobsButPreservesTheIndependentKeepalive() {

@@ -16,6 +16,10 @@ import com.bettermifitness.sync.ui.settings.SettingsUiState
 import com.bettermifitness.sync.ui.settings.SettingsViewModel
 import com.bettermifitness.sync.ui.sync.SyncUiState
 import com.bettermifitness.sync.ui.sync.SyncViewModel
+import com.bettermifitness.sync.sync.SyncOutcome
+import com.bettermifitness.sync.sync.SyncOutcomeLabels
+import com.bettermifitness.sync.sync.displayTaskTime
+import com.bettermifitness.sync.sync.label
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -46,8 +50,9 @@ object IosAppBridge : KoinComponent {
 
     fun logout() {
         scope.launch {
-            tokenStore.clear()
-            sessionManager.clear()
+            sessionManager.signOut()
+            syncCoordinator.clearAfterSignOut()
+            tokenStore.sync.clearSyncHistory()
         }
     }
 
@@ -75,13 +80,7 @@ object IosAppBridge : KoinComponent {
             return
         }
         scope.launch {
-            val credentials = tokenStore.loadCredentials()
-            if (credentials != null &&
-                credentials.serviceToken.isNotBlank() &&
-                credentials.userId.isNotBlank() &&
-                credentials.ssecurity.isNotBlank()
-            ) {
-                sessionManager.activate(credentials)
+            if (sessionManager.ensureActive()) {
                 onResult("logged_in")
             } else {
                 onResult("logged_out")
@@ -100,6 +99,25 @@ object IosAppBridge : KoinComponent {
 
     fun watchSync(vm: SyncViewModel, onEach: (SyncUiState) -> Unit): FlowWatcher =
         watchStateFlow(vm.uiState, onEach)
+
+    fun activeSyncDescription(state: SyncUiState): String? = state.activeTask?.let { task ->
+        task.source.label() + "\n" + L10n.textFmt(L10n.syncTaskWindow,
+            displayTaskTime(task.selection.from.toString()), displayTaskTime(task.selection.to.toString()))
+    }
+
+    fun watchSyncHistory(vm: SyncViewModel, onEach: (List<String>) -> Unit): FlowWatcher = watchStateFlow(vm.history) { snapshot ->
+        val history = snapshot.tasks
+        onEach(buildList {
+            snapshot.automaticSkip?.let { add(it.label()) }
+            history.firstOrNull()?.let { add(L10n.textFmt(L10n.syncHistoryLastAttempt, displayTaskTime(it.finishedAt))) }
+            history.firstOrNull { it.status == SyncOutcome.STATUS_SUCCESS || it.status == SyncOutcome.STATUS_COMPLETED_WITH_SKIPS }
+                ?.let { add(L10n.textFmt(L10n.syncHistoryLastSuccess, displayTaskTime(it.finishedAt))) }
+            history.firstOrNull { it.wasSkipped }?.let { add(L10n.textFmt(L10n.syncHistoryLastSkip, displayTaskTime(it.finishedAt))) }
+            history.forEach { summary ->
+                add("${summary.source.label()} · ${SyncOutcomeLabels.title(summary.status)} · ${displayTaskTime(summary.finishedAt)}")
+            }
+        })
+    }
 
     /** All metrics for Settings toggles (key + label). */
     fun allMetricKeys(): List<String> = SyncMetric.entries.map { it.key }

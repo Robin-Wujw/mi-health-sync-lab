@@ -50,33 +50,42 @@ internal fun stampedMetadata(clientRecordId: String, revision: Long, vararg cont
  * that was modified since the last sync."
  *
  * [readOwn] must return only this app's records. An app can read those with its write permission
- * alone, in the foreground and the background. If a read still fails, that record type is written
- * in full: comparing is an optimization and a safeguard, and must never block a sync.
+ * alone, in the foreground and the background. A failed read cannot prove it is safe to upsert.
  */
 internal class HealthRecordChangeFilter(
     private val readOwn: suspend (KClass<out Record>, TimeRangeFilter) -> List<Record>,
 ) {
-    suspend fun changedOnly(records: List<Record>): List<Record> =
-        records.groupBy { it::class }.flatMap { (type, sameType) ->
+    suspend fun changedOnly(records: List<Record>): HealthRecordChanges {
+        val skipped = mutableListOf<String>()
+        val writable = records.groupBy { it::class }.flatMap { (type, sameType) ->
             val stored = storedStates(type, sameType)
+            if (stored == null) {
+                skipped += "${type.simpleName} (${sameType.size}): could not read this app's existing records."
+                return@flatMap emptyList()
+            }
             val changed = sameType.filter { record ->
-                shouldWriteHealthRecord(record.currentState(), stored[record.metadata.clientRecordId])
+                val target = stored[record.metadata.clientRecordId]
+                if (record is ExerciseSessionRecord && target is ExerciseSessionRecord &&
+                    !record.preservesWorkoutDetails(target)) return@filter false
+                shouldWriteHealthRecord(record.currentState(), target?.currentState())
             }
             // Counts only: this line lets a device check confirm the comparison ran without exposing health data.
             Log.i(TAG, "${type.simpleName}: ${sameType.size} candidate(s), ${stored.size} stored, ${changed.size} to write")
             changed
         }
+        return HealthRecordChanges(writable, skipped)
+    }
 
-    private suspend fun storedStates(type: KClass<out Record>, records: List<Record>): Map<String, HealthRecordState> =
+    private suspend fun storedStates(type: KClass<out Record>, records: List<Record>): Map<String, Record>? =
         try {
             readOwn(type, spanOf(records)).mapNotNull { stored ->
-                stored.metadata.clientRecordId?.let { id -> id to stored.currentState() }
+                stored.metadata.clientRecordId?.let { id -> id to stored }
             }.toMap()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.w(TAG, "${type.simpleName}: could not compare with stored records (${e::class.simpleName}), writing all")
-            emptyMap()
+            Log.w(TAG, "${type.simpleName}: could not compare with stored records (${e::class.simpleName}), not writing")
+            null
         }
 
     /** Widened by a second on both sides so every record is inside it, however a provider matches intervals. */
@@ -127,14 +136,18 @@ internal class HealthRecordChangeFilter(
         is StepsCadenceRecord -> samples.size
         // Stages may legitimately merge in a revision, so only their absence ranks lower.
         is SleepSessionRecord -> if (stages.isEmpty()) 0 else 1
-        is ExerciseSessionRecord -> routePointCount() + WorkoutNotes.partCount(notes)
         else -> 0
     }
 
-    private fun ExerciseSessionRecord.routePointCount(): Int = when (val result = exerciseRouteResult) {
+    private fun ExerciseSessionRecord.preservesWorkoutDetails(stored: ExerciseSessionRecord): Boolean {
+        val existingRouteSize = stored.routePointCount() ?: return false
+        return (routePointCount() ?: 0) >= existingRouteSize &&
+            WorkoutNotes.detailFields(notes).containsAll(WorkoutNotes.detailFields(stored.notes))
+    }
+
+    private fun ExerciseSessionRecord.routePointCount(): Int? = when (val result = exerciseRouteResult) {
         is ExerciseRouteResult.Data -> result.exerciseRoute.route.size
-        // A route exists but its size is hidden: rank it above no route at all.
-        is ExerciseRouteResult.ConsentRequired -> 1
+        is ExerciseRouteResult.ConsentRequired -> null
         else -> 0
     }
 
@@ -142,3 +155,5 @@ internal class HealthRecordChangeFilter(
         const val TAG = "HealthRecordChange"
     }
 }
+
+internal data class HealthRecordChanges(val records: List<Record>, val skippedReasons: List<String>)

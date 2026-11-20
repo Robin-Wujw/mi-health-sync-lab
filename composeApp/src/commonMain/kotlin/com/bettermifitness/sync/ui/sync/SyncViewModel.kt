@@ -8,10 +8,21 @@ import com.bettermifitness.sync.data.repository.HealthRepository
 import com.bettermifitness.sync.data.repository.SyncProgress
 import com.bettermifitness.sync.data.repository.SyncState
 import com.bettermifitness.sync.health.HealthAvailability
+import com.bettermifitness.sync.health.HealthAccessBlock
 import com.bettermifitness.sync.health.HealthPermissionRequester
 import com.bettermifitness.sync.i18n.L10n
 import com.bettermifitness.sync.sync.SyncCoordinator
+import com.bettermifitness.sync.sync.ActiveSyncTask
+import com.bettermifitness.sync.sync.SyncTaskSummary
+import com.bettermifitness.sync.sync.AutomaticSkip
 import com.bettermifitness.sync.sync.SyncOutcome
+import com.bettermifitness.sync.sync.UserSyncRequest
+import com.bettermifitness.sync.sync.observeRecoverableUserSync
+import com.bettermifitness.sync.sync.observeSyncTaskHistory
+import com.bettermifitness.sync.sync.recoverUserSync
+import com.bettermifitness.sync.sync.dispatchUserSync
+import com.bettermifitness.sync.sync.stopUserSync
+import com.bettermifitness.sync.sync.supportsUserSyncReplacement
 import com.bettermifitness.sync.ui.SyncMetric
 import com.bettermifitness.sync.ui.SyncSelection
 import com.bettermifitness.sync.zepp.ZeppSyncService
@@ -19,6 +30,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -27,14 +39,21 @@ import kotlinx.coroutines.launch
 data class SyncUiState(
     val requiresSignIn: Boolean = false,
     val isSyncing: Boolean = false,
+    val isStopping: Boolean = false,
+    val wasStopped: Boolean = false,
     val healthAvailable: Boolean = true,
     val availabilityHint: String? = null,
     val permissionError: String? = null,
+    val accessBlocks: Map<String, HealthAccessBlock> = emptyMap(),
     /** Non-fatal banner after a run (success / partial). */
     val outcomeMessage: String? = null,
     val outcomeIsWarning: Boolean = false,
     val healthServiceName: String = "",
     val rangeDays: Int = 7,
+    val activeRangeDays: Int? = null,
+    val activeTask: ActiveSyncTask? = null,
+    val pendingRangeDays: Int? = null,
+    val recoverableRangeDays: Int? = null,
     /** Empty until prefs load — rows render only once. */
     val enabledMetrics: Set<String> = emptySet(),
     /** False until the first hot-snapshot emission — screens hold skeleton. */
@@ -50,7 +69,40 @@ data class SyncUiState(
 
     val hasSelectedSyncTasks: Boolean
         get() = SyncSelection.selectedTaskKeys(enabledMetrics).isNotEmpty()
+
+    val canReplaceRange: Boolean
+        get() = supportsUserSyncReplacement && !isStopping &&
+            (pendingRangeDays ?: activeRangeDays)?.let { it != rangeDays } == true
 }
+
+private data class SyncActivity(
+    val running: Boolean,
+    val active: ActiveSyncTask?,
+    val queued: UserSyncRequest?,
+    val stopping: Boolean,
+    val recovery: UserSyncRequest?,
+)
+
+private data class SyncSummaryInput(
+    val outcome: SyncOutcome?,
+    val accessBlocks: Map<String, HealthAccessBlock>,
+    val latestTask: ActiveSyncTask?,
+    val auth: Pair<Boolean, Boolean>,
+)
+
+internal data class SyncScreenFeedback(
+    val task: ActiveSyncTask?,
+    val error: String? = null,
+    val message: String? = null,
+    val warning: Boolean = false,
+) {
+    fun forTask(current: ActiveSyncTask?): SyncScreenFeedback? = takeIf { task === current }
+}
+
+internal fun ownsSyncCompletion(before: ActiveSyncTask?, current: ActiveSyncTask?, request: UserSyncRequest): Boolean =
+    current === before || (current?.id == request.runId && current.accountGeneration == request.accountGeneration)
+
+data class SyncHistorySnapshot(val tasks: List<SyncTaskSummary> = emptyList(), val automaticSkip: AutomaticSkip? = null)
 
 /**
  * Foreground sync UI: observes shared [SyncCoordinator] + repository progress.
@@ -69,23 +121,39 @@ class SyncViewModel(
     private val local = MutableStateFlow(
         LocalSyncState(healthServiceName = healthAvailability.healthServiceName()),
     )
+    private var resultOwner = 0L
+    private var permissionOwner = 0L
+    private var readinessOwner = 0L
+    private val recovery = observeRecoverableUserSync().catch { emit(null) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+    val history: StateFlow<SyncHistorySnapshot> = combine(
+        observeSyncTaskHistory().catch { emit(emptyList()) },
+        syncPreferences.lastAutomaticSkip.catch { emit(null) },
+        ::SyncHistorySnapshot,
+    ).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SyncHistorySnapshot())
 
     val uiState: StateFlow<SyncUiState> = combine(
         local,
         repository.syncProgress,
         syncPreferences.snapshot,
-        syncCoordinator.isRunning,
+        combine(syncCoordinator.isRunning, syncCoordinator.activeTask, syncCoordinator.replacementRequest,
+            syncCoordinator.isStopping, recovery, ::SyncActivity),
         combine(
             syncCoordinator.lastOutcome,
+            syncCoordinator.lastHealthAccessBlocks,
+            syncCoordinator.latestStartedTask,
             combine(session.reauthenticationRequired, zeppSync.connected) { requiresSignIn, zeppConnected ->
                 requiresSignIn to zeppConnected
             },
-        ) { lastOutcome, auth ->
-            lastOutcome to auth
-        },
-    ) { local, progress, snap, running, outcomeAndAuth ->
-        val lastOutcome = outcomeAndAuth.first
-        val auth = outcomeAndAuth.second
+            ::SyncSummaryInput,
+        ),
+    ) { local, progress, snap, activity, outcomeAndAuth ->
+        val running = activity.running
+        val active = activity.active?.selection
+        val showingTerminal = !running && !activity.stopping && activity.queued == null
+        val lastOutcome = outcomeAndAuth.outcome.takeIf { showingTerminal }
+        val feedback = local.feedback?.forTask(outcomeAndAuth.latestTask)?.takeIf { showingTerminal }
+        val auth = outcomeAndAuth.auth
         val requiresSignIn = auth.first
         val zeppConnected = auth.second
         val enabled = if (zeppConnected) {
@@ -96,23 +164,31 @@ class SyncViewModel(
         SyncUiState(
             requiresSignIn = requiresSignIn,
             // App-wide: still true after leaving and re-entering Sync.
-            // Also true during the brief prepare→service hand-off gap.
+            // Also true during the brief prepare→service hand-off gap (optimisticSyncing).
             isSyncing = running || local.optimisticSyncing,
-            healthAvailable = local.healthAvailable || !SyncSelection.requiresHealthConnect(enabled),
+            isStopping = activity.stopping,
+            wasStopped = !running && !activity.stopping && lastOutcome == SyncOutcome.Cancelled,
+            healthAvailable = local.healthAvailable || zeppConnected || !SyncSelection.requiresHealthConnect(enabled),
             availabilityHint = local.availabilityHint,
-            permissionError = local.permissionError ?: when (lastOutcome) {
+            accessBlocks = outcomeAndAuth.accessBlocks.takeIf { !running && !activity.stopping && activity.queued == null }.orEmpty(),
+            permissionError = if (!showingTerminal) null else when (lastOutcome) {
                 is SyncOutcome.Failed -> lastOutcome.message ?: L10n.text(L10n.syncFailed)
                 SyncOutcome.HealthUnavailable -> L10n.textFmt(L10n.syncHealthUnavailable, local.healthServiceName)
                 SyncOutcome.NotLoggedIn -> L10n.text(L10n.syncNotLoggedIn)
-                else -> null
+                else -> feedback?.error
             },
-            outcomeMessage = local.outcomeMessage,
-            outcomeIsWarning = local.outcomeIsWarning,
+            outcomeMessage = feedback?.message,
+            outcomeIsWarning = feedback?.warning == true,
             healthServiceName = local.healthServiceName,
             rangeDays = snap.syncRangeDays,
-            enabledMetrics = enabled,
+            activeRangeDays = active?.rangeDays,
+            activeTask = activity.active,
+            pendingRangeDays = activity.queued?.selection?.rangeDays,
+            recoverableRangeDays = activity.recovery?.selection?.rangeDays
+                ?.takeIf { !running && !activity.stopping && activity.queued == null },
+            enabledMetrics = active?.enabled ?: enabled,
             prefsReady = snap.ready,
-            progress = progress,
+            progress = if (running && activity.active == null) SyncProgress() else progress,
             readinessChecked = local.readinessChecked,
         )
     }.stateIn(
@@ -126,7 +202,9 @@ class SyncViewModel(
 
     init {
         viewModelScope.launch {
-            checkHealthReadiness()
+            val task = syncCoordinator.latestStartedTask.value
+            val attempt = resultOwner
+            checkHealthReadiness { attempt == resultOwner && task === syncCoordinator.latestStartedTask.value }
         }
     }
 
@@ -149,18 +227,68 @@ class SyncViewModel(
     /** Compatibility entry point: normal sync now handles every selected import. */
     fun processUnfinishedData() = startSync()
 
+    fun selectRange(days: Int) {
+        if (days !in setOf(1, 7, 14, 30)) return
+        viewModelScope.launch { syncPreferences.setSyncRangeDays(days) }
+    }
+
+    fun replaceSync() {
+        if (!uiState.value.canReplaceRange) return
+        viewModelScope.launch { runSync(replace = true) }
+    }
+
+    fun stopSync() {
+        viewModelScope.launch {
+            if (syncCoordinator.isStopping.value) return@launch
+            val attempt = ++resultOwner
+            val task = syncCoordinator.latestStartedTask.value
+            try {
+                if (stopUserSync(syncCoordinator) && attempt == resultOwner && task === syncCoordinator.latestStartedTask.value) {
+                    local.update { it.copy(feedback = null) }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                if (attempt == resultOwner && task === syncCoordinator.latestStartedTask.value) {
+                    local.update { it.copy(feedback = SyncScreenFeedback(task, error = L10n.text(L10n.syncStopFailed))) }
+                }
+            }
+        }
+    }
+
+    fun resumeQueuedSync() {
+        if (uiState.value.recoverableRangeDays == null) return
+        val request = recovery.value ?: return
+        viewModelScope.launch { runSync(recovering = request) }
+    }
+
     fun openHealthService() {
         viewModelScope.launch {
+            if (syncCoordinator.isRunning.value) return@launch
+            val task = syncCoordinator.latestStartedTask.value
+            val attempt = resultOwner
+            val prompt = ++permissionOwner
+            val snapshot = syncPreferences.snapshot.value
+            fun current() = prompt == permissionOwner && attempt == resultOwner &&
+                task === syncCoordinator.latestStartedTask.value && !syncCoordinator.isRunning.value
             try {
                 healthPermissions.requestPermissions()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (_: Exception) {
                 // Denied / failed — open Settings or Health Connect below.
             }
-            requestSelectedInboundPermissions()
-            if (!healthAvailability.hasWritePermissions()) {
+            if (!current()) return@launch
+            val feedback = requestSelectedInboundPermissions(snapshot.enabledMetrics, snapshot.syncRangeDays)
+            if (!current()) return@launch
+            local.update { state ->
+                val previous = state.feedback?.forTask(task) ?: SyncScreenFeedback(task)
+                state.copy(feedback = previous.copy(error = feedback))
+            }
+            if (!healthAvailability.hasWritePermissions() && current()) {
                 healthAvailability.openHealthService()
             }
-            checkHealthReadiness()
+            if (current()) checkHealthReadiness(::current)
         }
     }
 
@@ -189,44 +317,40 @@ class SyncViewModel(
         else -> SyncState.Idle
     }
 
-    private suspend fun requestSelectedInboundPermissions() {
-        val snapshot = syncPreferences.snapshot.value
-        val requested = SyncSelection.inboundMetrics(snapshot.enabledMetrics)
-        if (requested.isEmpty()) return
-        try {
+    private suspend fun requestSelectedInboundPermissions(enabled: Set<String>, rangeDays: Int): String? {
+        val requested = SyncSelection.inboundMetrics(enabled)
+        if (requested.isEmpty()) return null
+        return try {
             val granted = healthPermissions.requestReadPermissions(
-                requested, includeBackground = true, includeHistory = snapshot.syncRangeDays > 27)
+                requested, includeBackground = true, includeHistory = rangeDays > 27)
             val missing = requested - granted
-            local.update {
-                it.copy(
-                    permissionError = if (missing.isEmpty()) null else L10n.textFmt(
-                        L10n.settingsInboundPermissionsMissing,
-                        missing.joinToString(", ") { metric -> L10n.metric(metric.metricKey) },
-                    ),
-                )
-            }
+            if (missing.isEmpty()) null else L10n.textFmt(L10n.settingsInboundPermissionsMissing,
+                missing.joinToString(", ") { metric -> L10n.metric(metric.metricKey) })
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
-            local.update { it.copy(permissionError = L10n.text(L10n.settingsInboundPermissionsFailed)) }
+            L10n.text(L10n.settingsInboundPermissionsFailed)
         }
     }
 
     /** Health check only — never auto-starts sync on screen enter (spam-safe). */
-    private suspend fun checkHealthReadiness() {
+    private suspend fun checkHealthReadiness(current: () -> Boolean) {
+        val check = ++readinessOwner
         try {
             val available = healthAvailability.isAvailable()
             val hint = healthAvailability.availabilityHint()
             val perms = if (available) {
                 try {
                     healthAvailability.hasWritePermissions()
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
                 } catch (_: Exception) {
                     true
                 }
             } else {
                 false
             }
-            local.update {
+            if (check == readinessOwner && current()) local.update {
                 it.copy(
                     healthAvailable = available,
                     availabilityHint = when {
@@ -238,8 +362,10 @@ class SyncViewModel(
                     readinessChecked = true,
                 )
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (_: Exception) {
-            local.update {
+            if (check == readinessOwner && current()) local.update {
                 it.copy(
                     healthAvailable = false,
                     availabilityHint = L10n.text(L10n.healthNotAvailable),
@@ -249,110 +375,46 @@ class SyncViewModel(
         }
     }
 
-    private suspend fun runSync() {
-        local.update {
-            it.copy(
-                permissionError = null,
-                outcomeMessage = null,
-                outcomeIsWarning = false,
-            )
-        }
+    private suspend fun runSync(replace: Boolean = false, recovering: UserSyncRequest? = null) {
+        val attempt = ++resultOwner
+        val before = syncCoordinator.latestStartedTask.value
+        var feedbackTask = before
+        local.update { it.copy(feedback = null) }
         try {
-            when (
-                val outcome = com.bettermifitness.sync.sync.runUserSync(syncCoordinator)
-            ) {
-                SyncOutcome.AlreadyRunning -> {
-                    // Another caller owns the run; UI already shows isSyncing via coordinator.
-                }
-                is SyncOutcome.Failed ->
-                    local.update {
-                        it.copy(
-                            permissionError = outcome.message ?: L10n.text(L10n.syncFailed),
-                            outcomeMessage = null,
-                        )
-                    }
-                SyncOutcome.HealthUnavailable ->
-                    local.update {
-                        it.copy(
-                            healthAvailable = false,
-                            permissionError = L10n.textFmt(L10n.syncHealthUnavailable, it.healthServiceName),
-                        )
-                    }
-                SyncOutcome.NotLoggedIn ->
-                    local.update { it.copy(permissionError = L10n.text(L10n.syncNotLoggedIn)) }
-                SyncOutcome.Skipped ->
-                    local.update {
-                        it.copy(outcomeMessage = L10n.text(L10n.syncNothingToSync))
-                    }
-                is SyncOutcome.NoData -> local.update {
-                    it.copy(
-                        outcomeMessage = outcome.message.takeIf { m -> m.isNotBlank() }
-                            ?: L10n.text(L10n.syncNoUsableData),
-                        outcomeIsWarning = false,
-                    )
-                }
-                is SyncOutcome.CompletedWithSkips -> local.update {
-                    it.copy(
-                        outcomeMessage = outcome.summary.takeIf { m -> m.isNotBlank() }
-                            ?: L10n.text(L10n.syncAllMetricsSynced),
-                        outcomeIsWarning = false,
-                    )
-                }
-                SyncOutcome.Success ->
-                    local.update {
-                        it.copy(
-                            outcomeMessage = L10n.text(L10n.syncAllMetricsSynced),
-                            outcomeIsWarning = false,
-                        )
-                    }
-                is SyncOutcome.PartialSuccess ->
-                    local.update {
-                        it.copy(
-                            outcomeMessage = outcome.summary,
-                            outcomeIsWarning = true,
-                        )
-                    }
-            }
+            val request = recovering ?: syncCoordinator.captureUserSyncRequest()
+            if (attempt != resultOwner) return
+            val outcome = if (recovering != null) recoverUserSync(syncCoordinator, request)
+                else dispatchUserSync(syncCoordinator, request, replace)
+            val current = syncCoordinator.latestStartedTask.value
+            if (attempt != resultOwner || !ownsSyncCompletion(before, current, request)) return
+            feedbackTask = current
+            local.update { it.copy(feedback = outcomeFeedback(outcome, current, it.healthServiceName)) }
         } finally {
-            // Refresh Health Connect / HealthKit readiness only after a known failure
-            // that might have been caused by a permission change — not on every run,
-            // which can flip the button's enabled state and cause a visible flicker.
-            val shouldRecheck = when (val outcome = syncCoordinator.lastOutcome.value) {
-                is SyncOutcome.Failed,
-                SyncOutcome.HealthUnavailable,
-                -> true
-                is SyncOutcome.PartialSuccess -> outcome.failed > 0
-                else -> false
-            }
-            if (shouldRecheck) {
-                try {
-                    val available = healthAvailability.isAvailable()
-                    val hint = healthAvailability.availabilityHint()
-                    val perms = healthAvailability.hasWritePermissions()
-                    local.update {
-                        it.copy(
-                            healthAvailable = available,
-                            availabilityHint = when {
-                                !available -> hint
-                                !perms -> hint
-                                    ?: L10n.text(L10n.healthPermissionsIncomplete)
-                                else -> null
-                            },
-                        )
-                    }
-                } catch (_: Exception) {
-                    // Keep previous readiness.
-                }
-            }
+            fun current() = attempt == resultOwner && feedbackTask === syncCoordinator.latestStartedTask.value
+            if (current()) checkHealthReadiness(::current)
         }
     }
+
+    private fun outcomeFeedback(outcome: SyncOutcome, task: ActiveSyncTask?, healthServiceName: String): SyncScreenFeedback? =
+        when (outcome) {
+            is SyncOutcome.Failed -> SyncScreenFeedback(task, error = outcome.message ?: L10n.text(L10n.syncFailed))
+            SyncOutcome.HealthUnavailable -> SyncScreenFeedback(task, error = L10n.textFmt(L10n.syncHealthUnavailable, healthServiceName))
+            SyncOutcome.NotLoggedIn -> SyncScreenFeedback(task, error = L10n.text(L10n.syncNotLoggedIn))
+            SyncOutcome.Skipped -> SyncScreenFeedback(task, message = L10n.text(L10n.syncNothingToSync))
+            SyncOutcome.Success -> SyncScreenFeedback(task, message = L10n.text(L10n.syncAllMetricsSynced))
+            is SyncOutcome.PartialSuccess -> SyncScreenFeedback(task, message = outcome.summary, warning = true)
+            // Show outcome messages for these instead of silently swallowing them.
+            is SyncOutcome.NoData -> SyncScreenFeedback(task,
+                message = outcome.message.takeIf { it.isNotBlank() } ?: L10n.text(L10n.syncNoUsableData))
+            is SyncOutcome.CompletedWithSkips -> SyncScreenFeedback(task,
+                message = outcome.summary.takeIf { it.isNotBlank() } ?: L10n.text(L10n.syncAllMetricsSynced))
+            else -> null
+        }
 
     private data class LocalSyncState(
         val healthAvailable: Boolean = true,
         val availabilityHint: String? = null,
-        val permissionError: String? = null,
-        val outcomeMessage: String? = null,
-        val outcomeIsWarning: Boolean = false,
+        val feedback: SyncScreenFeedback? = null,
         val healthServiceName: String = "",
         val readinessChecked: Boolean = false,
         /** True from the moment the user taps sync until the coordinator's isRunning catches up. */

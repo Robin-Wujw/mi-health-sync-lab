@@ -64,6 +64,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        HealthConnectPermissionBridge.activityStarted()
+    }
+
+    override fun onStop() {
+        HealthConnectPermissionBridge.activityStopped()
+        super.onStop()
+    }
+
     override fun onDestroy() {
         HealthConnectPermissionBridge.requestRoute = null
         HealthConnectPermissionBridge.requestPermissions = null

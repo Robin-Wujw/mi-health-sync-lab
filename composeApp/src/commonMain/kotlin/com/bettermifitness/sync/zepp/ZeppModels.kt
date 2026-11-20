@@ -43,6 +43,9 @@ enum class ZeppFailure { AUTH, CAPTCHA, RATE_LIMIT, UNAVAILABLE, NETWORK, RESPON
 /** Only a stable code crosses the network boundary; bodies/URLs/tokens never become UI errors. */
 class ZeppException(val failure: ZeppFailure) : Exception("Zepp: ${failure.name}")
 
+internal class ZeppEventWindowSplitRequired(val requiredEvents: Set<ZeppStream>) : Exception("Zepp event window is incomplete")
+internal class ZeppSourceMismatch : Exception("Zepp source changed")
+
 /** A value retains vendor semantics. In particular ATL is not weeklyTLSum, and PAI is not vitality. */
 data class ZeppObservation(
     val metric: String,

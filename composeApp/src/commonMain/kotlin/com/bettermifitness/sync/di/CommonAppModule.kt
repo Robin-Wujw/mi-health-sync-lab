@@ -42,7 +42,7 @@ fun commonAppModule(): Module = module {
     single { TokenStore(get(), get(), get()) }
 
     single { MiAuth() }
-    single { MiSessionManager(credentialsStore = get(), miAuth = get()) }
+    single { MiSessionManager(credentialsStore = get(), miAuth = get(), pageCache = get()) }
     single { ZeppSessionStore(get()) }
     single { ZeppCloudClient() }
     single { ZeppSyncService(get(), get(), get(), get(), get()) }
@@ -56,7 +56,7 @@ fun commonAppModule(): Module = module {
     single<HealthAvailability> { get<HealthWriter>() }
     single<HealthPermissionRequester> { get<HealthWriter>() }
 
-    single { HealthRepository(get(), get<HealthStore>(), get(), get(), get(), get()) }
+    single { HealthRepository(get(), get<HealthStore>(), get(), get(), get(), get(), pageCache = get()) }
     single<HealthSyncRunner> { get<HealthRepository>() }
     single {
         SyncCoordinator(

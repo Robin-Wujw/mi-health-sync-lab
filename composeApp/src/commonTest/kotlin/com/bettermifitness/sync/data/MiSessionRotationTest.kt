@@ -26,6 +26,8 @@ import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.test.assertFalse
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
@@ -179,8 +181,7 @@ class MiSessionRotationTest {
         signedIn()
         server.rejectEveryToken = true
         session.refreshSessionDetailed()
-        signedIn()
-        session.activate(credentials.loadCredentials()!!)
+        session.signIn(credentials.loadCredentials()!!)
         assertFalse(credentials.requiresReauthentication())
         assertFalse(session.requiresReauthentication)
         server.rejectEveryToken = false
@@ -269,6 +270,55 @@ class MiSessionRotationTest {
         session.clear()
     }
 
+    @Test
+    fun latePassportRotationAndStsCannotReviveLoggedOutAccount() = runBlocking<Unit> {
+        signedIn()
+        assertTrue(session.ensureActive())
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        server.beforePassportResponse = {
+            entered.complete(Unit)
+            release.await()
+        }
+        val refresh = async { session.refreshSessionDetailed() }
+        try {
+            entered.await()
+            session.signOut()
+        } finally {
+            release.complete(Unit)
+        }
+        assertIs<SessionRefreshResult.NeedsReLogin>(refresh.await())
+        assertEquals(null, credentials.loadCredentials())
+        assertEquals(null, store.data.value[stringPreferencesKey("pass_token")])
+        assertFalse(credentials.requiresReauthentication())
+        assertFalse(session.isActive)
+    }
+
+    @Test
+    fun lateStsCannotOverwriteAnotherAccount() = runBlocking<Unit> {
+        signedIn()
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        server.beforeStsResponse = {
+            entered.complete(Unit)
+            release.await()
+        }
+        val replacement = credentials.loadCredentials()!!.copy(userId = "2", serviceToken = "second", passToken = "second-pass")
+        val refresh = async { session.refreshSessionDetailed() }
+        try {
+            entered.await()
+            session.signOut()
+            session.signIn(replacement)
+        } finally {
+            release.complete(Unit)
+        }
+        assertIs<SessionRefreshResult.NeedsReLogin>(refresh.await())
+        assertEquals(replacement, credentials.loadCredentials())
+        assertEquals(replacement.userId, session.currentUserId)
+        assertFalse(session.requiresReauthentication)
+        session.clear()
+    }
+
     private class FakePassport {
         var stsFailure: Exception? = null
         var retireSupersededTokens = false
@@ -276,13 +326,17 @@ class MiSessionRotationTest {
         var sendSsecurityOnFirstLogin = true
         var badBodyOnLogin: Int? = null
         var brokenBodyOnLogin: Int? = null
+        var beforePassportResponse: suspend () -> Unit = {}
+        var beforeStsResponse: suspend () -> Unit = {}
         val presentedTokens = mutableListOf<String>()
         private var current = 1
 
-        fun handle(scope: MockRequestHandleScope, request: HttpRequestData) = with(scope) {
+        suspend fun handle(scope: MockRequestHandleScope, request: HttpRequestData) = with(scope) {
             if (request.url.encodedPath.endsWith("/pass/serviceLogin")) {
+                beforePassportResponse()
                 serviceLogin(request)
             } else {
+                beforeStsResponse()
                 stsFailure?.let { throw it }
                 respond(
                     "ok",

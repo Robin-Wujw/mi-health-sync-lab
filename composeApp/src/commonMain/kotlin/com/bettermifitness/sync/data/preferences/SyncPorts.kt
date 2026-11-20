@@ -1,22 +1,19 @@
 package com.bettermifitness.sync.data.preferences
 
 import com.mifitness.miclient.auth.MiCredentials
+import com.bettermifitness.sync.sync.AutoSyncCheckpoint
+import com.bettermifitness.sync.sync.AutoSyncContinuation
+import com.bettermifitness.sync.sync.AutomaticRetry
+import com.bettermifitness.sync.sync.AutomaticSkip
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 
 /** ISP: auth token + credentials used by sync policy. */
 interface CredentialsPort {
     val token: Flow<String?>
     suspend fun loadCredentials(): MiCredentials?
     suspend fun saveCredentials(credentials: MiCredentials)
-
-    /**
-     * Saves a rotated passToken the moment Xiaomi issues it, before the rest of the refresh
-     * has finished. Does not count as a completed refresh, so a stale session stays stale.
-     */
-    suspend fun savePassToken(passToken: String) = Unit
-
-    suspend fun requiresReauthentication(): Boolean = false
-    suspend fun markReauthenticationRequired() = Unit
+    suspend fun accountGeneration(): Long = 0L
 
     /**
      * Epoch seconds of the last successful login or passport refresh, or null when unknown
@@ -36,10 +33,48 @@ interface CredentialsPort {
     suspend fun ensureDeviceId(): String = loadDeviceId()
 }
 
+data class SyncConfig(val rangeDays: Int, val enabledMetrics: Set<String>, val sourceCalendarZoneId: String? = null)
+
+data class AutoSyncTiming(
+    val lastAutomaticStart: Long? = null,
+    val lastManualFinish: Long? = null,
+    val pausedUntil: Long? = null,
+    val retry: AutomaticRetry? = null,
+) {
+    fun isPaused(at: Long): Boolean = pausedUntil != null && pausedUntil - at in 1..3_600L
+
+    fun isInManualCooldown(at: Long): Boolean = within(at, lastManualFinish, 900L)
+
+    fun canRetry(at: Long): Boolean = !isPaused(at) && !isInManualCooldown(at)
+
+    fun canStart(at: Long): Boolean = canRetry(at) && !within(at, lastAutomaticStart, 3_600L)
+
+    private fun within(at: Long, previous: Long?, interval: Long): Boolean =
+        previous != null && at - previous in 0 until interval
+}
+
 /** ISP: sync settings + last-run outcome persistence. */
 interface SyncPreferencesPort {
     val autoSync: Flow<Boolean>
     val enabledMetrics: Flow<Set<String>>
+    suspend fun captureSyncConfig(): SyncConfig = SyncConfig(syncRangeDays.first(), enabledMetrics.first(), readSourceCalendarZoneId())
+    suspend fun readAutoSyncTiming(): AutoSyncTiming = AutoSyncTiming()
+    suspend fun acceptAutomaticStart(at: Long): Boolean = autoSync.first()
+    suspend fun recordManualFinish(at: Long) = Unit
+    suspend fun pauseAutomaticUntil(at: Long) = Unit
+    suspend fun storeAutomaticRetry(retry: AutomaticRetry?) = Unit
+    suspend fun storeAutomaticSkip(skip: AutomaticSkip) = Unit
+    suspend fun readAutomaticCheckpoints(keys: Set<String>): Map<String, AutoSyncCheckpoint> = emptyMap()
+    suspend fun writeAutomaticCheckpoints(checkpoints: Map<String, AutoSyncCheckpoint>) = Unit
+    suspend fun readAutomaticContinuation(): AutoSyncContinuation? = null
+    suspend fun readSourceCalendarZoneId(): String? = null
+    suspend fun saveAutomaticProgress(
+        generation: Long,
+        checkpoints: Map<String, AutoSyncCheckpoint>,
+        continuation: AutoSyncContinuation?,
+    ) {
+        writeAutomaticCheckpoints(checkpoints)
+    }
     val syncRangeDays: Flow<Int>
     /** Start/end of actual work, including failed or cancelled manual runs. */
     val lastSyncActivityTime: Flow<String?>
@@ -63,6 +98,7 @@ data class UserPrefsSnapshot(
     val lastSyncTime: String? = null,
     val lastBackgroundSyncTime: String? = null,
     val inboundTestMode: Boolean = false,
+    val sourceCalendarZoneId: String? = null,
 )
 
 /** ISP: ensure Mi API session is usable. */

@@ -346,10 +346,188 @@ class MiHealthImportRunnerTest {
 
         assertEquals(1, result.verifiedRawCount)
         assertEquals(0, result.verifiedAggregateCount)
+        assertEquals(0, result.diagnostic?.gatedDailyRevisionRows)
         assertTrue("EXISTING_DAILY_REPORT_PRESERVED" in result.warnings)
         assertEquals(listOf(listOf(raw)), cloud.uploads)
         assertEquals(deviceSummary, cloud.stored.single { it.first == MiHealthImportChannel.DAILY_AGGREGATE }.second)
         assertTrue(summary.identity.stableKey !in journal.verifiedFor(account))
+    }
+
+    @Test
+    fun completeLateSourceDayRecognizesOwnedReportButNeverPostsARevision() = runBlocking {
+        val early = raw(bpm = 60).copy(zoneOffsetSeconds = 0)
+        val late = raw(index = 1, bpm = 160).copy(zoneOffsetSeconds = 0)
+        val original = daily().copy(zoneOffsetSeconds = 0, completeSourceDay = true,
+            value = buildJsonObject { put("avg_hr", 60) })
+        val proposed = original.copy(sourceRecordKeys = early.sourceRecordKeys + late.sourceRecordKeys,
+            value = buildJsonObject { put("avg_hr", 110) })
+        val cloud = FakeCloud()
+        val journal = MemoryJournal()
+        val runner = runner(cloud, journal)
+        assertEquals(1, runner.run(account, plan(listOf(early, original))).verifiedAggregateCount)
+        assertTrue(HealthImportLedger.identityDigest(original.identity.stableKey) in journal.ownedVerifiedFingerprints(account))
+        cloud.uploads.clear()
+
+        val result = runner.run(account, plan(listOf(early, late, proposed)))
+        assertEquals(1, result.diagnostic?.gatedDailyRevisionRows)
+        assertEquals(listOf(listOf(late)), cloud.uploads)
+        assertEquals(original.asCloudRow(), cloud.stored.single { it.first == MiHealthImportChannel.DAILY_AGGREGATE }.second)
+
+        val incomplete = runner.run(account, plan(listOf(early, late, proposed.copy(completeSourceDay = false))))
+        assertEquals(0, incomplete.diagnostic?.gatedDailyRevisionRows)
+        cloud.stored += MiHealthImportChannel.DAILY_AGGREGATE to original.asCloudRow()
+        assertEquals(0, runner.run(account, plan(listOf(early, late, proposed))).diagnostic?.gatedDailyRevisionRows)
+        cloud.stored.removeAt(cloud.stored.lastIndex)
+        val oldIndex = cloud.stored.indexOfFirst { it.first == MiHealthImportChannel.DAILY_AGGREGATE }
+        cloud.stored[oldIndex] = MiHealthImportChannel.DAILY_AGGREGATE to original.asCloudRow().copy(tagInferred = true)
+        assertEquals(0, runner.run(account, plan(listOf(early, late, proposed))).diagnostic?.gatedDailyRevisionRows)
+        cloud.stored[oldIndex] = MiHealthImportChannel.DAILY_AGGREGATE to original.asCloudRow()
+        cloud.stored += MiHealthImportChannel.DAILY_AGGREGATE to original.asCloudRow().copy(sid = "watch")
+        val competing = runner.run(account, plan(listOf(early, late, proposed)))
+        assertEquals(0, competing.diagnostic?.gatedDailyRevisionRows)
+        cloud.stored.removeAll { it.first == MiHealthImportChannel.DAILY_AGGREGATE && it.second.sid == "watch" }
+        journal.markPending(account, listOf(MiHealthImportRunner.journalEntry(proposed)))
+        val pending = runner.run(account, plan(listOf(early, late, proposed)))
+        assertEquals(0, pending.diagnostic?.gatedDailyRevisionRows)
+        assertTrue(proposed.identity.stableKey in journal.pendingFor(account))
+        assertEquals(listOf(listOf(late)), cloud.uploads)
+    }
+
+    @Test fun aCompetingDailyReportAppearingAfterPrecheckBlocksCreationBeforeReservation() = runBlocking {
+        val point = raw()
+        val summary = daily()
+        val external = summary.asCloudRow().copy(sid = "watch", value = buildJsonObject { put("avg_hr", 91) })
+        var dailyReads = 0
+        val cloud = FakeCloud().apply {
+            onChannelRead = { channel ->
+                if (channel == MiHealthImportChannel.DAILY_AGGREGATE && ++dailyReads == 2) stored += channel to external
+            }
+        }
+        val journal = MemoryJournal()
+        val failure = assertFailsWith<MiHealthImportRunException> { runner(cloud, journal).run(account, plan(listOf(point, summary))) }
+        assertEquals(MiHealthImportFailureReason.CONFLICT, failure.reason)
+        assertEquals("DAILY_TARGET_CHANGED", failure.details)
+        assertEquals(1, failure.verifiedRawCount)
+        assertEquals(0, failure.diagnostic?.attemptedDailyRows)
+        assertEquals(listOf(listOf(point)), cloud.uploads)
+        assertEquals(emptySet(), journal.pendingFor(account))
+        assertEquals(external, cloud.stored.single { it.first == MiHealthImportChannel.DAILY_AGGREGATE }.second)
+    }
+
+    @Test fun missingFullSourceDayProofDoesNotPreventRawImportButCannotCreateDailyReport() = runBlocking {
+        val point = raw()
+        val summary = daily().copy(completeSourceDay = false)
+        val cloud = FakeCloud()
+        val journal = MemoryJournal()
+        val failure = assertFailsWith<MiHealthImportRunException> { runner(cloud, journal).run(account, plan(listOf(point, summary))) }
+        assertEquals(MiHealthImportFailureReason.UNVERIFIED, failure.reason)
+        assertEquals("incomplete_daily_source", failure.details)
+        assertEquals(1, failure.verifiedRawCount)
+        assertEquals(0, failure.diagnostic?.attemptedDailyRows)
+        assertEquals(listOf(listOf(point)), cloud.uploads)
+        assertEquals(emptySet(), journal.pendingFor(account))
+        cloud.persist(listOf(summary))
+        val preserved = runner(cloud, journal).run(account, plan(listOf(point, summary)))
+        assertEquals(0, preserved.verifiedAggregateCount)
+        assertEquals(1, preserved.diagnostic?.preservedDailyRows)
+        assertEquals(listOf(listOf(point)), cloud.uploads)
+    }
+
+    @Test fun serverRecomputedDailyMatchesWithoutPostingOrClaimingOwnershipOfChangedContent() = runBlocking {
+        val early = raw(bpm = 60).copy(zoneOffsetSeconds = 0)
+        val late = raw(index = 1, bpm = 160).copy(zoneOffsetSeconds = 0)
+        val original = daily().copy(zoneOffsetSeconds = 0, value = buildJsonObject { put("avg_hr", 60) })
+        val proposed = original.copy(sourceRecordKeys = early.sourceRecordKeys + late.sourceRecordKeys,
+            value = buildJsonObject { put("avg_hr", 110) })
+        val cloud = FakeCloud()
+        val journal = MemoryJournal()
+        val sync = runner(cloud, journal)
+        sync.run(account, plan(listOf(early, original)))
+        val digest = HealthImportLedger.identityDigest(original.identity.stableKey)
+        assertTrue(digest in journal.ownedVerifiedFingerprints(account))
+        cloud.uploads.clear()
+        cloud.onUpload = { rows ->
+            persist(rows)
+            if (rows == listOf(late)) persist(listOf(proposed))
+            MiHealthImportUploadResult(true)
+        }
+        val result = sync.run(account, plan(listOf(early, late, proposed)))
+        assertEquals(1, result.verifiedAggregateCount)
+        assertEquals(0, result.diagnostic?.gatedDailyRevisionRows)
+        assertEquals(listOf(listOf(late)), cloud.uploads)
+        assertTrue(digest !in journal.ownedVerifiedFingerprints(account))
+        assertEquals(MiHealthImportRunner.contentFingerprint(proposed), journal.verifiedFingerprints(account)[digest])
+    }
+
+    @Test fun readOnlyInspectionDistinguishesMissingLateRawAndServerRecomputeWithoutChangingOwnership() = runBlocking {
+        val early = raw(bpm = 60).copy(zoneOffsetSeconds = 0)
+        val late = raw(index = 1, bpm = 160).copy(zoneOffsetSeconds = 0)
+        val original = daily().copy(zoneOffsetSeconds = 0, value = buildJsonObject { put("avg_hr", 60) })
+        val revised = original.copy(value = buildJsonObject { put("avg_hr", 110) },
+            sourceRecordKeys = early.sourceRecordKeys + late.sourceRecordKeys)
+        val cloud = FakeCloud()
+        val journal = MemoryJournal()
+        runner(cloud, journal).run(account, plan(listOf(early, original)))
+        cloud.uploads.clear()
+        val ownedBefore = journal.ownedVerifiedFingerprints(account)
+        val verifiedBefore = journal.verifiedFingerprints(account)
+
+        suspend fun inspect() = inspectMiHealthImportPreflight(account, plan(listOf(early, late, revised)), cloud, journal)
+        assertEquals(0, inspect().gatedDailyRevisionRows)
+        cloud.persist(listOf(late))
+        val stale = inspect()
+        assertEquals(1, stale.gatedDailyRevisionRows)
+        assertEquals(1, stale.preservedDailyRows)
+        assertEquals(0, stale.verifiedDailyRows)
+        cloud.persist(listOf(revised))
+        val recomputed = inspect()
+        assertEquals(1, recomputed.verifiedDailyRows)
+        assertEquals(0, recomputed.gatedDailyRevisionRows)
+        assertEquals(0, recomputed.attemptedDailyRows)
+        assertTrue(cloud.uploads.isEmpty())
+        assertEquals(emptySet(), journal.pendingFor(account))
+        assertEquals(ownedBefore, journal.ownedVerifiedFingerprints(account))
+        assertEquals(verifiedBefore, journal.verifiedFingerprints(account))
+    }
+
+    @Test fun competingPostWriteDailyReadDoesNotConfirmOrReleaseThePendingReport() = runBlocking {
+        val point = raw()
+        val summary = daily()
+        val cloud = FakeCloud().apply {
+            onUpload = { rows ->
+                persist(rows)
+                if (rows.single().identity.channel == MiHealthImportChannel.DAILY_AGGREGATE) {
+                    stored += MiHealthImportChannel.DAILY_AGGREGATE to summary.asCloudRow().copy(sid = "watch")
+                }
+                MiHealthImportUploadResult(true)
+            }
+        }
+        val journal = MemoryJournal()
+        val sync = runner(cloud, journal)
+        val failure = assertFailsWith<MiHealthImportRunException> { sync.run(account, plan(listOf(point, summary))) }
+        assertEquals(MiHealthImportFailureReason.UNVERIFIED, failure.reason)
+        assertEquals(0, failure.diagnostic?.verifiedDailyRows)
+        assertEquals(setOf(summary.identity.stableKey), journal.pendingFor(account))
+        cloud.uploads.clear()
+        assertEquals(0, sync.run(account, plan(listOf(point, summary))).verifiedAggregateCount)
+        assertTrue(cloud.uploads.isEmpty())
+        assertEquals(setOf(summary.identity.stableKey), journal.pendingFor(account))
+    }
+
+    @Test
+    fun omittedPreviouslyVerifiedDailyIsNotSubmittedAgain() = runBlocking {
+        val point = raw().copy(zoneOffsetSeconds = 0)
+        val summary = daily().copy(zoneOffsetSeconds = 0, completeSourceDay = true)
+        val cloud = FakeCloud()
+        val runner = runner(cloud, MemoryJournal())
+        runner.run(account, plan(listOf(point, summary)))
+        cloud.stored.removeAll { it.first == MiHealthImportChannel.DAILY_AGGREGATE }
+        cloud.uploads.clear()
+
+        val error = assertFailsWith<MiHealthImportRunException> { runner.run(account, plan(listOf(point, summary))) }
+        assertEquals(MiHealthImportFailureReason.UNVERIFIED, error.reason)
+        assertEquals(1, error.diagnostic?.blockedVerifiedHistoryRows)
+        assertTrue(cloud.uploads.isEmpty())
     }
 
     @Test
@@ -964,6 +1142,7 @@ class MiHealthImportRunnerTest {
         value = buildJsonObject { put("avg_hr", 61) },
         zoneOffsetSeconds = 28_800,
         sourceRecordKeys = setOf("com.huami.watch.hmwatchmanager:record-0"),
+        completeSourceDay = true,
     )
 
     private fun plan(rows: List<MiHealthImportRow>, issues: List<MiHealthImportIssue> = emptyList()) =
@@ -985,6 +1164,7 @@ class MiHealthImportRunnerTest {
         var beforeUpload: (List<MiHealthImportRow>) -> Unit = {}
         var readCount = 0
         var onRead: suspend FakeCloud.() -> Unit = {}
+        var onChannelRead: suspend FakeCloud.(MiHealthImportChannel) -> Unit = {}
         var onUpload: suspend FakeCloud.(List<MiHealthImportRow>) -> MiHealthImportUploadResult = { rows ->
             persist(rows)
             MiHealthImportUploadResult(true)
@@ -1009,6 +1189,7 @@ class MiHealthImportRunnerTest {
         ): List<MiHealthImportCloudRow> {
             readCount++
             onRead()
+            onChannelRead(channel)
             return stored.filter { (kind, row) ->
                 kind == channel && row.key == key && row.time >= fromEpochSeconds && row.time < untilEpochSeconds
             }.map { it.second }

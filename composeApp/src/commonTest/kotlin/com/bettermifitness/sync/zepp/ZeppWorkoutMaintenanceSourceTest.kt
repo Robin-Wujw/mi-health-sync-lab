@@ -10,6 +10,7 @@ import com.bettermifitness.sync.data.preferences.HealthImportLedger
 import com.bettermifitness.sync.data.preferences.SyncPreferences
 import com.bettermifitness.sync.health.HealthRecordOrigin
 import com.bettermifitness.sync.health.InboundWorkout
+import com.bettermifitness.sync.sync.UserSyncSources
 import com.mifitness.miclient.auth.MiAuth
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
@@ -99,6 +100,17 @@ class ZeppWorkoutMaintenanceSourceTest {
         preferences.setMetricEnabled(SyncPreferences.WORKOUTS_IMPORT_KEY, false)
         assertNull(reader(source))
         assertEquals(0, requests)
+    }
+
+    @Test fun replacingBoundZeppRegionPreventsWorkoutEnrichmentEvenWithinAnAcceptedRun() = runTest {
+        connected()
+        val sources = UserSyncSources(checkNotNull(service.automaticSourceIdentity()), null)
+        val reader = service.workoutHeartRateReader(listOf(source, second), sources)
+        checkNotNull(reader(source))
+        val before = requests
+        sessions.save(ZeppSession("123", "synthetic-app", "synthetic-login", "api-mifitde.zepp.com"))
+        assertNull(reader(second))
+        assertEquals(before, requests)
     }
 
     private class MemoryStore : DataStore<Preferences> {

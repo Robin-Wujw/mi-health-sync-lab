@@ -10,7 +10,7 @@ struct iOSApp: App {
         MainViewControllerKt.doInitKoin()
         // Register BG handler + Kotlin↔Swift schedule bridge.
         BackgroundSyncManager.register()
-        // Only keep BGAppRefresh queued when Auto-sync is enabled.
+        // Restore the processing request only when Auto-sync is enabled.
         AutoSyncSchedule.shared.restore()
     }
 
@@ -28,10 +28,8 @@ struct iOSApp: App {
                 // Re-queue only if Auto-sync is still on (OS decides when to fire).
                 AutoSyncSchedule.shared.rescheduleIfEnabled()
             case .active:
-                // Foreground auto-sync: full user-configured range when toggle is on.
-                // Joins any in-flight Shortcuts sync instead of cancelling it.
-                BackgroundSync.shared.runForegroundAutoSync { status in
-                    print("[BGSync] foreground auto-sync status=\(status)")
+                BackgroundSync.shared.runSessionRefresh { status in
+                    print("[BGSync] foreground session maintenance status=\(status)")
                 }
             default:
                 break

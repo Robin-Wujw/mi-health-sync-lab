@@ -1,6 +1,8 @@
 package com.bettermifitness.sync.data.repository
 import com.bettermifitness.sync.i18n.L10n
 import com.bettermifitness.sync.data.preferences.SyncPreferences
+import com.bettermifitness.sync.health.HealthAccessBlock
+import com.bettermifitness.sync.zepp.ZeppStream
 
 
 /**
@@ -19,6 +21,10 @@ data class SyncRunResult(
     val excludedSourcePoints: Int = 0,
     val warningMessages: List<String> = emptyList(),
     val excludedHrvSamples: Int = 0,
+    val confirmedMetricKeys: Set<String> = emptySet(),
+    val healthAccessBlocks: Map<String, HealthAccessBlock> = emptyMap(),
+    val confirmedSourceDayKeys: Set<String> = emptySet(),
+    val zeppEventSplit: Set<ZeppStream> = emptySet(),
 ) {
     /** A metric can verify useful rows and still have unresolved rows. */
     val hasVerifiedProgress: Boolean get() = succeeded > 0 || totalRecords > 0
@@ -99,10 +105,32 @@ data class SyncRunResult(
                 excludedSourcePoints = excludedPoints,
                 warningMessages = warnings,
                 excludedHrvSamples = excludedHrv,
+                confirmedMetricKeys = metricKeys.filterTo(mutableSetOf()) { key ->
+                    when (progress.stateForKey(key)) {
+                        is SyncState.Success, is SyncState.NoData -> true
+                        else -> false
+                    }
+                },
+                healthAccessBlocks = metricKeys.mapNotNull { key ->
+                    (progress.stateForKey(key) as? SyncState.Error)?.accessBlock?.let { key to it }
+                }.toMap(),
+                confirmedSourceDayKeys = metricKeys.filterTo(mutableSetOf()) { key ->
+                    key in SOURCE_DAY_METRICS && when (val state = progress.stateForKey(key)) {
+                        is SyncState.NoData -> state.diagnostic == null
+                        is SyncState.Success -> state.diagnostic?.let {
+                            it.plannedDailyRows > 0 && it.verifiedDailyRows == it.plannedDailyRows && it.preservedDailyRows == 0
+                        } == true
+                        else -> false
+                    }
+                },
+                zeppEventSplit = (progress.zeppCloudImport as? SyncState.Error)?.zeppEventSplit.orEmpty(),
             )
         }
     }
 }
+
+internal val SOURCE_DAY_METRICS = setOf(SyncPreferences.HEART_RATE_IMPORT_KEY, SyncPreferences.SLEEP_IMPORT_KEY,
+    SyncPreferences.SPO2_IMPORT_KEY)
 
 fun SyncProgress.stateForKey(key: String): SyncState? = when (key) {
     "heart_rate" -> heartRate

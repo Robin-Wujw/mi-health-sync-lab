@@ -86,8 +86,11 @@ internal fun parseMiLatestResponse(response: JsonElement): FitnessResponse<Sleep
     )
 }
 
-internal fun parseMiSportRecordsPage(response: JsonElement): FitnessResult<SportRecordEntry> {
+internal fun parseMiSportRecordsPage(response: JsonElement, strict: Boolean = false): FitnessResult<SportRecordEntry> {
     val result = requireMiResult(response)
+    if (strict && (result["sport_records"] !is JsonArray || (result["has_more"] as? JsonPrimitive)?.booleanOrNull == null)) {
+        throw MiApiException.Unexpected("Mi workout response is missing rows or pagination status")
+    }
     return FitnessResult(
         dataList = result.optionalRows("sport_records").map { row ->
             SportRecordEntry(
@@ -105,10 +108,16 @@ internal fun parseMiSportRecordsPage(response: JsonElement): FitnessResult<Sport
     )
 }
 
-/** A broken cursor or safety limit is an incomplete export, never successful EOF. */
-internal class MiPageCursorGuard(private val maxPages: Int) {
-    private var pages = 0
-    private val seenNextKeys = mutableSetOf<String>()
+internal enum class MiPaginationIssue { INVALID_CURSOR, PAGE_LIMIT, REQUEST_BUDGET }
+
+internal class MiPaginationIncomplete(val issue: MiPaginationIssue) : IllegalStateException(issue.name)
+
+internal fun incompleteMiPagination(issue: MiPaginationIssue, detail: String): MiApiException.Unexpected =
+    MiApiException.Unexpected(detail, MiPaginationIncomplete(issue))
+
+internal class MiPageCursorGuard(private val maxPages: Int, priorCursors: List<String> = emptyList()) {
+    private var pages = priorCursors.size
+    private val seenNextKeys = priorCursors.toMutableSet()
 
     init {
         require(maxPages > 0) { "maxPages must be positive" }
@@ -118,13 +127,14 @@ internal class MiPageCursorGuard(private val maxPages: Int) {
         pages++
         if (!hasMore) return null
         if (nextKey.isNullOrBlank()) {
-            throw MiApiException.Unexpected("Mi cloud reports more data without a pagination cursor")
+            throw incompleteMiPagination(MiPaginationIssue.INVALID_CURSOR, "Mi cloud reports more data without a pagination cursor")
         }
         if (!seenNextKeys.add(nextKey)) {
-            throw MiApiException.Unexpected("Mi cloud repeated a pagination cursor; export is incomplete")
+            throw incompleteMiPagination(MiPaginationIssue.INVALID_CURSOR, "Mi cloud repeated a pagination cursor; export is incomplete")
         }
         if (pages >= maxPages) {
-            throw MiApiException.Unexpected("Mi cloud pagination reached the $maxPages page limit; export is incomplete")
+            throw incompleteMiPagination(MiPaginationIssue.PAGE_LIMIT,
+                "Mi cloud pagination reached the $maxPages page limit; export is incomplete")
         }
         return nextKey
     }

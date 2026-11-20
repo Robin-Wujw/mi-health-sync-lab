@@ -284,22 +284,20 @@ class AndroidWorkoutRecordFactory {
     }
 
     private fun exerciseRouteOrNull(session: WorkoutSession): ExerciseRoute? {
-        if (session.route.size < 2) return null
-        return try {
-            val locations = session.route.map { p ->
-                ExerciseRoute.Location(
-                    time = Instant.ofEpochSecond(p.timeSec),
-                    latitude = p.latitude,
-                    longitude = p.longitude,
-                    horizontalAccuracy = p.horizontalAccuracyMeters?.let { Length.meters(it) },
-                    verticalAccuracy = null,
-                    altitude = p.altitudeMeters?.let { Length.meters(it) },
-                )
-            }
-            ExerciseRoute(locations)
-        } catch (_: Exception) {
-            null
+        val points = HealthDataNormalizer.normalizeRoute(session.route, session.startTime, session.endTime)
+            .filter { it.timeSec >= session.startTime && it.timeSec < session.endTime }
+        if (points.size < 2) return null
+        val locations = points.map { point ->
+            ExerciseRoute.Location(
+                time = Instant.ofEpochSecond(point.timeSec),
+                latitude = point.latitude,
+                longitude = point.longitude,
+                horizontalAccuracy = point.horizontalAccuracyMeters?.let { Length.meters(it) },
+                verticalAccuracy = null,
+                altitude = point.altitudeMeters?.let { Length.meters(it) },
+            )
         }
+        return ExerciseRoute(locations)
     }
 
     private fun zoneOffsetOf(session: WorkoutSession): ZoneOffset =

@@ -154,7 +154,7 @@ data class MiHealthImportDiagnostic(
     val blockedPendingRows: Int = 0,
     val blockedConflictRows: Int = 0,
     val blockedAmbiguousRows: Int = 0,
-    /** Previously verified RAW identity omitted by this read; never automatically re-uploaded. */
+    /** Previously verified identity omitted by this read; never automatically re-uploaded. */
     val blockedVerifiedHistoryRows: Int = 0,
     val sourceCollisionRows: Int = 0,
     /** Final unresolved classifications, not cumulative counts across repeated GET attempts. */
@@ -163,6 +163,7 @@ data class MiHealthImportDiagnostic(
     val readbackAmbiguousRows: Int = 0,
     val readbackUnqueriedRows: Int = 0,
     val preservedDailyRows: Int = 0,
+    val gatedDailyRevisionRows: Int = 0,
     /** Distinct rejected source IDs, with unkeyed issue fallback; not Xiaomi row count. */
     val sourceRejectedRecords: Int = 0,
     val issueCounts: List<MiHealthImportIssueCount> = emptyList(),

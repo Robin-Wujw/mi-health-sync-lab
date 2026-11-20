@@ -120,6 +120,37 @@ class TokenStoreLogoutTest {
     }
 
     @Test
+    fun onlyDocumentedRateLimitRejectionCanRetryAfterDurableCooldown() = runBlocking<Unit> {
+        var timestamp = 1000L
+        val ledger = BodySyncLedger(store) { timestamp }
+        assertEquals(BodyUploadDecision.Send(1), ledger.beginUpload(ACCOUNT, "limited"))
+        assertEquals(BodyUploadDecision.VerifyOnly, ledger.beginUpload(ACCOUNT, "limited"))
+        ledger.noteRateLimit(ACCOUNT, "limited", sendCount = 1)
+        val reopened = BodySyncLedger(store) { timestamp }
+        assertEquals(BodyUploadDecision.CoolingDown, reopened.beginUpload(ACCOUNT, "limited"))
+        timestamp += 900
+        assertEquals(BodyUploadDecision.Send(2), reopened.beginUpload(ACCOUNT, "limited"))
+        reopened.noteRateLimit(ACCOUNT, "limited", sendCount = 2)
+        timestamp += 1800
+        assertEquals(BodyUploadDecision.Send(3), reopened.beginUpload(ACCOUNT, "limited"))
+        reopened.noteRateLimit(ACCOUNT, "limited", sendCount = 3)
+        timestamp += 2700
+        assertEquals(BodyUploadDecision.RetryLimit, reopened.beginUpload(ACCOUNT, "limited"))
+    }
+
+    @Test
+    fun fullBodyJournalNeverPrunesAnUnknownWrite() = runBlocking<Unit> {
+        repeat(128) { index ->
+            assertEquals(BodyUploadDecision.Send(1), bodyLedger.beginUpload(ACCOUNT, "unknown-$index"))
+        }
+        assertEquals(BodyUploadDecision.AtCapacity, bodyLedger.beginUpload(ACCOUNT, "new"))
+        assertEquals(BodyUploadDecision.VerifyOnly, bodyLedger.beginUpload(ACCOUNT, "unknown-0"))
+        bodyLedger.noteAttempt(ACCOUNT, "unknown-1", "verified")
+        assertEquals(BodyUploadDecision.Send(1), bodyLedger.beginUpload(ACCOUNT, "new"))
+        assertEquals("pending", bodyLedger.attempt(ACCOUNT, "unknown-0"))
+    }
+
+    @Test
     fun everyJournalPreferenceSurvivesAndNothingElseDoes() {
         for (name in listOf(
             "hc_import_pending_v1:a", "hc_import_verified_v1:a", "hc_import_ownership_v2:a",

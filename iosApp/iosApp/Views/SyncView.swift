@@ -12,6 +12,21 @@ struct SyncView: View {
                         .font(.subheadline)
                         .foregroundStyle(Brand.secondaryLabel)
                         .padding(.horizontal, 4)
+                    if let active = store.state.activeDescription {
+                        Text(active).font(.subheadline)
+                    }
+                    if store.state.wasStopped {
+                        statusBanner(L10n.syncStopped, color: Brand.caution)
+                    }
+                    DisclosureGroup(L10n.syncHistoryTitle) {
+                        if store.history.isEmpty {
+                            Text(L10n.syncNoTaskHistory).font(.caption)
+                        } else {
+                            ForEach(Array(store.history.enumerated()), id: \.offset) { row in
+                                Text(row.element).font(.caption).frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                    }
 
                     if let err = store.state.permissionError {
                         statusBanner(err, color: Brand.danger)
@@ -49,16 +64,21 @@ struct SyncView: View {
 
             // Sticky primary — same chrome as Home (`StickyPrimaryBar`).
             StickyPrimaryBar(
-                primaryEnabled: !store.state.isSyncing && store.state.healthAvailable,
+                primaryEnabled: !store.state.isSyncing && !store.state.isStopping && store.state.healthAvailable,
                 primaryAction: { store.startSync() },
                 label: {
-                    if store.state.isSyncing {
+                    if store.state.isStopping {
+                        Text(L10n.syncStopping)
+                    } else if store.state.isSyncing {
                         SyncingPrimaryLabel()
                     } else {
                         Label(L10n.syncNow, systemImage: "arrow.triangle.2.circlepath")
                     }
                 },
                 footer: {
+                    if store.state.isSyncing || store.state.isStopping {
+                        Button(L10n.syncStop) { store.stopSync() }.disabled(store.state.isStopping)
+                    }
                     if !store.state.healthAvailable {
                         Button(L10n.openHealth(store.state.healthServiceName)) {
                             store.openHealth()
@@ -95,32 +115,61 @@ struct SyncView: View {
 
     /// Adaptive row: icon | title (up to 2 lines) | trailing status
     private func metricRow(_ row: SyncStore.MetricRow) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: MetricSymbol.name(for: row.id))
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(Brand.primary)
-                .frame(width: 28, height: 28)
-
-            Text(row.label)
-                .font(.body)
-                .foregroundStyle(Brand.label)
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityLabel(row.label)
-
-            HStack(spacing: 6) {
-                statusIcon(for: row.kind)
-                Text(shortStatus(row))
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(color(for: row.kind))
-                    .lineLimit(1)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                metricIcon(row)
+                metricTitle(row)
+                metricStatus(row)
             }
-            .frame(minWidth: 88, alignment: .trailing)
+            .padding(.horizontal, 14)
+            .frame(minHeight: 52)
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 12) {
+                    metricIcon(row)
+                    metricTitle(row)
+                }
+                HStack(spacing: 6) {
+                    statusIcon(for: row.kind)
+                    Text(shortStatus(row))
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(color(for: row.kind))
+                }
+                .padding(.leading, 40)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
         }
-        .padding(.horizontal, 14)
-        .frame(minHeight: 52)
-        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+    }
+
+    private func metricIcon(_ row: SyncStore.MetricRow) -> some View {
+        Image(systemName: MetricSymbol.name(for: row.id))
+            .font(.system(size: 17, weight: .semibold))
+            .foregroundStyle(Brand.primary)
+            .frame(width: 28, height: 28)
+    }
+
+    private func metricTitle(_ row: SyncStore.MetricRow) -> some View {
+        Text(row.label)
+            .font(.body)
+            .foregroundStyle(Brand.label)
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityLabel(row.label)
+    }
+
+    private func metricStatus(_ row: SyncStore.MetricRow) -> some View {
+        HStack(spacing: 6) {
+            statusIcon(for: row.kind)
+            Text(shortStatus(row))
+                .font(.caption.weight(.medium))
+                .foregroundStyle(color(for: row.kind))
+                .lineLimit(2)
+                .multilineTextAlignment(.trailing)
+        }
+        .frame(minWidth: 88, alignment: .trailing)
     }
 
     /// Trailing labels must stay consistent — raw sample counts differ by metric type

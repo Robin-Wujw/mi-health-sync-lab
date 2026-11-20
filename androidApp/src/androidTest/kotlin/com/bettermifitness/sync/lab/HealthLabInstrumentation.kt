@@ -61,6 +61,7 @@ class HealthLabInstrumentation : Instrumentation() {
         start()
     }
 
+    @Suppress("CyclomaticComplexMethod")
     override fun onStart() {
         val report = mutableListOf("Mi Health Sync Lab live test v1")
         var completed = false
@@ -82,6 +83,7 @@ class HealthLabInstrumentation : Instrumentation() {
                 MODE_INSPECT_WORKOUT_CLOUD,
                 MODE_PREVIEW_WORKOUT_UPLOAD,
                 MODE_FDS_PROTOCOL, MODE_NATIVE_CODEC, MODE_NATIVE_CLOUD_CODEC, MODE_INSPECT_ZEPP,
+                MODE_SYNC_SETTINGS,
             )
             report += "local_journal_changes_requested=${options.mode !in readOnlyModes}"
             report += "normal_sync_suppressed=true"
@@ -119,6 +121,10 @@ class HealthLabInstrumentation : Instrumentation() {
                         HealthConnectFeatures.FEATURE_READ_HEALTH_DATA_HISTORY) == HealthConnectFeatures.FEATURE_STATUS_AVAILABLE)
                     report += "history_read_granted=" + (HealthPermission.PERMISSION_READ_HEALTH_DATA_HISTORY in
                         healthClient.permissionController.getGrantedPermissions())
+                    val selectedReadPermissions = requiredReadPermissions(options, workoutModes)
+                    val grantedPermissions = healthClient.permissionController.getGrantedPermissions()
+                    report += "selected_read_permissions=" + selectedReadPermissions.joinToString(",")
+                    report += "selected_read_permissions_granted=" + selectedReadPermissions.all { it in grantedPermissions }
                     if (options.mode == MODE_INSPECT_WORKOUTS) {
                         val until = java.time.Instant.now()
                         return@withTimeout AndroidWorkoutInspection(healthClient).inspect(
@@ -221,6 +227,11 @@ class HealthLabInstrumentation : Instrumentation() {
                     foregroundActivity?.finish()
                 }
             }
+            if (!completed && report.none { it.startsWith("runner_outcome=") }) {
+                report += "runner_outcome=FAILED"
+                report += "runner_failure=UNCLASSIFIED_ERROR"
+                report += "exception_message_withheld=true"
+            }
             report += "excluded=credentials,account_ids,device_ids,source_record_ids,timestamps,health_values," +
                 "request_bodies,response_bodies"
             val text = "\n$REPORT_BEGIN\n${report.joinToString("\n")}\n$REPORT_END\n"
@@ -233,6 +244,19 @@ class HealthLabInstrumentation : Instrumentation() {
         MODE_SYNC_ZEPP, MODE_INSPECT_ZEPP, MODE_RESTORE_ZEPP_OWNERSHIP -> "zepp_cloud"
         in workoutModes -> "workouts"
         else -> options.metric.metricKey
+    }
+
+    private fun requiredReadPermissions(options: Options, workoutModes: Set<String>): Set<String> = when (
+        selectedMetric(options, workoutModes)
+    ) {
+        HealthInboundMetric.HEART_RATE.metricKey -> setOf("android.permission.health.READ_HEART_RATE")
+        HealthInboundMetric.RESTING_HEART_RATE.metricKey -> setOf("android.permission.health.READ_RESTING_HEART_RATE")
+        HealthInboundMetric.SLEEP.metricKey -> setOf("android.permission.health.READ_SLEEP")
+        HealthInboundMetric.HRV.metricKey -> setOf("android.permission.health.READ_HEART_RATE_VARIABILITY")
+        HealthInboundMetric.OXYGEN_SATURATION.metricKey -> setOf("android.permission.health.READ_OXYGEN_SATURATION")
+        HealthInboundMetric.VO2_MAX.metricKey -> setOf("android.permission.health.READ_VO2_MAX")
+        "workouts" -> setOf("android.permission.health.READ_EXERCISE")
+        else -> emptySet()
     }
 
     @Suppress("ThrowsCount") // Each invalid argument gets its own failure code for the PC test driver.

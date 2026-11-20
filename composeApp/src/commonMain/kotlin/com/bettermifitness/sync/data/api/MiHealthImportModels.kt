@@ -46,6 +46,7 @@ data class MiHealthImportRow(
     /** Missing source zone or a DST transition prevents a trustworthy day summary. */
     val dayAggregationEligible: Boolean = true,
     val enrichment: MiHealthImportEnrichment? = null,
+    val completeSourceDay: Boolean = false,
 ) {
     val canonicalContent: String get() = canonicalMiHealthImportJson(value)
 }
@@ -83,6 +84,7 @@ data class MiHealthImportCloudRow(
     val value: JsonObject,
     val deleted: Boolean = false,
     val zoneOffsetSeconds: Int? = null,
+    val tagInferred: Boolean = false,
 )
 
 /** An accepted POST still requires a separate content readback. */

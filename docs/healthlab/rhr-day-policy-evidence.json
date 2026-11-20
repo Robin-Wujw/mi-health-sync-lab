@@ -1,0 +1,59 @@
+{
+  "checked_at": "2026-11-03",
+  "kind": "Independent static contract evidence and mapping policy; no account access or remote health-data test writes",
+  "official_apk": {
+    "package": "com.mi.health",
+    "version_name": "3.59.2",
+    "sha256": "112e603b8342cb134402a6dcabdf3ec16fd5171ec65a1d5f7cb7efd83cb0995d",
+    "path": "research-work/mifitness-apk-static/mifitness-3.59.2-cn-tencent.apk"
+  },
+  "health_connect_semantics": {
+    "official_reference": "https://developer.android.com/reference/kotlin/androidx/health/connect/client/records/RestingHeartRateRecord",
+    "meaning": "Each RestingHeartRateRecord represents a single instantaneous measurement; multiple different observations on one date are not inherently duplicate or contradictory records.",
+    "source_date": "Use the record's own time and explicit zoneOffset. A missing source offset remains rejected because a reliable source calendar date cannot be recovered from it."
+  },
+  "native_daily_report_rule": {
+    "class": "com.xiaomi.fitness.repo.heartrate.HeartRateBiz",
+    "method": "splitDailyReport",
+    "evidence": "research-work/mifitness-access-static/feedback-heart-rate-biz.smali",
+    "verified_call_chain": [
+      "The resting_heart_rate branch collects RestHrItem values with getRestHr() > 0 into v1.",
+      "The com.xiaomi.resting_heart_rate.instantaneous branch converts FitnessDataOpenItem through toRestHrItem, filters getRestHr() > 0 and adds to the same v1 list.",
+      "splitDailyReport calls ListExtKt.minOfOrDefault(v1, null, new dcd()).",
+      "classes12.dex Ldcd;.invoke casts RestHrItem and invokes HeartRateBiz.g(RestHrItem).",
+      "HeartRateBiz.g delegates to splitDailyReport$lambda$14, which returns RestHrItem.getRestHr().",
+      "classes10.dex ListExtKt.minOfOrDefault compares selected values with Comparable.compareTo, retains the smaller value, and returns the supplied default for an empty list.",
+      "The resulting nullable Integer is passed to the DailyHrReport constructor as restHr."
+    ],
+    "conclusion": "The native daily report selects the lowest positive observed resting-heart-rate value. It does not average the observations or choose the latest one."
+  },
+  "native_raw_date_contract": {
+    "evidence": [
+      "research-work/mifitness-access-static/feedback-daily-record-repo.smali: DailyRecordDaoRepo.hasOneDateRecordOneDay(resting_heart_rate) = true",
+      "research-work/mifitness-access-static/feedback-daily-record-utils.smali: reprocessModelRecordIfNeed uses changeToDestZeroTimeOneDay(time, sourceOffset, 0), resets zoneOffsetInSec to zero and updates both model time and item timestamp"
+    ],
+    "transport": "time = date_time = floorDiv(sourceEpochSeconds + sourceOffsetSeconds, 86400) * 86400; zone_offset = 0"
+  },
+  "bridge_policy": {
+    "selection": "After explicit source filtering, revision resolution, value validation and source-date validation, group RHR observations by the native raw target calendar date and select their lowest actual observed RHR.",
+    "same_values": "Coalesce repeated equal observations and retain all source record keys.",
+    "different_time_values": "Select the lowest observed value and retain all contributing source record keys in the local journal. Emit WARNING RESTING_HEART_RATE_DAILY_MINIMUM_APPLIED so users can distinguish a selected daily value from all instantaneous records being copied separately.",
+    "same_instant_contradiction": "If distinct accepted source records have the same source epoch millisecond but different BPM within a date, reject that date with RESTING_HEART_RATE_DAY_COLLISION; do not move timestamps or silently pick a winner.",
+    "same_source_revision_contradiction": "Keep the existing CONFLICTING_SOURCE_REVISIONS rejection for incompatible contents at the same latest revision of the same source record. Do not substitute an older valid revision for a rejected latest revision.",
+    "limitations": [
+      "The selected minimum covers the valid observations in the selected input, not necessarily a complete day's observations.",
+      "This is a compatible bridge mapping inferred from the native report and raw-date contracts; it does not establish Xiaomi's remote write acceptance, overwrite behavior or immediate App visibility.",
+      "Existing different cloud values remain governed by the import runner's conflict protection. This policy does not authorize replacing them.",
+      "No RHR is derived from ordinary heart-rate samples, and no average or fabricated value is created.",
+      "The original instantaneous records are preserved in Health Connect. A single Mi raw RHR date record cannot preserve all of their timestamps and values.",
+      "No sparse avg_rhr-only daily aggregate is uploaded by this change."
+    ]
+  },
+  "regression_cases": [
+    "Three distinct-time observations with values 58, 52, 54 produce one raw date row with the observed value 52, complete local source provenance, a WARNING, and no source rejection; input order does not matter.",
+    "Repeated equal values on one date coalesce without a daily-minimum warning.",
+    "Conflicting same-instant values still reject their date while unrelated dates remain usable.",
+    "Twenty-seven synthetic observations across thirteen source calendar dates produce thirteen rows rather than rejecting normal different-time values.",
+    "The existing source-date, timezone-boundary and conflicting-latest-revision tests remain applicable."
+  ]
+}

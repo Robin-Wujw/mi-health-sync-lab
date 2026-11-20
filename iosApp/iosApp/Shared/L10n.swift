@@ -18,6 +18,11 @@ enum L10n {
     // Common
     static var appName: String { s(strings.app_name) }
     static var back: String { s(strings.back) }
+    static var syncHistoryTitle: String { s(strings.sync_history_title) }
+    static var syncNoTaskHistory: String { s(strings.sync_no_task_history) }
+    static var syncStop: String { s(strings.sync_stop) }
+    static var syncStopping: String { s(strings.sync_stopping) }
+    static var syncStopped: String { s(strings.sync_stopped) }
     static var healthFallback: String { s(strings.health_fallback) }
     static var healthAllowAccess: String { s(strings.health_allow_access) }
     static var healthReady: String { s(strings.health_ready) }

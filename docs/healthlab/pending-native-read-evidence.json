@@ -1,0 +1,134 @@
+{
+  "checked_at": "2026-11-03",
+  "kind": "Read-only APK inspection, original author notes, and local fixture test implementation; no access to the user's Xiaomi account",
+  "question": "Can an independent native-shape history request observe pending rows that the existing overlapping-day and narrowed-end requests do not return?",
+  "starting_observation": {
+    "source": "User-provided healthlab.5 SpO2 diagnostic v2",
+    "planned_raw_rows": 195,
+    "already_present_raw_rows": 63,
+    "blocked_pending_rows": 132,
+    "broad_pending_missing": 132,
+    "broad_read_groups": 2,
+    "broad_read_failure_groups": 0,
+    "narrow_selected": 3,
+    "narrow_missing": 3,
+    "interpretation": "Existing window reads did not return the expected nondeleted source identities. This is not proof that an earlier upload was never persisted, or proof that the official App would display a returned row."
+  },
+  "native_apk": {
+    "version": "Mi Fitness 3.59.2 China Tencent build",
+    "filename": "mifitness-3.59.2-cn-tencent.apk",
+    "sha256": "112e603b8342cb134402a6dcabdf3ec16fd5171ec65a1d5f7cb7efd83cb0995d",
+    "inspection": "Read classes10.dex using baksmali. APK application code was not executed.",
+    "findings": [
+      {
+        "class": "com.xiaomi.fit.fitness.persist.server.data.GetFitnessDataByTime",
+        "evidence": "Its five serialized fields are key, start_time, end_time, reverse and next_key. startTime is nullable. There is no limit field."
+      },
+      {
+        "class": "com.xiaomi.fit.fitness.persist.process.CloudSyncLineRouter",
+        "method": "pullFullPullFitnessData(String, long, String, Continuation)",
+        "evidence": "The legacy fitness branch constructs GetFitnessDataByTime(key, null, endTime, true, nextKey), then calls FitnessDataRequest.getFitnessDataByTime. This is an existing native full-pull path, not an invented request model."
+      },
+      {
+        "class": "com.xiaomi.fit.fitness.persist.server.FitnessDataRequest",
+        "method": "mFitnessGson_delegate$lambda$0 / getFitnessDataByTime",
+        "evidence": "The serializer is constructed with new Gson() and serializes the request model. Default Gson omits null object fields; consequently the null startTime is omitted, rather than emitted as start_time:null."
+      },
+      {
+        "class": "com.xiaomi.fit.fitness.persist.server.FitnessDataService",
+        "method": "getFitnessDataByTime",
+        "evidence": "The service annotation uses data/get_fitness_data_by_time. Its response model FitnessDataResultByTime provides data_list, has_more and next_key."
+      }
+    ],
+    "scope_limit": "Static request construction establishes a native request shape. It does not establish the current backend's completeness, current account routing, persistence behavior, or display behavior."
+  },
+  "primary_public_sources": [
+    {
+      "url": "https://raw.githubusercontent.com/Jenwein/mifit/main/notes/11-spo2-weight-profile.md",
+      "content_sha256": "96f462feaf5573d7178f3289e91d8e5ba8be9b90acf5122bd3e4b432f4050cbd",
+      "scope": "Author's APK and read-only account investigation, including one UTC+8 account; not this user's account.",
+      "finding": "The author reports 36 SpO2 rows from a no-start control, 27 from a window starting at the desired boundary, and 36 matching rows after moving the start back one day. A no-start page can still report more pages. Server-selected page size and one tested timezone do not guarantee universal completeness.",
+      "implication": "The existing importer already overlaps the preceding day. The known initial-bucket omission alone therefore does not explain this user's 132 pending rows. A request without start_time remains a useful independent comparison."
+    },
+    {
+      "url": "https://raw.githubusercontent.com/Jenwein/mifit/main/notes/08-heart-rate-keys-and-completeness.md",
+      "content_sha256": "24492a5d3f2ebce9a82f7a13d015f3f3860bfa67d0d366d10c9bec886331e480",
+      "scope": "Author's own heart-rate reads and native request analysis; not a write acceptance test.",
+      "finding": "The author reports 476 no-start rows across two pages and separately compares multi-page window reads with no-start reads: 269 in-range rows match exactly. The reported upper endpoint can be inclusive. These observations support explicit pagination and local exclusive-end filtering, but do not establish a general cursor bug or justify assuming every missing row was lost."
+    }
+  ],
+  "current_reader_comparison": {
+    "raw_method": "POST /app/v1/data/get_fitness_data_by_time",
+    "existing_payload_keys": [
+      "key",
+      "start_time",
+      "end_time",
+      "reverse",
+      "limit",
+      "next_key when paging"
+    ],
+    "existing_broad_lower_bound": "One UTC day before the target's UTC day, clipped to epoch zero.",
+    "existing_narrow_change": "Same broad lower bound, with end_time reduced to the selected target's time plus one second.",
+    "new_control_payload_keys": [
+      "key",
+      "end_time",
+      "reverse",
+      "next_key when paging"
+    ],
+    "new_control_difference": "Omit start_time and the non-native limit field. No claim is made that either field is the demonstrated cause of this user's missing observations."
+  },
+  "bounded_control_contract": {
+    "method": "MiHealthImportCloud.readRawRowsWithoutStart(key, untilEpochSeconds, maxPages)",
+    "return": "MiHealthImportHistoryRead(rows, pagesRead, complete)",
+    "default_interface_behavior": "UnsupportedOperationException for implementations without this capability; a diagnostic counts this as unqueried, not missing.",
+    "accepted_max_pages": "1 through 32 inclusive",
+    "probe_max_pages": 5,
+    "recovery_max_pages": 32,
+    "completion": "Only an explicit Boolean has_more=false with valid pagination metadata reports complete=true. It means the endpoint terminated this traversal, not that every backend representation was queried.",
+    "incomplete": "A cap, absent/null/non-Boolean has_more, invalid/missing cursor while more is true, or repeated cursor returns retained valid rows with complete=false. Old timestamps never establish early completion.",
+    "errors": "Transport, business rejection and malformed row errors still throw. Authentication expiry and cancellation propagate unchanged.",
+    "bounds": "The control read filters output to nonnegative times strictly below untilEpochSeconds. It has no lower time bound.",
+    "probe_selection": "Inspect RAW targets classified MISSING by broad reads, querying at most one key and ending just after that key's newest target. Additional keys remain unqueried.",
+    "probe_missing_rule": "An unreturned target is nativeMissing only when the traversal is complete. Otherwise it is nativeUnqueried. Observed semantic matches, mismatches and ambiguous identities retain their distinct counts.",
+    "other_source_hint": "Counts broad-MISSING targets with a nondeleted row at the same key/time/tag under an explicit different SID.",
+    "deleted_hint": "Counts broad-MISSING targets with a deleted row under the exact expected SID/key/time/tag. It may overlap the other-source count.",
+    "privacy": "Probe results contain counters only. No source SID, health measurement, timestamp, account identifier, request body or response body is included.",
+    "mutation_policy": "The diagnostic probe never uploads, marks verified, clears pending entries, or grants permission for later replay. Recovery separately requires all of its preconditions."
+  },
+  "implementation_files": [
+    "composeApp/src/commonMain/kotlin/com/bettermifitness/sync/data/api/MiHealthImportModels.kt",
+    "composeApp/src/commonMain/kotlin/com/bettermifitness/sync/data/api/MiHealthImportTransport.kt",
+    "composeApp/src/commonMain/kotlin/com/bettermifitness/sync/data/api/MiPendingImportProbe.kt"
+  ],
+  "local_fixture_tests": {
+    "status": "PASSED_ROOT_COORDINATED_TEST_RUN",
+    "files": [
+      "composeApp/src/commonTest/kotlin/com/bettermifitness/sync/data/api/MiHealthImportNativeReadTest.kt",
+      "composeApp/src/commonTest/kotlin/com/bettermifitness/sync/data/api/MiPendingImportProbeTest.kt"
+    ],
+    "native_protocol_cases": 11,
+    "new_probe_cases": 7,
+    "coverage": [
+      "Native payload omits start_time and limit, preserves end_time/reverse and follows the returned cursor.",
+      "Explicit EOF on the final allowed page, safety caps, repeated or missing cursors, malformed pagination metadata, exclusive-end filtering and retained observations.",
+      "A recovery read may use 32 pages; older returned timestamps do not terminate pagination early.",
+      "Business failures, malformed rows, expired authentication and cancellation cannot become successful empty reads.",
+      "The 195/63/132 fixture can reveal 132 missing-window targets through native reads while keeping every pending journal entry locked.",
+      "Incomplete native traversal distinguishes observed matches from unqueried targets; only completed traversal can count unreturned targets as missing.",
+      "Unknown SID, mismatches, overlapping other-source/tombstone hints, bounded mixed-key queries, and unsupported read implementations remain distinct."
+    ],
+    "executed_by_root": true,
+    "result_report": "validation.json",
+    "new_cases": 18,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "remaining_uncertainty": [
+    "No live Xiaomi account read or upload was performed by this research task.",
+    "The independent request may or may not find any of the user's 132 pending targets.",
+    "A 32-page historical cap may remain incomplete for an account with extensive history. An unreturned target must then block a recovery write, not be treated as absent. A clearly observed match can still be reconciled without writing.",
+    "A returned semantic match proves observation of the uploaded fields through this endpoint at read time, not display in Mi Fitness or later retention.",
+    "Neither these notes nor the new control show that the unrecognized limit field, a timezone bucket, source SID rewriting, deletion, eventual consistency, or failed persistence caused the current problem. The extra read and hint counters distinguish some of those possibilities without assigning a cause in advance."
+  ]
+}

@@ -5,9 +5,15 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import com.bettermifitness.sync.zepp.ZeppSyncMetric
+import com.bettermifitness.sync.sync.AutoSyncCheckpoint
+import com.bettermifitness.sync.sync.AutoSyncContinuation
+import com.bettermifitness.sync.sync.AutomaticRetry
+import com.bettermifitness.sync.sync.AutomaticSkip
+import com.bettermifitness.sync.sync.SyncTaskSummary
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -17,8 +23,11 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.serialization.json.Json
+import kotlinx.datetime.TimeZone
 
 /**
  * Process-wide scope for hot preference flows. Lives as long as the app;
@@ -36,6 +45,38 @@ private val prefsScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 class SyncPreferences(
     private val dataStore: DataStore<Preferences>,
 ) : SyncPreferencesPort {
+    val sourceCalendarZoneId: Flow<String?> = dataStore.data.map { it[SOURCE_CALENDAR_ZONE_KEY] }
+    override suspend fun readSourceCalendarZoneId(): String? = sourceCalendarZoneId.first()
+
+    suspend fun setSourceCalendarZoneId(id: String?) {
+        val zone = id?.let { TimeZone.of(it) }
+        dataStore.edit { prefs ->
+            if (zone == null) prefs.remove(SOURCE_CALENDAR_ZONE_KEY) else prefs[SOURCE_CALENDAR_ZONE_KEY] = zone.id
+            prefs.remove(AUTOMATIC_PLAN_KEY)
+        }
+    }
+    val lastAutomaticSkip: Flow<AutomaticSkip?> = dataStore.data.map { prefs ->
+        prefs[AUTOMATIC_SKIP_KEY]?.let { Json.decodeFromString<AutomaticSkip>(it) }
+            ?.takeIf { it.generation == CredentialsStore.signedInGeneration(prefs) }
+    }
+
+    override suspend fun storeAutomaticSkip(skip: AutomaticSkip) {
+        dataStore.edit { prefs ->
+            if (skip.generation == CredentialsStore.signedInGeneration(prefs)) {
+                prefs[AUTOMATIC_SKIP_KEY] = Json.encodeToString(skip)
+            }
+        }
+    }
+    val completedTasks: Flow<List<SyncTaskSummary>> = dataStore.data.map { preferences ->
+        preferences[COMPLETED_TASKS_KEY]?.let { Json.decodeFromString<List<SyncTaskSummary>>(it) }.orEmpty()
+    }
+
+    suspend fun recordCompletedTask(summary: SyncTaskSummary) {
+        dataStore.edit { preferences ->
+            val prior = preferences[COMPLETED_TASKS_KEY]?.let { Json.decodeFromString<List<SyncTaskSummary>>(it) }.orEmpty()
+            preferences[COMPLETED_TASKS_KEY] = Json.encodeToString((listOf(summary) + prior.filterNot { it.id == summary.id }).take(20))
+        }
+    }
     override val lastSyncActivityTime: Flow<String?> = dataStore.data.map { it[LAST_SYNC_ACTIVITY_KEY] }
 
     val lastSyncTime: Flow<String?> = dataStore.data.map { it[LAST_SYNC_KEY] }
@@ -66,6 +107,10 @@ class SyncPreferences(
 
     override val syncRangeDays: Flow<Int> = dataStore.data.map {
         it[SYNC_RANGE_DAYS_KEY] ?: 7
+    }
+
+    override suspend fun captureSyncConfig(): SyncConfig = dataStore.edit { applyDefaultMetrics(it) }.let {
+        SyncConfig(it[SYNC_RANGE_DAYS_KEY] ?: 7, it[ENABLED_METRICS_KEY] ?: DEFAULT_METRIC_KEYS, it[SOURCE_CALENDAR_ZONE_KEY])
     }
 
     /** Opt-in: one real source row per selected import; no daily summaries. */
@@ -115,8 +160,8 @@ class SyncPreferences(
             lastSyncTime = lastSync,
             lastBackgroundSyncTime = lastBg,
         )
-    }, inboundTestMode) { snapshot, testMode ->
-        snapshot.copy(inboundTestMode = testMode)
+    }, inboundTestMode, sourceCalendarZoneId) { snapshot, testMode, zone ->
+        snapshot.copy(inboundTestMode = testMode, sourceCalendarZoneId = zone)
     }.stateIn(
         scope = prefsScope,
         started = SharingStarted.Eagerly,
@@ -126,6 +171,72 @@ class SyncPreferences(
     override suspend fun updateLastSync(timestamp: String) {
         dataStore.edit { it[LAST_SYNC_KEY] = timestamp }
     }
+
+    override suspend fun readAutoSyncTiming(): AutoSyncTiming = dataStore.data.first().let {
+        AutoSyncTiming(it[LAST_AUTOMATIC_START_KEY], it[LAST_MANUAL_FINISH_KEY], it[AUTOMATIC_PAUSED_UNTIL_KEY],
+            it[AUTOMATIC_RETRY_KEY]?.let { value -> Json.decodeFromString<AutomaticRetry>(value) })
+    }
+
+    override suspend fun acceptAutomaticStart(at: Long): Boolean {
+        var accepted = false
+        dataStore.edit { prefs ->
+            if (prefs[AUTO_SYNC_KEY] == "true") {
+                prefs[LAST_AUTOMATIC_START_KEY] = at
+                prefs.remove(AUTOMATIC_RETRY_KEY)
+                accepted = true
+            }
+        }
+        return accepted
+    }
+
+    override suspend fun recordManualFinish(at: Long) {
+        dataStore.edit { it[LAST_MANUAL_FINISH_KEY] = at }
+    }
+
+    override suspend fun pauseAutomaticUntil(at: Long) {
+        dataStore.edit { it[AUTOMATIC_PAUSED_UNTIL_KEY] = at }
+    }
+
+    override suspend fun storeAutomaticRetry(retry: AutomaticRetry?) {
+        dataStore.edit { prefs ->
+            if (retry == null) prefs.remove(AUTOMATIC_RETRY_KEY)
+            else if (prefs[AUTO_SYNC_KEY] == "true") prefs[AUTOMATIC_RETRY_KEY] = Json.encodeToString(retry)
+        }
+    }
+
+    override suspend fun readAutomaticCheckpoints(keys: Set<String>): Map<String, AutoSyncCheckpoint> {
+        val snapshot = dataStore.data.first()
+        return keys.mapNotNull { key -> snapshot[automaticCheckpointKey(key)]?.let {
+            key to Json.decodeFromString<AutoSyncCheckpoint>(it)
+        } }.toMap()
+    }
+
+    override suspend fun writeAutomaticCheckpoints(checkpoints: Map<String, AutoSyncCheckpoint>) {
+        if (checkpoints.isEmpty()) return
+        dataStore.edit { prefs -> prefs.putAutomaticCheckpoints(checkpoints) }
+    }
+
+    override suspend fun readAutomaticContinuation(): AutoSyncContinuation? = dataStore.data.first()[AUTOMATIC_PLAN_KEY]
+        ?.let { Json.decodeFromString<AutoSyncContinuation>(it) }
+
+    override suspend fun saveAutomaticProgress(
+        generation: Long,
+        checkpoints: Map<String, AutoSyncCheckpoint>,
+        continuation: AutoSyncContinuation?,
+    ) {
+        dataStore.edit { prefs ->
+            if (generation != CredentialsStore.signedInGeneration(prefs)) return@edit
+            prefs.putAutomaticCheckpoints(checkpoints)
+            if (continuation == null) prefs.remove(AUTOMATIC_PLAN_KEY)
+            else if (prefs[AUTO_SYNC_KEY] == "true") prefs[AUTOMATIC_PLAN_KEY] = Json.encodeToString(continuation)
+        }
+    }
+
+    private fun MutablePreferences.putAutomaticCheckpoints(checkpoints: Map<String, AutoSyncCheckpoint>) {
+        checkpoints.forEach { (key, checkpoint) -> this[automaticCheckpointKey(key)] = Json.encodeToString(checkpoint) }
+    }
+
+    private fun automaticCheckpointKey(key: String) = stringPreferencesKey("automatic_checkpoint_v1_$key")
 
     override suspend fun updateLastSyncActivity(timestamp: String) {
         dataStore.edit { it[LAST_SYNC_ACTIVITY_KEY] = timestamp }
@@ -158,7 +269,13 @@ class SyncPreferences(
     }
 
     suspend fun setAutoSync(enabled: Boolean) {
-        dataStore.edit { it[AUTO_SYNC_KEY] = enabled.toString() }
+        dataStore.edit {
+            it[AUTO_SYNC_KEY] = enabled.toString()
+            if (!enabled) {
+                it.remove(AUTOMATIC_RETRY_KEY)
+                it.remove(AUTOMATIC_PLAN_KEY)
+            }
+        }
     }
 
     suspend fun setMetricEnabled(key: String, enabled: Boolean) {
@@ -183,7 +300,8 @@ class SyncPreferences(
         dataStore.edit { prefs ->
             for (key in listOf(LAST_SYNC_KEY, LAST_SYNC_ACTIVITY_KEY, LAST_BACKGROUND_SYNC_KEY,
                 LAST_SYNC_STATUS_KEY, LAST_SYNC_MESSAGE_KEY, LAST_BACKGROUND_SYNC_STATUS_KEY,
-                LAST_BACKGROUND_SYNC_MESSAGE_KEY)) prefs.remove(key)
+                LAST_BACKGROUND_SYNC_MESSAGE_KEY, LAST_AUTOMATIC_START_KEY, LAST_MANUAL_FINISH_KEY,
+                AUTOMATIC_PAUSED_UNTIL_KEY, AUTOMATIC_RETRY_KEY, AUTOMATIC_SKIP_KEY, AUTOMATIC_PLAN_KEY)) prefs.remove(key)
         }
     }
 
@@ -256,6 +374,14 @@ class SyncPreferences(
 
         private val LAST_SYNC_KEY = stringPreferencesKey("last_sync_time")
         private val LAST_SYNC_ACTIVITY_KEY = stringPreferencesKey("last_sync_activity_time")
+        private val LAST_AUTOMATIC_START_KEY = longPreferencesKey("last_automatic_sync_start")
+        private val AUTOMATIC_PAUSED_UNTIL_KEY = longPreferencesKey("automatic_sync_paused_until")
+        private val AUTOMATIC_RETRY_KEY = stringPreferencesKey("automatic_retry_v1")
+        private val AUTOMATIC_PLAN_KEY = stringPreferencesKey("automatic_plan_v1")
+        private val SOURCE_CALENDAR_ZONE_KEY = stringPreferencesKey("health_connect_source_calendar_zone_v1")
+        private val AUTOMATIC_SKIP_KEY = stringPreferencesKey("automatic_skip_v1")
+        private val COMPLETED_TASKS_KEY = stringPreferencesKey("completed_sync_tasks_v1")
+        private val LAST_MANUAL_FINISH_KEY = longPreferencesKey("last_manual_sync_finish")
         private val LAST_BACKGROUND_SYNC_KEY = stringPreferencesKey("last_background_sync_time")
         private val LAST_SYNC_STATUS_KEY = stringPreferencesKey("last_sync_status")
         private val LAST_SYNC_MESSAGE_KEY = stringPreferencesKey("last_sync_message")

@@ -9,8 +9,9 @@ class HealthWriteIncompleteException(
     val writtenRecordCount: Int,
     val skippedReasons: List<String>,
     cause: Throwable? = null,
+    storeName: String = "Health Connect",
 ) : IllegalStateException(
-    "Health Connect accepted $writtenRecordCount record(s), but synchronization is incomplete. " +
+    "$storeName accepted $writtenRecordCount record(s), but synchronization is incomplete. " +
         skippedReasons.joinToString(" "),
     cause,
 )

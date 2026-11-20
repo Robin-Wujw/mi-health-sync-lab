@@ -96,6 +96,7 @@ fun MiHealthImportDiagnostic.userFacingDetails(): String = buildList {
     if (readbackMismatchFields.isNotEmpty()) add(L10n.textFmt(L10n.importDiagnosticReadbackFields,
         safeMismatchCounts(readbackMismatchFields).entries.joinToString { "${it.key}: ${it.value}" }))
     if (preservedDailyRows > 0) add(L10n.textFmt(L10n.importDiagnosticPreservedDaily, preservedDailyRows))
+    if (gatedDailyRevisionRows > 0) add(L10n.textFmt(L10n.importDiagnosticGatedDaily, gatedDailyRevisionRows))
     if (sourceRejectedRecords > 0) add(L10n.textFmt(L10n.importDiagnosticRejectedSource, sourceRejectedRecords))
     for (issue in issueCounts.filter { it.code != "HEART_RATE_SOURCE_POINT_EXCLUDED" }) {
         val code = safeMiHealthImportIssueCode(issue.code)
@@ -197,6 +198,7 @@ fun MiHealthImportDiagnostic.copyableText(appVersion: String): String = buildLis
     add("readback_ambiguous_rows=$readbackAmbiguousRows")
     add("readback_unqueried_rows=$readbackUnqueriedRows")
     add("preserved_daily_rows=$preservedDailyRows")
+    add("gated_daily_revision_rows=$gatedDailyRevisionRows")
     add("source_rejected_records=$sourceRejectedRecords")
     add("excluded_hrv_samples=$excludedHrvSamples")
     add("attempted_revision_rows=$attemptedRevisionRows")
